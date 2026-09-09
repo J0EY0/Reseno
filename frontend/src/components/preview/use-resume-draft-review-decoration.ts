@@ -1,9 +1,4 @@
-import {
-  useCallback,
-  useLayoutEffect,
-  useRef,
-  type RefObject,
-} from "react";
+import { useCallback, useLayoutEffect, useRef, type RefObject } from "react";
 
 import type { ResumeDraftDiff } from "@/types/resume";
 
@@ -51,10 +46,7 @@ function isWithinDocumentCanvasViewport(element: HTMLElement) {
 }
 
 function getReviewOperationKey(target: ResumeDraftReviewTarget) {
-  return JSON.stringify([
-    target.reviewItemId ?? null,
-    target.diff.operationId,
-  ]);
+  return JSON.stringify([target.reviewItemId ?? null, target.diff.operationId]);
 }
 
 function clearReviewTabStop(element: HTMLElement) {
@@ -121,14 +113,12 @@ export function useResumeDraftReviewDecoration({
   const reconcileReviewTargets = useCallback(
     (root: HTMLElement) => {
       const currentInputs = inputsRef.current;
-      const targets = [...root.querySelectorAll<HTMLElement>(
-        "[data-resume-diff-path]",
-      )]
+      const targets = [
+        ...root.querySelectorAll<HTMLElement>("[data-resume-diff-path]"),
+      ]
         .filter((element) => !element.closest("[inert]"))
         .map((element) => currentInputs.resolveTarget(element))
-        .filter(
-          (target): target is ResumeDraftReviewTarget => Boolean(target),
-        );
+        .filter((target): target is ResumeDraftReviewTarget => Boolean(target));
       const targetElements = new Set(targets.map((target) => target.element));
       const visibleTargets = new Set(
         targets

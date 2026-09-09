@@ -1,16 +1,16 @@
-import { useMemo, useRef } from 'react'
-import { EllipsisVertical } from 'lucide-react'
+import { useMemo, useRef } from "react";
+import { EllipsisVertical } from "lucide-react";
 import type {
   ColumnDef,
   OnChangeFn,
   RowSelectionState,
-} from '@tanstack/react-table'
+} from "@tanstack/react-table";
 
-import { DataTable } from '@/components/data-table'
-import { ModelProviderIcon } from '@/components/model-provider-icon'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Checkbox } from '@/components/ui/checkbox'
+import { DataTable } from "@/components/data-table";
+import { ModelProviderIcon } from "@/components/model-provider-icon";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -18,14 +18,11 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
-import { Spinner } from '@/components/ui/spinner'
-import type { AppMessages, Locale } from '@/i18n'
-import {
-  formatApiKeyPreview,
-  getModelDisplayName,
-} from '@/lib/model-config'
-import type { ModelConfig } from '@/types/resume'
+} from "@/components/ui/dropdown-menu";
+import { Spinner } from "@/components/ui/spinner";
+import type { AppMessages, Locale } from "@/i18n";
+import { formatApiKeyPreview, getModelDisplayName } from "@/lib/model-config";
+import type { ModelConfig } from "@/types/resume";
 
 function ModelConfigRowActions({
   config,
@@ -35,14 +32,14 @@ function ModelConfigRowActions({
   onDelete,
   onEdit,
 }: {
-  config: ModelConfig
-  deletingModelConfigId: string | null
-  disabled: boolean
-  t: AppMessages
-  onDelete: (modelConfigId: string) => void
-  onEdit: (config: ModelConfig, returnFocus: HTMLButtonElement | null) => void
+  config: ModelConfig;
+  deletingModelConfigId: string | null;
+  disabled: boolean;
+  t: AppMessages;
+  onDelete: (modelConfigId: string) => void;
+  onEdit: (config: ModelConfig, returnFocus: HTMLButtonElement | null) => void;
 }) {
-  const triggerRef = useRef<HTMLButtonElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   return (
     <div className="flex items-center justify-end">
@@ -85,7 +82,7 @@ function ModelConfigRowActions({
         </DropdownMenuContent>
       </DropdownMenu>
     </div>
-  )
+  );
 }
 
 export function ModelConfigTable({
@@ -100,32 +97,32 @@ export function ModelConfigTable({
   onDelete,
   onEdit,
 }: {
-  locale: Locale
-  t: AppMessages
-  configs: ModelConfig[]
-  rowSelection: RowSelectionState
-  onRowSelectionChange: OnChangeFn<RowSelectionState>
-  deletingModelConfigId: string | null
-  enteringModelConfigId: string | null
-  disabled: boolean
-  onDelete: (modelConfigId: string) => void
-  onEdit: (config: ModelConfig, returnFocus: HTMLButtonElement | null) => void
+  locale: Locale;
+  t: AppMessages;
+  configs: ModelConfig[];
+  rowSelection: RowSelectionState;
+  onRowSelectionChange: OnChangeFn<RowSelectionState>;
+  deletingModelConfigId: string | null;
+  enteringModelConfigId: string | null;
+  disabled: boolean;
+  onDelete: (modelConfigId: string) => void;
+  onEdit: (config: ModelConfig, returnFocus: HTMLButtonElement | null) => void;
 }) {
   const contextWindowFormatter = useMemo(
-    () => new Intl.NumberFormat(locale === 'zh' ? 'zh-CN' : 'en-US'),
+    () => new Intl.NumberFormat(locale === "zh" ? "zh-CN" : "en-US"),
     [locale],
-  )
+  );
   const columns = useMemo<ColumnDef<ModelConfig>[]>(
     () => [
       {
-        id: 'select',
+        id: "select",
         header: ({ table }) => (
           <Checkbox
             checked={
               table.getIsAllPageRowsSelected()
                 ? true
                 : table.getIsSomePageRowsSelected()
-                  ? 'indeterminate'
+                  ? "indeterminate"
                   : false
             }
             disabled={disabled}
@@ -147,7 +144,7 @@ export function ModelConfigTable({
         enableSorting: false,
       },
       {
-        accessorKey: 'model',
+        accessorKey: "model",
         header: () => <span className="block pl-11">{t.model}</span>,
         cell: ({ row }) => (
           <div className="flex min-w-60 items-center gap-3">
@@ -175,7 +172,7 @@ export function ModelConfigTable({
         ),
       },
       {
-        accessorKey: 'apiKeyPreview',
+        accessorKey: "apiKeyPreview",
         header: () => <span className="block min-w-32">{t.apiKey}</span>,
         cell: ({ row }) => (
           <div className="flex min-w-32">
@@ -186,7 +183,7 @@ export function ModelConfigTable({
         ),
       },
       {
-        accessorKey: 'contextWindowTokens',
+        accessorKey: "contextWindowTokens",
         header: () => (
           <span className="block min-w-32 pr-2 text-right">
             {t.contextWindow}
@@ -201,25 +198,19 @@ export function ModelConfigTable({
         ),
       },
       {
-        accessorKey: 'supportsImage',
+        accessorKey: "supportsImage",
         header: () => (
           <span className="flex min-w-52 justify-center">{t.capabilities}</span>
         ),
         cell: ({ row }) => (
           <div className="flex min-w-52 justify-center gap-1.5">
             {row.original.supportsImage ? (
-              <Badge
-                variant="outline"
-                className="px-1.5 text-muted-foreground"
-              >
+              <Badge variant="outline" className="px-1.5 text-muted-foreground">
                 {t.imageInput}
               </Badge>
             ) : null}
             {row.original.supportsThinking ? (
-              <Badge
-                variant="outline"
-                className="px-1.5 text-muted-foreground"
-              >
+              <Badge variant="outline" className="px-1.5 text-muted-foreground">
                 {t.thinking}
               </Badge>
             ) : null}
@@ -230,7 +221,7 @@ export function ModelConfigTable({
         ),
       },
       {
-        id: 'actions',
+        id: "actions",
         header: () => <span className="sr-only">{t.actions}</span>,
         cell: ({ row }) => (
           <ModelConfigRowActions
@@ -244,8 +235,15 @@ export function ModelConfigTable({
         ),
       },
     ],
-    [contextWindowFormatter, deletingModelConfigId, disabled, onDelete, onEdit, t],
-  )
+    [
+      contextWindowFormatter,
+      deletingModelConfigId,
+      disabled,
+      onDelete,
+      onEdit,
+      t,
+    ],
+  );
 
   return (
     <DataTable
@@ -256,12 +254,12 @@ export function ModelConfigTable({
       getRowId={(config) => config.id}
       getRowClassName={(config) =>
         config.id === enteringModelConfigId
-          ? 'animate-in fade-in duration-200 motion-reduce:animate-none'
+          ? "animate-in fade-in duration-200 motion-reduce:animate-none"
           : undefined
       }
       enableRowSelection
       rowSelection={rowSelection}
       onRowSelectionChange={onRowSelectionChange}
     />
-  )
+  );
 }

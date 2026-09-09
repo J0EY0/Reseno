@@ -25,8 +25,7 @@ export function AppToaster({ toastOptions, ...props }: AppToasterProps) {
           "--warning-border":
             "color-mix(in oklab, var(--warning) 30%, var(--border))",
           "--warning-text": "var(--warning)",
-          "--info-bg":
-            "color-mix(in oklab, var(--info) 5%, var(--popover))",
+          "--info-bg": "color-mix(in oklab, var(--info) 5%, var(--popover))",
           "--info-border":
             "color-mix(in oklab, var(--info) 30%, var(--border))",
           "--info-text": "var(--info)",

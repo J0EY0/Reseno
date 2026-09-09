@@ -21,6 +21,7 @@ import type {
 import { TemplateSelectRow } from "./editor-fields";
 
 type TemplatePageMarginPreset = "compact" | "standard" | "relaxed";
+type TemplatePageMargin = TemplatePageMarginPreset | "custom";
 type TemplateContentDensityPreset = "compact" | "standard" | "relaxed";
 type TemplateContentDensity = TemplateContentDensityPreset | "custom";
 type TemplateDividerStyle = "thin" | "medium" | "bold";
@@ -120,27 +121,25 @@ function getAvatarSize(template: ResumeTemplateDefinition): TemplateAvatarSize {
 
 function getPageMarginPreset(
   settings: ResumeTemplateSettings,
-): TemplatePageMarginPreset {
-  if (
-    settings.pagePaddingTop >= 16 ||
-    settings.pagePaddingX >= 15 ||
-    settings.pagePaddingBottom >= 15
-  ) {
-    return "relaxed";
-  }
-
-  if (
-    settings.pagePaddingTop <= 11 ||
-    settings.pagePaddingX <= 10 ||
-    settings.pagePaddingBottom <= 10
-  ) {
-    return "compact";
-  }
-
-  return "standard";
+): TemplatePageMargin {
+  const presets = Object.keys(
+    pageMarginPresetValues,
+  ) as TemplatePageMarginPreset[];
+  return (
+    presets.find((name) => {
+      const preset = pageMarginPresetValues[name];
+      return (
+        settings.pagePaddingTop === preset.pagePaddingTop &&
+        settings.pagePaddingX === preset.pagePaddingX &&
+        settings.pagePaddingBottom === preset.pagePaddingBottom
+      );
+    }) ?? "custom"
+  );
 }
 
-function getDividerStyle(settings: ResumeTemplateSettings): TemplateDividerStyle {
+function getDividerStyle(
+  settings: ResumeTemplateSettings,
+): TemplateDividerStyle {
   if (settings.dividerThickness >= 2) {
     return "bold";
   }
@@ -198,9 +197,7 @@ export function TemplateLayoutTab({
     });
   }
 
-  function updateLayout(
-    patch: Partial<ResumeTemplateDefinition["layout"]>,
-  ) {
+  function updateLayout(patch: Partial<ResumeTemplateDefinition["layout"]>) {
     if (isReadonly) {
       return;
     }
@@ -233,11 +230,17 @@ export function TemplateLayoutTab({
               <SelectValue />
             </SelectTrigger>
             <SelectContent align="end" position="popper" sideOffset={4}>
-              <SelectItem value="centered">{t.basicInfoLayoutCentered}</SelectItem>
+              <SelectItem value="centered">
+                {t.basicInfoLayoutCentered}
+              </SelectItem>
               <SelectItem value="left">{t.basicInfoLayoutLeft}</SelectItem>
               <SelectItem value="split">{t.basicInfoLayoutSplit}</SelectItem>
-              <SelectItem value="profile">{t.basicInfoLayoutProfile}</SelectItem>
-              <SelectItem value="sidebar">{t.basicInfoLayoutSidebar}</SelectItem>
+              <SelectItem value="profile">
+                {t.basicInfoLayoutProfile}
+              </SelectItem>
+              <SelectItem value="sidebar">
+                {t.basicInfoLayoutSidebar}
+              </SelectItem>
             </SelectContent>
           </Select>
         </TemplateSelectRow>
@@ -257,7 +260,9 @@ export function TemplateLayoutTab({
             </SelectTrigger>
             <SelectContent align="end" position="popper" sideOffset={4}>
               <SelectItem value="ruled">{t.sectionStyleRuled}</SelectItem>
-              <SelectItem value="underlined">{t.sectionStyleUnderlined}</SelectItem>
+              <SelectItem value="underlined">
+                {t.sectionStyleUnderlined}
+              </SelectItem>
               <SelectItem value="boxed">{t.sectionStyleBoxed}</SelectItem>
               <SelectItem value="accent">{t.sectionStyleAccent}</SelectItem>
               <SelectItem value="plain">{t.sectionStylePlain}</SelectItem>
@@ -281,8 +286,12 @@ export function TemplateLayoutTab({
             </SelectTrigger>
             <SelectContent align="end" position="popper" sideOffset={4}>
               <SelectItem value="split">{t.timelineItemLayoutSplit}</SelectItem>
-              <SelectItem value="stacked">{t.timelineItemLayoutStacked}</SelectItem>
-              <SelectItem value="compact">{t.timelineItemLayoutCompact}</SelectItem>
+              <SelectItem value="stacked">
+                {t.timelineItemLayoutStacked}
+              </SelectItem>
+              <SelectItem value="compact">
+                {t.timelineItemLayoutCompact}
+              </SelectItem>
             </SelectContent>
           </Select>
         </TemplateSelectRow>
@@ -333,7 +342,9 @@ export function TemplateLayoutTab({
             <Select
               value={getAvatarSize(template)}
               disabled={isReadonly}
-              onValueChange={(value) => updateAvatarSize(value as TemplateAvatarSize)}
+              onValueChange={(value) =>
+                updateAvatarSize(value as TemplateAvatarSize)
+              }
             >
               <SelectTrigger className="w-full">
                 <SelectValue />
@@ -354,11 +365,13 @@ export function TemplateLayoutTab({
           <Select
             value={getPageMarginPreset(template.settings)}
             disabled={isReadonly}
-            onValueChange={(value) =>
-              updateSettings(
-                pageMarginPresetValues[value as TemplatePageMarginPreset],
-              )
-            }
+            onValueChange={(value) => {
+              if (value !== "custom") {
+                updateSettings(
+                  pageMarginPresetValues[value as TemplatePageMarginPreset],
+                );
+              }
+            }}
           >
             <SelectTrigger className="w-full">
               <SelectValue />
@@ -367,6 +380,9 @@ export function TemplateLayoutTab({
               <SelectItem value="compact">{t.pageMarginCompact}</SelectItem>
               <SelectItem value="standard">{t.pageMarginStandard}</SelectItem>
               <SelectItem value="relaxed">{t.pageMarginRelaxed}</SelectItem>
+              <SelectItem value="custom" disabled>
+                {t.templatePageMarginCustom}
+              </SelectItem>
             </SelectContent>
           </Select>
         </TemplateSelectRow>
@@ -389,9 +405,15 @@ export function TemplateLayoutTab({
               <SelectValue />
             </SelectTrigger>
             <SelectContent align="end" position="popper" sideOffset={4}>
-              <SelectItem value="compact">{t.templateDensityCompact}</SelectItem>
-              <SelectItem value="standard">{t.templateDensityStandard}</SelectItem>
-              <SelectItem value="relaxed">{t.templateDensityRelaxed}</SelectItem>
+              <SelectItem value="compact">
+                {t.templateDensityCompact}
+              </SelectItem>
+              <SelectItem value="standard">
+                {t.templateDensityStandard}
+              </SelectItem>
+              <SelectItem value="relaxed">
+                {t.templateDensityRelaxed}
+              </SelectItem>
               <SelectItem value="custom" disabled>
                 {t.templateDensityCustom}
               </SelectItem>

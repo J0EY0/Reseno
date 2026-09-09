@@ -93,7 +93,9 @@ export function GalleryToolbar({
       </InputGroup>
 
       {leadingActions ? (
-        <div className="flex flex-wrap items-center gap-2">{leadingActions}</div>
+        <div className="flex flex-wrap items-center gap-2">
+          {leadingActions}
+        </div>
       ) : null}
 
       <div className="ml-auto flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">

@@ -1,7 +1,7 @@
-import type { AppMessages } from '@/i18n'
+import type { AppMessages } from "@/i18n";
 
-import { AvatarCropDialogView } from './avatar-crop-dialog-view'
-import { useAvatarCrop } from './use-avatar-crop'
+import { AvatarCropDialogView } from "./avatar-crop-dialog-view";
+import { useAvatarCrop } from "./use-avatar-crop";
 
 export function AvatarCropDialog({
   t,
@@ -10,16 +10,16 @@ export function AvatarCropDialog({
   onCancel,
   onConfirm,
 }: {
-  t: AppMessages
-  source: string | null
-  open: boolean
-  onCancel: () => void
-  onConfirm: (value: string) => void
+  t: AppMessages;
+  source: string | null;
+  open: boolean;
+  onCancel: () => void;
+  onConfirm: (value: string) => void;
 }) {
-  const controller = useAvatarCrop({ source, open, onConfirm })
+  const controller = useAvatarCrop({ source, open, onConfirm });
 
   if (!source) {
-    return null
+    return null;
   }
 
   return (
@@ -30,5 +30,5 @@ export function AvatarCropDialog({
       onCancel={onCancel}
       controller={controller}
     />
-  )
+  );
 }

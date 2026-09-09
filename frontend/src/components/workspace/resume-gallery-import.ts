@@ -1,21 +1,122 @@
 import { importResumePayload } from "@/lib/import-api";
 import { normalizeResumeTitle } from "@/lib/resume-title";
-import {
-  createResumeApi,
-  createTemplateApi,
-} from "@/lib/workspace-api";
-import type { ResumeDetailResponse } from "@/types/api";
+import { createResumeApi, createTemplateApi } from "@/lib/workspace-api";
+import type {
+  ImportResumeResponse,
+  ResumeCreateRequest,
+  ResumeDetailResponse,
+} from "@/types/api";
 import type { ResumeTemplateDefinition } from "@/types/resume";
 
-export async function importResumesIntoWorkspace(file: File) {
+export interface ResumeImportOptions {
+  signal?: AbortSignal;
+  onResumeSaved?: (result: ResumeDetailResponse) => void;
+  onTemplateSaved?: (template: ResumeTemplateDefinition) => void;
+}
+
+export interface ResumeImportResult {
+  savedImports: ResumeDetailResponse[];
+  importedCount: number;
+  remainingCount: number;
+  unclassifiedLineCount: number;
+  retry: ((options: ResumeImportOptions) => Promise<ResumeImportResult>) | null;
+}
+
+interface ResumeImportBatch {
+  templates: ImportResumeResponse["templates"];
+  resumes: ResumeCreateRequest[];
+  templateIds: Map<string, string>;
+  importedCount: number;
+  unclassifiedLineCount: number;
+}
+
+async function persistResumeImport(
+  batch: ResumeImportBatch,
+  options: ResumeImportOptions,
+): Promise<ResumeImportResult> {
+  const templates = batch.templates;
+  batch.templates = [];
+  for (const [index, item] of templates.entries()) {
+    if (options.signal?.aborted) {
+      batch.templates.push(...templates.slice(index));
+      break;
+    }
+    let template: ResumeTemplateDefinition;
+    try {
+      const result = await createTemplateApi(item.definition, {
+        notifyOnError: false,
+      });
+      template = result.template;
+    } catch (error) {
+      console.error("Failed to import embedded template.", error);
+      batch.templates.push(item);
+      continue;
+    }
+    batch.templateIds.set(item.ref, template.id);
+    options.onTemplateSaved?.(template);
+  }
+
+  const resumes = batch.resumes;
+  const savedImports: ResumeDetailResponse[] = [];
+  batch.resumes = [];
+  for (const [index, item] of resumes.entries()) {
+    if (options.signal?.aborted) {
+      batch.resumes.push(...resumes.slice(index));
+      break;
+    }
+    const templateId = item.template && batch.templateIds.get(item.template);
+    if (item.template?.startsWith("custom:") && !templateId) {
+      batch.resumes.push(item);
+      continue;
+    }
+    let result: ResumeDetailResponse;
+    try {
+      result = await createResumeApi(
+        { ...item, ...(templateId ? { template: templateId } : {}) },
+        { notifyOnError: false },
+      );
+    } catch (error) {
+      console.error("Failed to import resume.", error);
+      batch.resumes.push(item);
+      continue;
+    }
+    batch.importedCount += 1;
+    savedImports.push(result);
+    options.onResumeSaved?.(result);
+  }
+
+  return {
+    savedImports,
+    importedCount: batch.importedCount,
+    remainingCount: batch.resumes.length,
+    unclassifiedLineCount: batch.unclassifiedLineCount,
+    retry:
+      batch.resumes.length > 0
+        ? (nextOptions) => persistResumeImport(batch, nextOptions)
+        : null,
+  };
+}
+
+export async function importResumesIntoWorkspace(
+  file: File,
+  options: ResumeImportOptions = {},
+): Promise<ResumeImportResult> {
+  options.signal?.throwIfAborted();
+  const batch: ResumeImportBatch = {
+    templates: [],
+    resumes: [],
+    templateIds: new Map(),
+    importedCount: 0,
+    unclassifiedLineCount: 0,
+  };
   const isPdfImport =
-    file.type === "application/pdf" ||
-    file.name.toLowerCase().endsWith(".pdf");
+    file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
   if (isPdfImport) {
-    // The parser and PDF.js are loaded only after PDF intent is known.
     const { importResumeFromPdf } = await import("@/lib/pdf-resume-import");
-    const { documentLocale, resume } = await importResumeFromPdf(file);
-    const result = await createResumeApi({
+    const { documentLocale, resume, unclassifiedLineCount } =
+      await importResumeFromPdf(file, { signal: options.signal });
+    batch.unclassifiedLineCount = unclassifiedLineCount;
+    batch.resumes.push({
       documentLocale,
       jobBrief: "",
       resume,
@@ -25,44 +126,17 @@ export async function importResumesIntoWorkspace(file: File) {
       ),
       templateSettings: null,
     });
-
-    return {
-      savedImports: [result],
-      savedTemplates: [],
-    };
+  } else {
+    const bundle = await importResumePayload(file, {
+      signal: options.signal,
+      notifyOnError: false,
+    });
+    batch.templates = bundle.templates;
+    batch.resumes = bundle.resumes;
   }
-
-  const importedBundle = await importResumePayload(file);
-  if (importedBundle.resumes.length === 0) {
+  options.signal?.throwIfAborted();
+  if (batch.resumes.length === 0) {
     throw new Error("No valid resume documents found in the imported file.");
   }
-
-  const templateIdByArtifactRef = new Map<string, string>();
-  const savedTemplates: ResumeTemplateDefinition[] = [];
-  for (const embeddedTemplate of importedBundle.templates) {
-    const result = await createTemplateApi(embeddedTemplate.definition);
-    templateIdByArtifactRef.set(embeddedTemplate.ref, result.template.id);
-    savedTemplates.push(result.template);
-  }
-
-  const savedImports: ResumeDetailResponse[] = [];
-  for (const item of importedBundle.resumes) {
-    const mappedTemplateId = templateIdByArtifactRef.get(item.template);
-    if (item.template.startsWith("custom:") && !mappedTemplateId) {
-      throw new Error("Imported resume references an unknown template.");
-    }
-    savedImports.push(
-      await createResumeApi({
-        documentLocale: item.documentLocale,
-        title: item.title,
-        resume: item.resume,
-        jobBrief: item.jobBrief,
-        typography: item.typography,
-        template: mappedTemplateId ?? item.template,
-        templateSettings: item.templateSettings ?? null,
-      }),
-    );
-  }
-
-  return { savedImports, savedTemplates };
+  return persistResumeImport(batch, options);
 }

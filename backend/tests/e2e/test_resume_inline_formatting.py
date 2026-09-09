@@ -370,12 +370,42 @@ ACADEMIC_MARK = '[data-academic-italic="true"]'
 
 
 def _select_text(field: Locator, start: int, length: int) -> None:
+    element = field.element_handle()
+    assert element is not None
+
+    def wait_for_selection(anchor: int, head: int) -> None:
+        field.page.wait_for_function(
+            """({element, anchor, head}) => {
+              const selection = getSelection();
+              const editor = element.editor;
+              if (!selection || !editor ||
+                  !element.contains(selection.anchorNode) ||
+                  !element.contains(selection.focusNode)) return false;
+              const offset = (node, position) => {
+                const range = document.createRange();
+                range.selectNodeContents(element);
+                range.setEnd(node, position);
+                return range.toString().length;
+              };
+              const {doc, selection: current} = editor.state;
+              return offset(selection.anchorNode, selection.anchorOffset) === anchor
+                && offset(selection.focusNode, selection.focusOffset) === head
+                && doc.textBetween(0, current.anchor).length === anchor
+                && doc.textBetween(0, current.head).length === head;
+            }""",
+            arg={"element": element, "anchor": anchor, "head": head},
+        )
+
     _select_all(field)
+    wait_for_selection(0, len(field.text_content() or ""))
     field.press("ArrowLeft")
-    for _ in range(start):
+    wait_for_selection(0, 0)
+    for offset in range(1, start + 1):
         field.press("ArrowRight")
-    for _ in range(length):
+        wait_for_selection(offset, offset)
+    for offset in range(1, length + 1):
         field.press("Shift+ArrowRight")
+        wait_for_selection(start, start + offset)
 
 
 def _keyboard_academic_mark(
@@ -392,7 +422,12 @@ def _keyboard_academic_mark(
     for _ in range(toolbar.get_by_role("button").count()):
         if button.evaluate("element => element === document.activeElement"):
             break
+        focused = toolbar.locator("button:focus").element_handle()
+        assert focused is not None
         page.keyboard.press("ArrowRight")
+        page.wait_for_function(
+            "previous => document.activeElement !== previous", arg=focused
+        )
     expect(button).to_be_focused()
     page.keyboard.press("Enter")
     expect(field).to_be_focused()
@@ -900,7 +935,8 @@ def test_rich_technology_list_splits_marks_and_preserves_trailing_input(
         items = _saved_project(page, base, resume_id)["techStack"]
         assert len(items) == 3 and items[2] == "Rust <core>"
         for item, expected in zip(items[:2], ("R&D", "C++"), strict=True):
-            structure = page.evaluate("""html => {
+            structure = page.evaluate(
+                """html => {
               const body = new DOMParser().parseFromString(html, "text/html").body;
               return {
                 html: body.innerHTML,
@@ -911,7 +947,9 @@ def test_rich_technology_list_splits_marks_and_preserves_trailing_input(
                 )?.textContent,
                 paragraphs: body.querySelectorAll("p").length
               };
-            }""", item)
+            }""",
+                item,
+            )
             assert structure == {
                 "html": item,
                 "text": expected,

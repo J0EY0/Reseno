@@ -10,10 +10,7 @@ import {
 import { Input } from "@/components/ui/input";
 import type { ResumeDetailWorkspaceModel } from "@/components/workspace/resume-detail-workspace-types";
 import type { AppMessages } from "@/i18n";
-import {
-  maxResumeTitleLength,
-  truncateResumeTitle,
-} from "@/lib/resume-title";
+import { maxResumeTitleLength, truncateResumeTitle } from "@/lib/resume-title";
 
 export function ResumeDetailTitleDialog({
   messages,
@@ -49,9 +46,7 @@ export function ResumeDetailTitleDialog({
             value={state.title.draft}
             autoFocus
             onChange={(event) =>
-              commands.changeTitleDraft(
-                truncateResumeTitle(event.target.value),
-              )
+              commands.changeTitleDraft(truncateResumeTitle(event.target.value))
             }
           />
           <p className="text-right text-xs text-muted-foreground">

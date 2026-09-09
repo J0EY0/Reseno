@@ -40,7 +40,10 @@ export function AgentDraftConflictNotice({
         />
         <div className="min-w-0 space-y-1 break-words leading-5">
           <p className="font-medium">
-            {t.agentDraftConflictTitle.replace("{count}", String(conflicts.length))}
+            {t.agentDraftConflictTitle.replace(
+              "{count}",
+              String(conflicts.length),
+            )}
           </p>
           <p className="text-muted-foreground">
             {t.agentDraftConflictDescription}
@@ -96,7 +99,10 @@ export function AgentDraftConflictNotice({
             data-slot="agent-draft-conflict-actions"
           >
             <p className="mb-2 break-words text-xs font-medium leading-5">
-              {t.agentDraftConflictScope.replace("{count}", String(pendingCount))}
+              {t.agentDraftConflictScope.replace(
+                "{count}",
+                String(pendingCount),
+              )}
             </p>
             <div className="grid grid-cols-2 gap-x-2 gap-y-1.5">
               <Button

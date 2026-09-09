@@ -1,18 +1,18 @@
-import { PromptInputProvider } from '@/components/ai-elements/prompt-input-context'
-import { useLayoutEffect, useMemo } from 'react'
+import { PromptInputProvider } from "@/components/ai-elements/prompt-input-context";
+import { useLayoutEffect, useMemo } from "react";
 
 import {
   AgentDraftReviewDock,
   type AgentDraftReviewDockView,
-} from './agent-draft-review-dock'
-import { CopilotComposer } from './copilot-composer'
-import { CopilotConversationView } from './copilot-conversation-view'
-import { CopilotPanelBodyFrame } from './copilot-panel-shell'
-import type { CopilotPanelProps } from './copilot-panel-types'
-import { useAgentComposerLayout } from './use-agent-composer-layout'
-import { useAgentConversation } from './use-agent-conversation'
-import { useAgentMessageActions } from './use-agent-message-actions'
-import { useAgentPromptActions } from './use-agent-prompt-actions'
+} from "./agent-draft-review-dock";
+import { CopilotComposer } from "./copilot-composer";
+import { CopilotConversationView } from "./copilot-conversation-view";
+import { CopilotPanelBodyFrame } from "./copilot-panel-shell";
+import type { CopilotPanelProps } from "./copilot-panel-types";
+import { useAgentComposerLayout } from "./use-agent-composer-layout";
+import { useAgentConversation } from "./use-agent-conversation";
+import { useAgentMessageActions } from "./use-agent-message-actions";
+import { useAgentPromptActions } from "./use-agent-prompt-actions";
 
 /**
  * Stable inline-dock entrypoint. Conversation, history actions, attachments,
@@ -41,13 +41,13 @@ export function CopilotPanel({
   const agentModelConfigs = useMemo(
     () => modelConfigs.filter((config) => config.supportsTools),
     [modelConfigs],
-  )
+  );
   const selectedModelConfig = useMemo(
     () =>
       agentModelConfigs.find((config) => config.id === selectedModelConfigId) ??
       null,
     [agentModelConfigs, selectedModelConfigId],
-  )
+  );
   const conversation = useAgentConversation({
     agentDraftState,
     documentLocale,
@@ -61,8 +61,8 @@ export function CopilotPanel({
     resumeId,
     selectedModelConfig,
     t,
-  })
-  const isRequestBusy = conversation.requestPhase !== 'idle'
+  });
+  const isRequestBusy = conversation.requestPhase !== "idle";
   const promptActions = useAgentPromptActions({
     hasConfiguredModel: Boolean(selectedModelConfig),
     isRequestBusy,
@@ -72,7 +72,7 @@ export function CopilotPanel({
     sendPrompt: conversation.sendPrompt,
     stopConversation: conversation.stopResponding,
     t,
-  })
+  });
   const messageActions = useAgentMessageActions({
     isRequestBusy,
     messages: conversation.messages,
@@ -80,13 +80,13 @@ export function CopilotPanel({
     sessionResetVersion: conversation.sessionResetVersion,
     sendPrompt: conversation.sendPrompt,
     t,
-  })
+  });
   const { composerRef, conversationContextRef, conversationLayoutRef } =
-    useAgentComposerLayout()
-  const globalDropActive = !isPanelCollapsed
+    useAgentComposerLayout();
+  const globalDropActive = !isPanelCollapsed;
   const reviewDockView = useMemo<AgentDraftReviewDockView | null>(() => {
     if (!agentDraftReview) {
-      return null
+      return null;
     }
 
     return {
@@ -98,16 +98,16 @@ export function CopilotPanel({
       hasScopeConflicts: agentDraftReview.projection.conflicts.length > 0,
       mode: agentDraftReview.mode,
       onApply: () => {
-        void conversation.applyAgentDraft()
+        void conversation.applyAgentDraft();
       },
       onApplyOriginal: () => {
-        void conversation.runAgentDraftDecision(agentDraftReview.applyOriginal)
+        void conversation.runAgentDraftDecision(agentDraftReview.applyOriginal);
       },
       onDiscard: () => {
-        void conversation.discardAgentDraft()
+        void conversation.discardAgentDraft();
       },
       onKeepManual: () => {
-        void conversation.runAgentDraftDecision(agentDraftReview.keepManual)
+        void conversation.runAgentDraftDecision(agentDraftReview.keepManual);
       },
       onNext: agentDraftReview.selectNext,
       onPrevious: agentDraftReview.selectPrevious,
@@ -116,12 +116,12 @@ export function CopilotPanel({
       pendingCount: agentDraftReview.pendingCount,
       resolvingStatus: agentDraftReview.resolvingStatus,
       selectedIndex: agentDraftReview.selectedIndex,
-    }
-  }, [agentDraftReview, conversation, isRequestBusy])
+    };
+  }, [agentDraftReview, conversation, isRequestBusy]);
 
   useLayoutEffect(() => {
-    onStatusChange(conversation.status)
-  }, [conversation.status, onStatusChange])
+    onStatusChange(conversation.status);
+  }, [conversation.status, onStatusChange]);
 
   return (
     <PromptInputProvider>
@@ -159,5 +159,5 @@ export function CopilotPanel({
         />
       </CopilotPanelBodyFrame>
     </PromptInputProvider>
-  )
+  );
 }

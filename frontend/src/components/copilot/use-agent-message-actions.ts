@@ -1,13 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { toast } from 'sonner'
+import { useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 
-import type { AppMessages } from '@/i18n'
-import { downloadAgentAttachment } from '@/lib/agent-attachment-client'
-import { isApiErrorToastShown } from '@/lib/api-client'
-import type { AgentChatAttachment } from '@/types/api'
+import type { AppMessages } from "@/i18n";
+import { downloadAgentAttachment } from "@/lib/agent-attachment-client";
+import { notifyApiError } from "@/lib/api-error-notifier";
+import type { AgentChatAttachment } from "@/types/api";
 
-import type { AgentPanelMessage } from './copilot-message-model'
-import type { SendAgentPrompt } from './copilot-panel-types'
+import type { AgentPanelMessage } from "./copilot-message-model";
+import type { SendAgentPrompt } from "./copilot-panel-types";
 
 export function useAgentMessageActions({
   isRequestBusy,
@@ -17,47 +17,47 @@ export function useAgentMessageActions({
   sendPrompt,
   t,
 }: {
-  isRequestBusy: boolean
-  messages: AgentPanelMessage[]
-  resumeId?: string
-  sessionResetVersion: number
-  sendPrompt: SendAgentPrompt
-  t: AppMessages
+  isRequestBusy: boolean;
+  messages: AgentPanelMessage[];
+  resumeId?: string;
+  sessionResetVersion: number;
+  sendPrompt: SendAgentPrompt;
+  t: AppMessages;
 }) {
-  const actionScope = `${resumeId ?? ''}:${sessionResetVersion}`
+  const actionScope = `${resumeId ?? ""}:${sessionResetVersion}`;
   const [copiedState, setCopiedState] = useState<{
-    messageId: string | null
-    scope: string
-  }>({ messageId: null, scope: actionScope })
+    messageId: string | null;
+    scope: string;
+  }>({ messageId: null, scope: actionScope });
   const [editingState, setEditingState] = useState<{
-    messageId: string | null
-    scope: string
-    text: string
-  }>({ messageId: null, scope: actionScope, text: '' })
-  const copyTimerRef = useRef<number | null>(null)
+    messageId: string | null;
+    scope: string;
+    text: string;
+  }>({ messageId: null, scope: actionScope, text: "" });
+  const copyTimerRef = useRef<number | null>(null);
   const copiedMessageId =
-    copiedState.scope === actionScope ? copiedState.messageId : null
+    copiedState.scope === actionScope ? copiedState.messageId : null;
   const editingMessageId =
-    editingState.scope === actionScope ? editingState.messageId : null
+    editingState.scope === actionScope ? editingState.messageId : null;
   const editingMessageText =
-    editingState.scope === actionScope ? editingState.text : ''
+    editingState.scope === actionScope ? editingState.text : "";
 
   useEffect(() => {
     return () => {
       if (copyTimerRef.current) {
-        window.clearTimeout(copyTimerRef.current)
+        window.clearTimeout(copyTimerRef.current);
       }
-    }
-  }, [])
+    };
+  }, []);
 
   const copyUserMessage = useCallback(
     async (message: AgentPanelMessage) => {
       try {
-        await navigator.clipboard.writeText(message.text)
-        setCopiedState({ messageId: message.id, scope: actionScope })
+        await navigator.clipboard.writeText(message.text);
+        setCopiedState({ messageId: message.id, scope: actionScope });
 
         if (copyTimerRef.current) {
-          window.clearTimeout(copyTimerRef.current)
+          window.clearTimeout(copyTimerRef.current);
         }
 
         copyTimerRef.current = window.setTimeout(() => {
@@ -65,102 +65,93 @@ export function useAgentMessageActions({
             current.scope === actionScope && current.messageId === message.id
               ? { messageId: null, scope: actionScope }
               : current,
-          )
-          copyTimerRef.current = null
-        }, 1200)
+          );
+          copyTimerRef.current = null;
+        }, 1200);
       } catch (error) {
-        console.error('Failed to copy agent user message.', error)
+        console.error("Failed to copy agent user message.", error);
       }
     },
     [actionScope],
-  )
+  );
 
   const downloadHistoryAttachment = useCallback(
     async (file: AgentChatAttachment) => {
       if (!resumeId || !file.id) {
-        return
+        return;
       }
 
       try {
-        const response = await downloadAgentAttachment(resumeId, file.id)
-        const objectUrl = URL.createObjectURL(await response.blob())
-        const link = document.createElement('a')
-        link.href = objectUrl
-        link.download = file.filename || t.agentAttachmentFallback
-        link.hidden = true
-        document.body.append(link)
-        link.click()
-        link.remove()
-        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000)
+        const response = await downloadAgentAttachment(resumeId, file.id);
+        const objectUrl = URL.createObjectURL(await response.blob());
+        const link = document.createElement("a");
+        link.href = objectUrl;
+        link.download = file.filename || t.agentAttachmentFallback;
+        link.hidden = true;
+        document.body.append(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
       } catch (error) {
-        console.error('Failed to download Agent attachment.', error)
-        if (!isApiErrorToastShown(error)) {
-          toast.error(t.agentAttachmentDownloadFailed, {
-            closeButton: true,
-          })
-        }
+        console.error("Failed to download Agent attachment.", error);
+        notifyApiError(error, t.agentAttachmentDownloadFailed);
       }
     },
     [resumeId, t.agentAttachmentDownloadFailed, t.agentAttachmentFallback],
-  )
+  );
 
   const startEditingUserMessage = useCallback(
     (message: AgentPanelMessage) => {
       if (isRequestBusy) {
-        return
+        return;
       }
 
       setEditingState({
         messageId: message.id,
         scope: actionScope,
         text: message.text,
-      })
+      });
     },
     [actionScope, isRequestBusy],
-  )
+  );
 
   const cancelEditingUserMessage = useCallback(() => {
-    setEditingState({ messageId: null, scope: actionScope, text: '' })
-  }, [actionScope])
+    setEditingState({ messageId: null, scope: actionScope, text: "" });
+  }, [actionScope]);
 
   const setEditingMessageText = useCallback(
     (text: string) => {
       setEditingState((current) => ({
-        messageId:
-          current.scope === actionScope ? current.messageId : null,
+        messageId: current.scope === actionScope ? current.messageId : null,
         scope: actionScope,
         text,
-      }))
+      }));
     },
     [actionScope],
-  )
+  );
 
   const submitEditedUserMessage = useCallback(
     async (message: AgentPanelMessage) => {
-      const nextText = editingMessageText.trim()
+      const nextText = editingMessageText.trim();
 
       if (!nextText) {
         toast.info(t.agentEditEmpty, {
           closeButton: true,
-        })
-        return
+        });
+        return;
       }
 
-      const messageIndex = messages.findIndex((item) => item.id === message.id)
+      const messageIndex = messages.findIndex((item) => item.id === message.id);
       if (messageIndex < 0 || isRequestBusy) {
-        return
+        return;
       }
 
-      cancelEditingUserMessage()
-      await sendPrompt(
-        nextText,
-        message.files ?? [],
-        {
-          baseMessages: messages.slice(0, messageIndex),
-          messageId: message.id,
-          replaceSessionBeforeSend: true,
-        },
-      ).completion
+      cancelEditingUserMessage();
+      await sendPrompt(nextText, message.files ?? [], {
+        baseMessages: messages.slice(0, messageIndex),
+        messageId: message.id,
+        replaceSessionBeforeSend: true,
+      }).completion;
     },
     [
       cancelEditingUserMessage,
@@ -170,26 +161,22 @@ export function useAgentMessageActions({
       sendPrompt,
       t.agentEditEmpty,
     ],
-  )
+  );
 
   const retryUserMessage = useCallback(
     async (message: AgentPanelMessage) => {
-      const messageIndex = messages.findIndex((item) => item.id === message.id)
+      const messageIndex = messages.findIndex((item) => item.id === message.id);
       if (messageIndex < 0 || isRequestBusy) {
-        return
+        return;
       }
 
-      await sendPrompt(
-        message.text,
-        message.files ?? [],
-        {
-          baseMessages: messages.slice(0, messageIndex),
-          messageId: message.id,
-        },
-      ).completion
+      await sendPrompt(message.text, message.files ?? [], {
+        baseMessages: messages.slice(0, messageIndex),
+        messageId: message.id,
+      }).completion;
     },
     [isRequestBusy, messages, sendPrompt],
-  )
+  );
 
   return {
     cancelEditingUserMessage,
@@ -202,7 +189,7 @@ export function useAgentMessageActions({
     setEditingMessageText,
     startEditingUserMessage,
     submitEditedUserMessage,
-  }
+  };
 }
 
-export type AgentMessageActions = ReturnType<typeof useAgentMessageActions>
+export type AgentMessageActions = ReturnType<typeof useAgentMessageActions>;

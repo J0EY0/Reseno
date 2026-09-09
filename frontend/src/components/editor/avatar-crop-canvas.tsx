@@ -2,10 +2,10 @@ import {
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
-} from 'react'
+} from "react";
 
-import type { AppMessages } from '@/i18n'
-import { cn } from '@/lib/utils'
+import type { AppMessages } from "@/i18n";
+import { cn } from "@/lib/utils";
 
 import {
   avatarCropAspectRatio,
@@ -15,90 +15,90 @@ import {
   createAspectAvatarCrop,
   isPointInAvatarCrop,
   type AvatarCropRect,
-} from './avatar-crop-geometry'
-import { AvatarCropOverlay } from './avatar-crop-overlay'
-import type { AvatarCropController } from './use-avatar-crop'
+} from "./avatar-crop-geometry";
+import { AvatarCropOverlay } from "./avatar-crop-overlay";
+import type { AvatarCropController } from "./use-avatar-crop";
 
-type InteractionMode = 'draw' | 'move' | 'resize' | null
+type InteractionMode = "draw" | "move" | "resize" | null;
 
 export function AvatarCropCanvas({
   t,
   source,
   controller,
 }: {
-  t: AppMessages
-  source: string
-  controller: AvatarCropController
+  t: AppMessages;
+  source: string;
+  controller: AvatarCropController;
 }) {
-  const [interactionMode, setInteractionMode] = useState<InteractionMode>(null)
-  const stageRef = useRef<HTMLDivElement | null>(null)
+  const [interactionMode, setInteractionMode] = useState<InteractionMode>(null);
+  const stageRef = useRef<HTMLDivElement | null>(null);
   const dragStateRef = useRef<{
-    pointerId: number
-    mode: Exclude<InteractionMode, null>
-    startPoint: { x: number; y: number }
-    originCrop: AvatarCropRect
-  } | null>(null)
-  const { crop, hasCrop, stageSize } = controller
+    pointerId: number;
+    mode: Exclude<InteractionMode, null>;
+    startPoint: { x: number; y: number };
+    originCrop: AvatarCropRect;
+  } | null>(null);
+  const { crop, hasCrop, stageSize } = controller;
 
   function getStagePoint(event: ReactPointerEvent<HTMLDivElement>) {
-    const bounds = stageRef.current?.getBoundingClientRect()
+    const bounds = stageRef.current?.getBoundingClientRect();
     if (!bounds) {
-      return { x: 0, y: 0 }
+      return { x: 0, y: 0 };
     }
 
     return {
       x: clampAvatarCrop(event.clientX - bounds.left, 0, bounds.width),
       y: clampAvatarCrop(event.clientY - bounds.top, 0, bounds.height),
-    }
+    };
   }
 
   function handlePointerDown(event: ReactPointerEvent<HTMLDivElement>) {
     if (!stageSize.width || !stageSize.height || controller.isSaving) {
-      return
+      return;
     }
 
-    const point = getStagePoint(event)
+    const point = getStagePoint(event);
     const handleRect = {
       x: crop.x + crop.width - avatarCropHandleHitArea / 2,
       y: crop.y + crop.height - avatarCropHandleHitArea / 2,
       width: avatarCropHandleHitArea,
       height: avatarCropHandleHitArea,
-    }
+    };
     const targetMode =
       hasCrop && isPointInAvatarCrop(point, handleRect)
-        ? 'resize'
+        ? "resize"
         : hasCrop && isPointInAvatarCrop(point, crop)
-          ? 'move'
-          : 'draw'
+          ? "move"
+          : "draw";
 
-    setInteractionMode(targetMode)
+    setInteractionMode(targetMode);
     dragStateRef.current = {
       pointerId: event.pointerId,
       mode: targetMode,
       startPoint: point,
       originCrop: crop,
+    };
+    if (targetMode === "draw") {
+      controller.onCropChange({ x: point.x, y: point.y, width: 0, height: 0 });
     }
-    if (targetMode === 'draw') {
-      controller.onCropChange({ x: point.x, y: point.y, width: 0, height: 0 })
-    }
-    event.currentTarget.setPointerCapture(event.pointerId)
-    event.preventDefault()
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.preventDefault();
   }
 
   function handlePointerMove(event: ReactPointerEvent<HTMLDivElement>) {
-    const dragState = dragStateRef.current
+    const dragState = dragStateRef.current;
     if (!dragState || dragState.pointerId !== event.pointerId) {
-      return
+      return;
     }
 
-    const point = getStagePoint(event)
-    if (dragState.mode === 'draw') {
+    const point = getStagePoint(event);
+    if (dragState.mode === "draw") {
       controller.onCropChange(
         createAspectAvatarCrop(dragState.startPoint, point, stageSize),
-      )
-      return
+      );
+      return;
     }
-    if (dragState.mode === 'move') {
+    if (dragState.mode === "move") {
       controller.onCropChange({
         x: clampAvatarCrop(
           dragState.originCrop.x + point.x - dragState.startPoint.x,
@@ -112,50 +112,50 @@ export function AvatarCropCanvas({
         ),
         width: dragState.originCrop.width,
         height: dragState.originCrop.height,
-      })
-      return
+      });
+      return;
     }
 
     const widthFromX =
-      dragState.originCrop.width + point.x - dragState.startPoint.x
+      dragState.originCrop.width + point.x - dragState.startPoint.x;
     const widthFromY =
       dragState.originCrop.width +
-      (point.y - dragState.startPoint.y) * avatarCropAspectRatio
+      (point.y - dragState.startPoint.y) * avatarCropAspectRatio;
     const maxWidth = Math.min(
       stageSize.width - dragState.originCrop.x,
       (stageSize.height - dragState.originCrop.y) * avatarCropAspectRatio,
-    )
+    );
     const nextWidth = clampAvatarCrop(
       Math.max(widthFromX, widthFromY),
       avatarCropMinWidth,
       maxWidth,
-    )
+    );
     controller.onCropChange({
       x: dragState.originCrop.x,
       y: dragState.originCrop.y,
       width: nextWidth,
       height: nextWidth / avatarCropAspectRatio,
-    })
+    });
   }
 
   function handlePointerEnd(event: ReactPointerEvent<HTMLDivElement>) {
-    const dragState = dragStateRef.current
+    const dragState = dragStateRef.current;
     if (!dragState || dragState.pointerId !== event.pointerId) {
-      return
+      return;
     }
 
-    if (dragState.mode === 'draw') {
+    if (dragState.mode === "draw") {
       controller.onCropChange((current) =>
         current.width >= avatarCropMinWidth
           ? current
           : { x: 0, y: 0, width: 0, height: 0 },
-      )
+      );
     }
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId)
+      event.currentTarget.releasePointerCapture(event.pointerId);
     }
-    dragStateRef.current = null
-    setInteractionMode(null)
+    dragStateRef.current = null;
+    setInteractionMode(null);
   }
 
   return (
@@ -164,16 +164,16 @@ export function AvatarCropCanvas({
         <div
           ref={stageRef}
           className={cn(
-            'relative overflow-hidden rounded-2xl select-none touch-none',
-            interactionMode === 'draw'
-              ? 'cursor-crosshair'
-              : interactionMode === 'move'
-                ? 'cursor-grabbing'
-                : interactionMode === 'resize'
-                  ? 'cursor-se-resize'
+            "relative overflow-hidden rounded-2xl select-none touch-none",
+            interactionMode === "draw"
+              ? "cursor-crosshair"
+              : interactionMode === "move"
+                ? "cursor-grabbing"
+                : interactionMode === "resize"
+                  ? "cursor-se-resize"
                   : hasCrop
-                    ? 'cursor-default'
-                    : 'cursor-crosshair',
+                    ? "cursor-default"
+                    : "cursor-crosshair",
           )}
           style={{
             width: stageSize.width || undefined,
@@ -200,7 +200,7 @@ export function AvatarCropCanvas({
             <AvatarCropOverlay
               crop={crop}
               stageSize={stageSize}
-              isMoving={interactionMode === 'move'}
+              isMoving={interactionMode === "move"}
             />
           ) : (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
@@ -212,5 +212,5 @@ export function AvatarCropCanvas({
         </div>
       </div>
     </div>
-  )
+  );
 }

@@ -1,3 +1,5 @@
+import { PdfImportError } from "./errors";
+import { isApiErrorCode, isAbortError } from "@/lib/api-errors";
 import { apiRoutes, requestApi } from "@/lib/api-client";
 import { SECTION_KINDS } from "@/types/resume";
 import type { SectionKind, SectionLayout } from "@/types/resume";
@@ -202,11 +204,26 @@ export async function fetchResumeImportParserConfig(): Promise<ResumeImportParse
   // Keep their cache independent from requestApi's mutation invalidation so
   // saving a resume or uploading a file does not trigger redundant refetches.
   const request = Promise.all([
-    requestApi<unknown>(apiRoutes.sectionRegistry),
-    requestApi<unknown>(apiRoutes.resumeImportLexicon),
-  ]).then(([registry, lexicon]) =>
-    parseResumeImportParserConfig(registry, lexicon),
-  );
+    requestApi<unknown>(apiRoutes.sectionRegistry, { notifyOnError: false }),
+    requestApi<unknown>(apiRoutes.resumeImportLexicon, {
+      notifyOnError: false,
+    }),
+  ])
+    .then(([registry, lexicon]) =>
+      parseResumeImportParserConfig(registry, lexicon),
+    )
+    .catch((error: unknown) => {
+      if (
+        error instanceof PdfImportError ||
+        isAbortError(error) ||
+        isApiErrorCode(error, "UNAUTHORIZED_REQUEST")
+      ) {
+        throw error;
+      }
+      throw new PdfImportError("INVALID_RESUME_IMPORT_PARSER_CONFIG", {
+        cause: error,
+      });
+    });
   resumeImportParserConfigCache = {
     expiresAt: now + IMPORT_PARSER_CONFIG_CACHE_TTL_MS,
     request,
@@ -237,7 +254,7 @@ function parseResumeImportParserConfig(
     Object.keys(lexicon.locales).length === 0 ||
     !Object.values(lexicon.locales).every(isResumeImportLexiconLocale)
   ) {
-    throw new Error("INVALID_RESUME_IMPORT_PARSER_CONFIG");
+    throw new PdfImportError("INVALID_RESUME_IMPORT_PARSER_CONFIG");
   }
 
   const config = {
@@ -304,7 +321,7 @@ export function createSectionRegistryContext(
 
   for (const section of registry.sections) {
     if (defaultLayoutByKind.has(section.kind)) {
-      throw new Error("INVALID_RESUME_IMPORT_PARSER_CONFIG");
+      throw new PdfImportError("INVALID_RESUME_IMPORT_PARSER_CONFIG");
     }
     defaultLayoutByKind.set(section.kind, section.defaultLayout);
 
@@ -312,14 +329,14 @@ export function createSectionRegistryContext(
       const normalizedAlias = normalizeTitle(alias);
       const existingKind = kindByAlias.get(normalizedAlias);
       if (!normalizedAlias || existingKind !== undefined) {
-        throw new Error("INVALID_RESUME_IMPORT_PARSER_CONFIG");
+        throw new PdfImportError("INVALID_RESUME_IMPORT_PARSER_CONFIG");
       }
       kindByAlias.set(normalizedAlias, section.kind);
     }
   }
 
   if (SECTION_KINDS.some((kind) => !defaultLayoutByKind.has(kind))) {
-    throw new Error("INVALID_RESUME_IMPORT_PARSER_CONFIG");
+    throw new PdfImportError("INVALID_RESUME_IMPORT_PARSER_CONFIG");
   }
 
   return {
@@ -353,7 +370,7 @@ export function createResumeImportLexiconContext(
   );
 
   if (documentTitleTerms.size === 0 || currentPeriodTerms.length === 0) {
-    throw new Error("INVALID_RESUME_IMPORT_LEXICON");
+    throw new PdfImportError("INVALID_RESUME_IMPORT_LEXICON");
   }
 
   return {
@@ -409,7 +426,7 @@ function buildPeriodPattern({
   datePartSuffixes: string[];
 }) {
   if (currentPeriodTerms.length === 0) {
-    throw new Error("INVALID_RESUME_IMPORT_LEXICON");
+    throw new PdfImportError("INVALID_RESUME_IMPORT_LEXICON");
   }
 
   // Match the shape first, then enforce the supported year range in
@@ -441,8 +458,7 @@ function buildPeriodPattern({
   const separatedMonthPattern =
     `(?:${datePartSeparatorPattern})${monthNumberPattern}` +
     localizedDateSuffix;
-  const monthPattern =
-    `(?:${compactMonthPattern}|${separatedMonthPattern})?`;
+  const monthPattern = `(?:${compactMonthPattern}|${separatedMonthPattern})?`;
   const datePattern = `${yearPattern}${monthPattern}`;
 
   return new RegExp(
@@ -473,4 +489,3 @@ export function median(values: number[]) {
     PDF_IMPORT_PROFILE.fallbacks.bodyFontSize
   );
 }
-

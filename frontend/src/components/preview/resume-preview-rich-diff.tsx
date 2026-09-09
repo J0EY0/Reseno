@@ -26,9 +26,10 @@ export function RichHighlights({
   highlights: string[];
 }) {
   const visibleHighlights = useMemo(
-    () => highlights
-      .map((value, index) => ({ index, value: sanitizeRichTextHtml(value) }))
-      .filter(({ value }) => !isRichTextEmpty(value)),
+    () =>
+      highlights
+        .map((value, index) => ({ index, value: sanitizeRichTextHtml(value) }))
+        .filter(({ value }) => !isRichTextEmpty(value)),
     [highlights],
   );
   const before = diffs[0]?.before;
@@ -45,9 +46,7 @@ export function RichHighlights({
     const changedIndices = listDiff?.changedIndices ?? null;
     const path = diffPath(diffs);
     const hasPureDeletion = Boolean(
-      listDiff &&
-        listDiff.hasDeletions &&
-        listDiff.changedIndices.size === 0,
+      listDiff && listDiff.hasDeletions && listDiff.changedIndices.size === 0,
     );
     if (visibleHighlights.length === 1) {
       const highlight = visibleHighlights[0];
@@ -56,7 +55,9 @@ export function RichHighlights({
         hasPureDeletion;
       return (
         <div
-          className={cn(changed && "resume-diff-field resume-diff-field--whole")}
+          className={cn(
+            changed && "resume-diff-field resume-diff-field--whole",
+          )}
           data-resume-diff-path={changed ? path : undefined}
         >
           <span
@@ -146,7 +147,7 @@ export function RichListDiff({
   const parsed = useMemo(() => parseRichList(html), [html]);
   const before = diffs[0]?.before;
   const beforeParsed = useMemo(
-    () => typeof before === "string" ? parseRichList(before) : null,
+    () => (typeof before === "string" ? parseRichList(before) : null),
     [before],
   );
 
@@ -158,8 +159,7 @@ export function RichListDiff({
     return (
       <div
         className={cn(
-          diffs.length > 0 &&
-            "resume-diff-field resume-diff-field--whole",
+          diffs.length > 0 && "resume-diff-field resume-diff-field--whole",
         )}
         data-resume-diff-path={diffs.length > 0 ? diffPath(diffs) : undefined}
         dangerouslySetInnerHTML={{ __html: sanitized }}
@@ -172,9 +172,7 @@ export function RichListDiff({
     const changedIndices = listDiff?.changedIndices ?? null;
     const path = diffPath(diffs);
     const hasPureDeletion = Boolean(
-      listDiff &&
-        listDiff.hasDeletions &&
-        listDiff.changedIndices.size === 0,
+      listDiff && listDiff.hasDeletions && listDiff.changedIndices.size === 0,
     );
     const showsFallback =
       (changedIndices === null && diffs.length > 0) || hasPureDeletion;

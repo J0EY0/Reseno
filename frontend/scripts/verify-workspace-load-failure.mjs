@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import ts from "typescript";
+import { findNodes, hasCall, parseSource } from "./source-analysis.mjs";
 
 import { evaluateTypeScript } from "./typescript-module.mjs";
 
@@ -24,23 +26,22 @@ const [
   modelConfigApiSource,
   agentSessionRunClientSource,
   agentSessionHydrationSource,
-] =
-  await Promise.all([
-    readText("src/i18n/locales/zh.json"),
-    readText("src/i18n/locales/en.json"),
-    readText("src/components/workspace/use-resume-detail-loader.ts"),
-    readText("src/components/workspace/resume-detail-workspace-view.tsx"),
-    readText("src/components/workspace/workspace-route-error.tsx"),
-    readText("src/lib/workspace-load-error.ts"),
-    readText("src/components/workspace/workspace-route-preparation.ts"),
-    readText("src/components/workspace/use-template-detail-workspace.ts"),
-    readText("src/components/model-config-panel.tsx"),
-    readText("src/components/model-config-form-popover.tsx"),
-    readText("src/components/models/use-model-config-dialog.ts"),
-    readText("src/lib/model-config-api.ts"),
-    readText("src/lib/agent-session-run-client.ts"),
-    readText("src/components/copilot/use-agent-session-hydration.ts"),
-  ]);
+] = await Promise.all([
+  readText("src/i18n/locales/zh.json"),
+  readText("src/i18n/locales/en.json"),
+  readText("src/components/workspace/use-resume-detail-loader.ts"),
+  readText("src/components/workspace/resume-detail-workspace-view.tsx"),
+  readText("src/components/workspace/workspace-route-error.tsx"),
+  readText("src/lib/workspace-load-error.ts"),
+  readText("src/components/workspace/workspace-route-preparation.ts"),
+  readText("src/components/workspace/use-template-detail-workspace.ts"),
+  readText("src/components/model-config-panel.tsx"),
+  readText("src/components/model-config-form-popover.tsx"),
+  readText("src/components/models/use-model-config-dialog.ts"),
+  readText("src/lib/model-config-api.ts"),
+  readText("src/lib/agent-session-run-client.ts"),
+  readText("src/components/copilot/use-agent-session-hydration.ts"),
+]);
 const zh = JSON.parse(zhSource);
 const en = JSON.parse(enSource);
 
@@ -55,7 +56,11 @@ assert.equal(
   "English request failures must use the canonical request failure message.",
 );
 assert.equal(zh.retry, "重试", "Chinese workspace errors need a retry action.");
-assert.equal(en.retry, "Retry", "English workspace errors need a retry action.");
+assert.equal(
+  en.retry,
+  "Retry",
+  "English workspace errors need a retry action.",
+);
 assert.equal(zh.contentNotLoaded, "当前内容未加载");
 assert.equal(en.contentNotLoaded, "Content isn't loaded");
 assert.doesNotMatch(
@@ -86,7 +91,7 @@ assert.match(
 );
 assert.match(
   templateDetailRouteSource,
-  /isAbortError\(error\)[\s\S]{0,160}requestIdRef\.current !== requestId[\s\S]*!isApiErrorToastShown\(error\)[\s\S]*showWorkspaceLoadError\([\s\S]*apiMessages[\s\S]*REQUEST_FAILED[\s\S]*setHasLoadError\(true\)/,
+  /isAbortError\(error\)[\s\S]{0,160}requestIdRef\.current !== requestId[\s\S]*showWorkspaceLoadError\([\s\S]*apiMessages[\s\S]*REQUEST_FAILED[\s\S]*setHasLoadError\(true\)/,
   "Template detail must ignore cancelled and stale reads before one canonical failure Toast.",
 );
 assert.match(
@@ -116,13 +121,11 @@ assert.match(
 );
 
 const loaderSource = resumeDetailLoaderSource;
-const loaderCatchStart = loaderSource.indexOf("      } catch (error) {");
-const loaderCatchEnd = loaderSource.indexOf("      } finally {", loaderCatchStart);
-
-assert.notEqual(loaderCatchStart, -1, "Workspace loader catch was not found.");
-assert.notEqual(loaderCatchEnd, -1, "Workspace loader catch boundary was not found.");
-
-const loaderCatchSource = loaderSource.slice(loaderCatchStart, loaderCatchEnd);
+const loaderCatch = findNodes(parseSource(loaderSource), ts.isCatchClause).find(
+  (node) => hasCall(node, "showWorkspaceLoadError"),
+);
+assert.ok(loaderCatch, "The route loader must handle request failures.");
+const loaderCatchSource = loaderCatch.getText();
 
 assert.match(
   loaderCatchSource,
@@ -134,11 +137,11 @@ assert.match(
   /requestIdRef\.current !== requestId[\s\S]*showWorkspaceLoadError\(/,
   "Stale route requests must be ignored before any Toast is shown.",
 );
-assert.match(
-  loaderCatchSource,
-  /if \(!isApiErrorToastShown\(error\)\) \{\s*showWorkspaceLoadError\(/,
-  "Route initialization must show its own error only when the API client has not already shown it.",
+assert.ok(
+  hasCall(loaderCatch, "showWorkspaceLoadError"),
+  "Route failures must use the shared error notification owner.",
 );
+
 assert.match(
   loaderSource,
   /dismissWorkspaceLoadError\(\)/,
@@ -148,49 +151,116 @@ assert.match(
 const toastEvents = [];
 const visibleToasts = new Map([["unrelated", "Saved successfully"]]);
 let nextToastId = 0;
-const {
-  dismissWorkspaceLoadError,
-  showWorkspaceLoadError,
-} = evaluateTypeScript(workspaceLoadErrorSource, {
-  imports: {
-    sonner: {
-      toast: {
-        error(message, options) {
-          assert.deepEqual({ ...options }, { closeButton: true }, "Each failure must let Sonner allocate a fresh Toast ID.");
-          const id = nextToastId++;
-          visibleToasts.set(id, message);
-          toastEvents.push(`show:${id}`);
-          return id;
-        },
-        dismiss(id) {
-          assert.notEqual(id, undefined, "Dismissing a route error must never dismiss every Toast.");
-          visibleToasts.delete(id);
-          toastEvents.push(`dismiss:${id}`);
-        },
-      },
+const toast = {
+  error(message, options) {
+    assert.deepEqual(
+      { ...options },
+      { closeButton: true },
+      "Each failure must let Sonner allocate a fresh Toast ID.",
+    );
+    const id = nextToastId++;
+    visibleToasts.set(id, message);
+    toastEvents.push(`show:${id}`);
+    return id;
+  },
+  dismiss(id) {
+    assert.notEqual(
+      id,
+      undefined,
+      "Dismissing a route error must never dismiss every Toast.",
+    );
+    visibleToasts.delete(id);
+    toastEvents.push(`dismiss:${id}`);
+  },
+};
+const errors = evaluateTypeScript(await readText("src/lib/api-errors.ts"), {
+  globals: { Error },
+  imports: { "@/lib/api-message": { resolveApiMessage: (key) => key } },
+});
+const notifier = evaluateTypeScript(
+  await readText("src/lib/api-error-notifier.ts"),
+  {
+    globals: { Error, window: {} },
+    imports: {
+      sonner: { toast },
+      "@/lib/api-errors": errors,
+      "@/lib/api-message": { resolveApiMessage: (key) => key },
+      "@/lib/auth-session": { getAccessToken: () => "active-token" },
     },
   },
-});
+);
+const { dismissWorkspaceLoadError, showWorkspaceLoadError } =
+  evaluateTypeScript(workspaceLoadErrorSource, {
+    imports: { sonner: { toast }, "@/lib/api-error-notifier": notifier },
+  });
 
 dismissWorkspaceLoadError();
 dismissWorkspaceLoadError();
-assert.deepEqual(toastEvents, [], "Dismissing an absent route error must be a no-op.");
+assert.deepEqual(
+  toastEvents,
+  [],
+  "Dismissing an absent route error must be a no-op.",
+);
 for (let attempt = 0; attempt < 3; attempt += 1) {
-  showWorkspaceLoadError("Request failed");
+  showWorkspaceLoadError(new Error("Network unavailable"), "Request failed");
   dismissWorkspaceLoadError();
   dismissWorkspaceLoadError();
 }
-assert.deepEqual(toastEvents, ["show:0", "dismiss:0", "show:1", "dismiss:1", "show:2", "dismiss:2"],
-  "Immediate repeated failures must receive new IDs, and each error may be dismissed only once.");
-showWorkspaceLoadError("First route failed");
-showWorkspaceLoadError("Second route failed");
-assert.deepEqual(toastEvents.slice(-3), ["show:3", "dismiss:3", "show:4"],
-  "Replacing a route error must dismiss only the previous error before showing the next one.");
-assert.deepEqual([...visibleToasts], [["unrelated", "Saved successfully"], [4, "Second route failed"]]);
+assert.deepEqual(
+  toastEvents,
+  ["show:0", "dismiss:0", "show:1", "dismiss:1", "show:2", "dismiss:2"],
+  "Immediate repeated failures must receive new IDs, and each error may be dismissed only once.",
+);
+showWorkspaceLoadError(new Error("First"), "First route failed");
+showWorkspaceLoadError(new Error("Second"), "Second route failed");
+assert.deepEqual(
+  toastEvents.slice(-3),
+  ["show:3", "dismiss:3", "show:4"],
+  "Replacing a route error must dismiss only the previous error before showing the next one.",
+);
+assert.deepEqual(
+  [...visibleToasts],
+  [
+    ["unrelated", "Saved successfully"],
+    [4, "Second route failed"],
+  ],
+);
 dismissWorkspaceLoadError();
 dismissWorkspaceLoadError();
-assert.deepEqual([...visibleToasts], [["unrelated", "Saved successfully"]],
-  "Repeated route cleanup must preserve unrelated Toasts.");
+assert.deepEqual(
+  [...visibleToasts],
+  [["unrelated", "Saved successfully"]],
+  "Repeated route cleanup must preserve unrelated Toasts.",
+);
+const alreadyShown = new errors.ApiError("AUTH_REQUIRED");
+notifier.notifyApiError(alreadyShown);
+const beforeRepeatedError = toastEvents.length;
+showWorkspaceLoadError(alreadyShown, "Route failed");
+assert.equal(
+  toastEvents.length,
+  beforeRepeatedError,
+  "A route must not display or dismiss a notification already owned by the API adapter.",
+);
+showWorkspaceLoadError(
+  new DOMException("Cancelled", "AbortError"),
+  "Route failed",
+);
+assert.equal(
+  toastEvents.length,
+  beforeRepeatedError,
+  "Cancellation must remain silent.",
+);
+showWorkspaceLoadError(
+  new errors.ApiError("RESOURCE_NOT_FOUND"),
+  "Route failed",
+);
+assert.equal(
+  visibleToasts.get(nextToastId - 1),
+  "RESOURCE_NOT_FOUND",
+  "Structured API failures must preserve their localized error message.",
+);
+dismissWorkspaceLoadError();
+
 assert.match(
   loaderCatchSource,
   /setHasLoadError\(true\)/,
@@ -244,10 +314,9 @@ assert.match(
   "Retrying must reuse the abortable workspace loading effect.",
 );
 
-assert.match(
-  modelConfigPanelSource,
-  /if \(!isApiErrorToastShown\(error\)\)/,
-  "Model deletion must not show a second Toast after the API client handled the error.",
+assert.ok(
+  hasCall(parseSource(modelConfigPanelSource), "notifyApiError"),
+  "Model deletion failures must use the shared notification owner.",
 );
 
 assert.match(
@@ -278,7 +347,9 @@ const agentSessionLoaderSource = agentSessionRunClientSource.slice(
   ),
 );
 const agentRecoveryLoaderSource = agentSessionRunClientSource.slice(
-  agentSessionRunClientSource.indexOf("export function loadAgentSessionRecovery"),
+  agentSessionRunClientSource.indexOf(
+    "export function loadAgentSessionRecovery",
+  ),
   agentSessionRunClientSource.indexOf("export function stopAgentRun"),
 );
 

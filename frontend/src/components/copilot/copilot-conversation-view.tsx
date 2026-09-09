@@ -3,46 +3,46 @@ import {
   ConversationContent,
   ConversationEmptyState,
   ConversationScrollButton,
-} from '@/components/ai-elements/conversation'
-import { Button } from '@/components/ui/button'
-import type { AppMessages } from '@/i18n'
-import { cn } from '@/lib/utils'
-import { RotateCcw } from 'lucide-react'
-import { startTransition, useEffect, useState } from 'react'
-import type { RefObject } from 'react'
-import type { StickToBottomContext } from 'use-stick-to-bottom'
+} from "@/components/ai-elements/conversation";
+import { Button } from "@/components/ui/button";
+import type { AppMessages } from "@/i18n";
+import { cn } from "@/lib/utils";
+import { RotateCcw } from "lucide-react";
+import { startTransition, useEffect, useState } from "react";
+import type { RefObject } from "react";
+import type { StickToBottomContext } from "use-stick-to-bottom";
 
-import { AgentAssistantMessageRow } from './copilot-message-presentation'
-import { AgentPendingMessage } from './copilot-tool-presentation'
-import { AgentUserMessageRow } from './copilot-user-message-row'
-import type { AgentConversationController } from './copilot-panel-types'
-import type { AgentMessageActions } from './use-agent-message-actions'
-import type { AgentPromptActions } from './use-agent-prompt-actions'
+import { AgentAssistantMessageRow } from "./copilot-message-presentation";
+import { AgentPendingMessage } from "./copilot-tool-presentation";
+import { AgentUserMessageRow } from "./copilot-user-message-row";
+import type { AgentConversationController } from "./copilot-panel-types";
+import type { AgentMessageActions } from "./use-agent-message-actions";
+import type { AgentPromptActions } from "./use-agent-prompt-actions";
 
-const INITIAL_AGENT_HISTORY_RENDER_COUNT = 10
-const AGENT_HISTORY_RENDER_BATCH_SIZE = 6
+const INITIAL_AGENT_HISTORY_RENDER_COUNT = 10;
+const AGENT_HISTORY_RENDER_BATCH_SIZE = 6;
 
 function useProgressiveAgentHistory({
   isSessionLoading,
   visibleMessageCount,
 }: {
-  isSessionLoading: boolean
-  visibleMessageCount: number
+  isSessionLoading: boolean;
+  visibleMessageCount: number;
 }) {
-  const [storedStartIndex, setStoredStartIndex] = useState<number | null>(null)
+  const [storedStartIndex, setStoredStartIndex] = useState<number | null>(null);
   const initialStartIndex = Math.max(
     0,
     visibleMessageCount - INITIAL_AGENT_HISTORY_RENDER_COUNT,
-  )
+  );
   const startIndex = Math.min(
     storedStartIndex ?? initialStartIndex,
     initialStartIndex,
-  )
-  const hasOlderMessages = !isSessionLoading && startIndex > 0
+  );
+  const hasOlderMessages = !isSessionLoading && startIndex > 0;
 
   useEffect(() => {
     if (!hasOlderMessages) {
-      return
+      return;
     }
 
     const frame = requestAnimationFrame(() => {
@@ -51,27 +51,27 @@ function useProgressiveAgentHistory({
           const normalizedStartIndex = Math.min(
             currentStartIndex ?? initialStartIndex,
             initialStartIndex,
-          )
+          );
           return Math.max(
             0,
             normalizedStartIndex - AGENT_HISTORY_RENDER_BATCH_SIZE,
-          )
-        })
-      })
-    })
+          );
+        });
+      });
+    });
 
-    return () => cancelAnimationFrame(frame)
-  }, [hasOlderMessages, initialStartIndex, startIndex])
+    return () => cancelAnimationFrame(frame);
+  }, [hasOlderMessages, initialStartIndex, startIndex]);
 
-  return { hasOlderMessages, startIndex }
+  return { hasOlderMessages, startIndex };
 }
 
 function AgentSessionLoadError({
   onRetry,
   t,
 }: {
-  onRetry: () => void
-  t: AppMessages
+  onRetry: () => void;
+  t: AppMessages;
 }) {
   return (
     <div
@@ -92,7 +92,7 @@ function AgentSessionLoadError({
         {t.agentRetry}
       </Button>
     </div>
-  )
+  );
 }
 
 export function CopilotConversationView({
@@ -104,13 +104,13 @@ export function CopilotConversationView({
   promptActions,
   t,
 }: {
-  conversation: AgentConversationController
-  conversationContextRef: RefObject<StickToBottomContext | null>
-  hasConfiguredModel: boolean
-  messageActions: AgentMessageActions
-  onOpenModelSettings: () => void
-  promptActions: AgentPromptActions
-  t: AppMessages
+  conversation: AgentConversationController;
+  conversationContextRef: RefObject<StickToBottomContext | null>;
+  hasConfiguredModel: boolean;
+  messageActions: AgentMessageActions;
+  onOpenModelSettings: () => void;
+  promptActions: AgentPromptActions;
+  t: AppMessages;
 }) {
   const {
     isSessionReady,
@@ -119,22 +119,22 @@ export function CopilotConversationView({
     sessionLoadError,
     streamingMessage,
     visibleMessages,
-  } = conversation
-  const isRequestBusy = requestPhase !== 'idle'
-  const isResponding = requestPhase === 'responding'
+  } = conversation;
+  const isRequestBusy = requestPhase !== "idle";
+  const isResponding = requestPhase === "responding";
   const latestUserMessageId = messages.findLast(
-    (candidate) => candidate.role === 'user',
-  )?.id
+    (candidate) => candidate.role === "user",
+  )?.id;
   // Session history and active-run recovery form one hydration boundary. Do
   // not expose an empty conversation or draft decisions from a partial read.
-  const isSessionLoading = !isSessionReady && !sessionLoadError
-  const showEmptyState = visibleMessages.length === 0 && !isRequestBusy
-  const showConversationPlaceholder = isSessionLoading || showEmptyState
+  const isSessionLoading = !isSessionReady && !sessionLoadError;
+  const showEmptyState = visibleMessages.length === 0 && !isRequestBusy;
+  const showConversationPlaceholder = isSessionLoading || showEmptyState;
   const { hasOlderMessages, startIndex } = useProgressiveAgentHistory({
     isSessionLoading,
     visibleMessageCount: visibleMessages.length,
-  })
-  const renderedMessages = visibleMessages.slice(startIndex)
+  });
+  const renderedMessages = visibleMessages.slice(startIndex);
 
   return (
     <Conversation
@@ -146,9 +146,9 @@ export function CopilotConversationView({
     >
       <ConversationContent
         className={cn(
-          'agent-thread-safe-area min-w-0 overflow-x-hidden px-3',
+          "agent-thread-safe-area min-w-0 overflow-x-hidden px-3",
           showConversationPlaceholder &&
-            'h-full min-h-full flex-1 justify-center',
+            "h-full min-h-full flex-1 justify-center",
         )}
         scrollClassName="agent-thread-scroll"
       >
@@ -186,9 +186,9 @@ export function CopilotConversationView({
               />
             ) : null}
             {renderedMessages.map((message) => {
-              if (message.role === 'user') {
+              if (message.role === "user") {
                 const isEditing =
-                  messageActions.editingMessageId === message.id
+                  messageActions.editingMessageId === message.id;
 
                 return (
                   <AgentUserMessageRow
@@ -204,7 +204,9 @@ export function CopilotConversationView({
                     message={message}
                     onCancelEdit={messageActions.cancelEditingUserMessage}
                     onCopy={messageActions.copyUserMessage}
-                    onDownloadAttachment={messageActions.downloadHistoryAttachment}
+                    onDownloadAttachment={
+                      messageActions.downloadHistoryAttachment
+                    }
                     onEditTextChange={messageActions.setEditingMessageText}
                     onReferenceAttachment={
                       promptActions.referenceHistoryAttachment
@@ -215,7 +217,7 @@ export function CopilotConversationView({
                     retryable={message.id === latestUserMessageId}
                     t={t}
                   />
-                )
+                );
               }
 
               return (
@@ -227,7 +229,7 @@ export function CopilotConversationView({
                   message={message}
                   t={t}
                 />
-              )
+              );
             })}
 
             {isRequestBusy && !streamingMessage ? (
@@ -238,5 +240,5 @@ export function CopilotConversationView({
       </ConversationContent>
       <ConversationScrollButton className="agent-thread-scroll-button z-20" />
     </Conversation>
-  )
+  );
 }

@@ -23,7 +23,8 @@ Object.defineProperty(globalThis, "navigator", {
   configurable: true,
   value: {
     locks: {
-      request(name, callback) {
+      request(name, options, callback) {
+        assert.equal(options.mode, "exclusive");
         testState.lockNames.push(name);
         const result = refreshLock.then(callback);
         refreshLock = result.catch(() => {});
@@ -109,13 +110,15 @@ const server = await createServer({
 
 try {
   const auth = await server.ssrLoadModule("/src/lib/auth.ts");
-  const validation = await server.ssrLoadModule(
-    "/src/lib/auth-validation.ts",
-  );
+  const validation = await server.ssrLoadModule("/src/lib/auth-validation.ts");
 
-  testState.responses.push({ setupRequired: true, githubLoginAvailable: false });
+  testState.responses.push({
+    setupRequired: true,
+    githubLoginAvailable: false,
+  });
   assert.deepEqual(await auth.getAuthSetupStatus(), {
-    setupRequired: true, githubLoginAvailable: false,
+    setupRequired: true,
+    githubLoginAvailable: false,
   });
   assert.deepEqual(testState.requests.shift(), {
     route: "/api/auth/setup",
@@ -208,7 +211,11 @@ try {
   auth.clearAuthSession();
   logoutResponse.resolve({ ...nextSession, accessToken: "logged-out-token" });
   assert.equal(await refreshBeforeLogout, false);
-  assert.equal(testState.session, null, "A pending refresh must not undo logout.");
+  assert.equal(
+    testState.session,
+    null,
+    "A pending refresh must not undo logout.",
+  );
   assert.equal(testState.savedSessions.length, 3);
   assert.deepEqual(testState.invalidatedTokens, ["token-1", "token-2"]);
 
@@ -256,17 +263,28 @@ try {
 
   testState.responses.push({ provider: "github", intent: "bind", auth: null });
   assert.deepEqual(
-    await oauth.completeOAuth("bind-code", new AbortController().signal, "bind"),
+    await oauth.completeOAuth(
+      "bind-code",
+      new AbortController().signal,
+      "bind",
+    ),
     { provider: "github", intent: "bind" },
   );
-  assert.deepEqual(testState.session, newLoginSession,
-    "Binding must preserve the current parent session.");
+  assert.deepEqual(
+    testState.session,
+    newLoginSession,
+    "Binding must preserve the current parent session.",
+  );
   assert.equal(testState.savedSessions.length, savesBeforeOAuth);
   assert.equal(testState.requests.shift().options.body.code, "bind-code");
 
   const loginController = new AbortController();
   const oauthSession = { ...refreshedSession, accessToken: "oauth-login" };
-  testState.responses.push({ provider: "github", intent: "login", auth: oauthSession });
+  testState.responses.push({
+    provider: "github",
+    intent: "login",
+    auth: oauthSession,
+  });
   assert.deepEqual(
     await oauth.completeOAuth("parent-login", loginController.signal, "login"),
     { provider: "github", intent: "login" },
@@ -297,12 +315,16 @@ try {
   );
   cancelledController.abort();
   cancelledResponse.resolve({
-    provider: "github", intent: "login",
+    provider: "github",
+    intent: "login",
     auth: { ...oauthSession, accessToken: "abandoned-popup-login" },
   });
   await cancelledCompletion;
-  assert.equal(testState.session, null,
-    "A cancelled parent must not save a late exchange response.");
+  assert.equal(
+    testState.session,
+    null,
+    "A cancelled parent must not save a late exchange response.",
+  );
   assert.equal(testState.savedSessions.length, savesBeforeCancellation);
   assert.equal(testState.requests.length, 1);
   const cancelledRequest = testState.requests.shift();
@@ -311,13 +333,24 @@ try {
   assert.equal(cancelledRequest.options.signal.aborted, true);
 
   const nextOAuthSession = { ...oauthSession, accessToken: "next-popup-login" };
-  testState.responses.push({ provider: "github", intent: "login", auth: nextOAuthSession });
+  testState.responses.push({
+    provider: "github",
+    intent: "login",
+    auth: nextOAuthSession,
+  });
   assert.deepEqual(
-    await oauth.completeOAuth("next-popup", new AbortController().signal, "login"),
+    await oauth.completeOAuth(
+      "next-popup",
+      new AbortController().signal,
+      "login",
+    ),
     { provider: "github", intent: "login" },
   );
-  assert.deepEqual(testState.session, nextOAuthSession,
-    "An abandoned popup must not prevent a new login.");
+  assert.deepEqual(
+    testState.session,
+    nextOAuthSession,
+    "An abandoned popup must not prevent a new login.",
+  );
   assert.equal(testState.savedSessions.length, savesBeforeCancellation + 1);
   assert.equal(testState.requests.shift().options.body.code, "next-popup");
 

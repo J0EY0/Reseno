@@ -1,26 +1,23 @@
-import { useCallback, useState } from 'react'
-import { toast } from 'sonner'
+import { useCallback, useState } from "react";
+import { toast } from "sonner";
 
-import type { AppMessages, Locale } from '@/i18n'
-import { isApiErrorToastShown } from '@/lib/api-client'
-import {
-  deleteModelConfig,
-  deleteModelConfigs,
-} from '@/lib/model-config-api'
-import type { ModelConfig } from '@/types/resume'
+import type { AppMessages, Locale } from "@/i18n";
+import { notifyApiError } from "@/lib/api-error-notifier";
+import { deleteModelConfig, deleteModelConfigs } from "@/lib/model-config-api";
+import type { ModelConfig } from "@/types/resume";
 
-import { ConfirmActionDialog } from '@/components/confirm-action-dialog'
-import { GalleryPagination } from '@/components/gallery-pagination'
-import { ModelConfigFormPopover } from '@/components/model-config-form-popover'
-import { ModelConfigBulkDeleteAction } from '@/components/models/model-config-bulk-delete-action'
-import { ModelConfigTable } from '@/components/models/model-config-table'
+import { ConfirmActionDialog } from "@/components/confirm-action-dialog";
+import { GalleryPagination } from "@/components/gallery-pagination";
+import { ModelConfigFormPopover } from "@/components/model-config-form-popover";
+import { ModelConfigBulkDeleteAction } from "@/components/models/model-config-bulk-delete-action";
+import { ModelConfigTable } from "@/components/models/model-config-table";
 import {
   MODEL_CONFIG_PAGE_SIZE,
   useModelConfigTableSelection,
-} from '@/components/models/use-model-config-table-selection'
-import { Badge } from '@/components/ui/badge'
-import { Card, CardContent } from '@/components/ui/card'
-import { Empty, EmptyDescription } from '@/components/ui/empty'
+} from "@/components/models/use-model-config-table-selection";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent } from "@/components/ui/card";
+import { Empty, EmptyDescription } from "@/components/ui/empty";
 
 export function ModelConfigPanel({
   locale,
@@ -28,115 +25,113 @@ export function ModelConfigPanel({
   configs,
   onChange,
 }: {
-  locale: Locale
-  t: AppMessages
-  configs: ModelConfig[]
-  onChange: (update: (current: ModelConfig[]) => ModelConfig[]) => ModelConfig[]
+  locale: Locale;
+  t: AppMessages;
+  configs: ModelConfig[];
+  onChange: (
+    update: (current: ModelConfig[]) => ModelConfig[],
+  ) => ModelConfig[];
 }) {
   const [pendingDeleteModelConfigId, setPendingDeleteModelConfigId] = useState<
     string | null
-  >(null)
+  >(null);
   const [deletingModelConfigId, setDeletingModelConfigId] = useState<
     string | null
-  >(null)
+  >(null);
   const [pendingBulkDeleteModelConfigIds, setPendingBulkDeleteModelConfigIds] =
-    useState<string[]>([])
-  const [isBulkDeleting, setIsBulkDeleting] = useState(false)
+    useState<string[]>([]);
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
   const [enteringModelConfigId, setEnteringModelConfigId] = useState<
     string | null
-  >(null)
+  >(null);
   const [editDialog, setEditDialog] = useState<{
-    config: ModelConfig
-    returnFocus: HTMLButtonElement | null
-    session: number
-  } | null>(null)
-  const selection = useModelConfigTableSelection(configs)
-  const isDeleting = deletingModelConfigId !== null || isBulkDeleting
-  const modelConfigIdSet = new Set(configs.map((config) => config.id))
+    config: ModelConfig;
+    returnFocus: HTMLButtonElement | null;
+    session: number;
+  } | null>(null);
+  const selection = useModelConfigTableSelection(configs);
+  const isDeleting = deletingModelConfigId !== null || isBulkDeleting;
+  const modelConfigIdSet = new Set(configs.map((config) => config.id));
   const pendingBulkModelConfigIds = pendingBulkDeleteModelConfigIds.filter(
     (id) => modelConfigIdSet.has(id),
-  )
+  );
   const openEditDialog = useCallback(
     (config: ModelConfig, returnFocus: HTMLButtonElement | null) => {
       setEditDialog((current) => ({
         config,
         returnFocus,
         session: (current?.session ?? 0) + 1,
-      }))
+      }));
     },
     [],
-  )
+  );
 
   async function confirmDeleteModelConfig() {
-    const modelConfigId = pendingDeleteModelConfigId
+    const modelConfigId = pendingDeleteModelConfigId;
 
     if (!modelConfigId || isDeleting) {
-      return
+      return;
     }
 
-    setDeletingModelConfigId(modelConfigId)
+    setDeletingModelConfigId(modelConfigId);
 
     try {
-      await deleteModelConfig(modelConfigId)
+      await deleteModelConfig(modelConfigId);
       const nextConfigs = onChange((current) =>
         current.filter((item) => item.id !== modelConfigId),
-      )
+      );
       const nextTotalPages = Math.max(
         1,
         Math.ceil(nextConfigs.length / MODEL_CONFIG_PAGE_SIZE),
-      )
+      );
 
-      selection.removeModelConfigIds([modelConfigId])
+      selection.removeModelConfigIds([modelConfigId]);
       if (selection.currentPage > nextTotalPages) {
-        selection.changePage(nextTotalPages)
+        selection.changePage(nextTotalPages);
       }
 
-      toast.success(t.modelConfigDeleted, { closeButton: true })
+      toast.success(t.modelConfigDeleted, { closeButton: true });
     } catch (error) {
-      console.error('Failed to delete model config.', error)
-      if (!isApiErrorToastShown(error)) {
-        toast.error(t.modelConfigDeleteFailed, { closeButton: true })
-      }
+      console.error("Failed to delete model config.", error);
+      notifyApiError(error, t.modelConfigDeleteFailed);
     } finally {
-      setDeletingModelConfigId(null)
+      setDeletingModelConfigId(null);
     }
   }
 
   async function confirmBulkDeleteModelConfigs() {
-    const modelConfigIds = pendingBulkModelConfigIds
+    const modelConfigIds = pendingBulkModelConfigIds;
 
     if (modelConfigIds.length === 0 || isDeleting) {
-      setPendingBulkDeleteModelConfigIds([])
-      return
+      setPendingBulkDeleteModelConfigIds([]);
+      return;
     }
 
-    setIsBulkDeleting(true)
+    setIsBulkDeleting(true);
 
     try {
-      const response = await deleteModelConfigs(modelConfigIds)
-      const deletedModelConfigIdSet = new Set(response.ids)
+      const response = await deleteModelConfigs(modelConfigIds);
+      const deletedModelConfigIdSet = new Set(response.ids);
       const nextConfigs = onChange((current) =>
         current.filter((item) => !deletedModelConfigIdSet.has(item.id)),
-      )
+      );
       const nextTotalPages = Math.max(
         1,
         Math.ceil(nextConfigs.length / MODEL_CONFIG_PAGE_SIZE),
-      )
+      );
 
-      selection.clearSelection()
+      selection.clearSelection();
       if (selection.currentPage > nextTotalPages) {
-        selection.changePage(nextTotalPages)
+        selection.changePage(nextTotalPages);
       }
 
-      setPendingBulkDeleteModelConfigIds([])
-      toast.success(t.modelConfigsDeleted, { closeButton: true })
+      setPendingBulkDeleteModelConfigIds([]);
+      toast.success(t.modelConfigsDeleted, { closeButton: true });
     } catch (error) {
-      console.error('Failed to delete model configs.', error)
-      if (!isApiErrorToastShown(error)) {
-        toast.error(t.modelConfigsDeleteFailed, { closeButton: true })
-      }
+      console.error("Failed to delete model configs.", error);
+      notifyApiError(error, t.modelConfigsDeleteFailed);
     } finally {
-      setIsBulkDeleting(false)
+      setIsBulkDeleting(false);
     }
   }
 
@@ -151,7 +146,7 @@ export function ModelConfigPanel({
         onConfirm={() => void confirmDeleteModelConfig()}
         onOpenChange={(open) => {
           if (!open) {
-            setPendingDeleteModelConfigId(null)
+            setPendingDeleteModelConfigId(null);
           }
         }}
       />
@@ -167,7 +162,7 @@ export function ModelConfigPanel({
         deferClose
         onOpenChange={(open) => {
           if (!open && !isBulkDeleting) {
-            setPendingBulkDeleteModelConfigIds([])
+            setPendingBulkDeleteModelConfigIds([]);
           }
         }}
       />
@@ -213,11 +208,14 @@ export function ModelConfigPanel({
                 locale={locale}
                 mode="create"
                 onSubmit={(nextConfig) => {
-                  const nextConfigs = onChange((current) => [...current, nextConfig])
-                  setEnteringModelConfigId(nextConfig.id)
+                  const nextConfigs = onChange((current) => [
+                    ...current,
+                    nextConfig,
+                  ]);
+                  setEnteringModelConfigId(nextConfig.id);
                   selection.changePage(
                     Math.ceil(nextConfigs.length / MODEL_CONFIG_PAGE_SIZE),
-                  )
+                  );
                 }}
               />
             </div>
@@ -257,5 +255,5 @@ export function ModelConfigPanel({
         </CardContent>
       </Card>
     </div>
-  )
+  );
 }

@@ -26,8 +26,6 @@ try {
   } = sectionModule;
   const { applySectionMutation } = sectionMutationModule;
 
-
-
   const education = createResumeSection("education");
   education.id = "education-1";
   education.title = "Academic background";
@@ -54,12 +52,15 @@ try {
       itemId: "education-third",
     },
   );
-  const movedEducationItem = applySectionMutation(threeEducationItems.sections, {
-    type: "item.move",
-    sectionId: education.id,
-    itemId: "education-third",
-    direction: "up",
-  });
+  const movedEducationItem = applySectionMutation(
+    threeEducationItems.sections,
+    {
+      type: "item.move",
+      sectionId: education.id,
+      itemId: "education-third",
+      direction: "up",
+    },
+  );
   assert.equal(movedEducationItem.status, "applied");
   assert.deepEqual(
     movedEducationItem.sections[0].items.map((item) => item.id),

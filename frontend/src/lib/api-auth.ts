@@ -1,15 +1,18 @@
 import {
-  AUTH_REFRESH_LOCK_NAME,
   clearAuthSession,
   getAccessToken,
   isTokenLocallyInvalidated,
 } from "@/lib/auth-session";
+import { withAuthSessionLock } from "@/lib/auth-environment";
 import type { ApiRequestOptions } from "@/types/api";
 
 export const AUTH_REFRESH_ROUTE = "/api/auth/refresh";
-export const APP_CODE_UNAUTHORIZED = 40001;
+const APP_CODE_UNAUTHORIZED = 40001;
 
-export function redirectToLogin(onInvalidated: () => void) {
+export const AUTH_SESSION_INVALIDATED_EVENT = "reseno:auth-session-invalidated";
+export const AUTH_SESSION_RESTORED_EVENT = "reseno:auth-session-restored";
+
+function invalidateAuthSession(onInvalidated: () => void) {
   if (typeof window === "undefined") {
     return;
   }
@@ -17,9 +20,7 @@ export function redirectToLogin(onInvalidated: () => void) {
   clearAuthSession();
   onInvalidated();
 
-  if (window.location.pathname !== "/login") {
-    window.location.assign("/login");
-  }
+  window.dispatchEvent(new Event(AUTH_SESSION_INVALIDATED_EVENT));
 }
 
 export function getAuthHeaders(
@@ -34,7 +35,7 @@ export function getAuthHeaders(
 
   const token = getAccessToken();
   if (!token || isTokenLocallyInvalidated(token)) {
-    redirectToLogin(onInvalidated);
+    invalidateAuthSession(onInvalidated);
     return null;
   }
 
@@ -47,14 +48,16 @@ export async function handleUnauthorizedResponse(
   headers: Headers,
   route: string,
   onInvalidated: () => void,
+  status?: number,
 ) {
   if (
-    !payload ||
-    typeof payload !== "object" ||
-    !("code" in payload) ||
-    !("message" in payload) ||
-    !("data" in payload) ||
-    payload.code !== APP_CODE_UNAUTHORIZED
+    status !== 401 &&
+    (!payload ||
+      typeof payload !== "object" ||
+      !("code" in payload) ||
+      !("message" in payload) ||
+      !("data" in payload) ||
+      payload.code !== APP_CODE_UNAUTHORIZED)
   ) {
     return;
   }
@@ -65,8 +68,9 @@ export async function handleUnauthorizedResponse(
   }
 
   const invalidateSession = () => {
-    if (getAccessToken() === requestToken) {
-      redirectToLogin(onInvalidated);
+    const currentToken = getAccessToken();
+    if (!currentToken || currentToken === requestToken) {
+      invalidateAuthSession(onInvalidated);
     }
   };
 
@@ -75,9 +79,5 @@ export async function handleUnauthorizedResponse(
     return;
   }
 
-  await navigator.locks.request(
-    AUTH_REFRESH_LOCK_NAME,
-    { mode: "shared" },
-    invalidateSession,
-  );
+  await withAuthSessionLock("shared", invalidateSession);
 }

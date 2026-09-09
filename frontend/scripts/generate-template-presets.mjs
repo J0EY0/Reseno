@@ -35,7 +35,9 @@ for (const [templateId, preset] of Object.entries(presets)) {
     !("typography" in preset) ||
     !("settings" in preset)
   ) {
-    throw new Error(`Built-in template preset ${templateId || "<empty>"} is malformed.`);
+    throw new Error(
+      `Built-in template preset ${templateId || "<empty>"} is malformed.`,
+    );
   }
 }
 

@@ -1,15 +1,15 @@
 @font-face {
-  font-family: 'Latin Modern Roman';
+  font-family: "Latin Modern Roman";
   font-style: italic;
   font-weight: 400;
   font-display: swap;
-  src: url('/fonts/latin-modern/lmroman10-italic.otf') format('opentype');
+  src: url("/fonts/latin-modern/lmroman10-italic.otf") format("opentype");
 }
 
 @font-face {
-  font-family: 'Latin Modern Roman';
+  font-family: "Latin Modern Roman";
   font-style: italic;
   font-weight: 700;
   font-display: swap;
-  src: url('/fonts/latin-modern/lmroman10-bolditalic.otf') format('opentype');
+  src: url("/fonts/latin-modern/lmroman10-bolditalic.otf") format("opentype");
 }

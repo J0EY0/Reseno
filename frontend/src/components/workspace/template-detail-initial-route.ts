@@ -1,6 +1,6 @@
 import type { AppMessages } from "@/i18n";
 import { getTemplateCatalog } from "@/lib/templates";
-import { getTemplateDetailRouteHandoff } from "@/lib/workspace-route";
+import { getTemplateDetailRouteHandoff } from "@/lib/workspace-detail-route-handoff";
 
 export function resolveInitialTemplateDetail(
   messages: AppMessages,

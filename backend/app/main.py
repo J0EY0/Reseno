@@ -1,6 +1,6 @@
+import asyncio
 import hashlib
 import hmac
-import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, closing
 from typing import cast
@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from starlette.exceptions import HTTPException
 
-from app.config import JWT_SECRET_ENV_NAME, get_settings
+from app.config import get_settings, initialize_settings
 from app.db.connection import connect
 from app.db.schema import ensure_database_schema
 from app.exceptions import (
@@ -36,12 +36,15 @@ from app.routers import (
     templates,
     workspace,
 )
+from app.runtime import backend_instance
 from app.services.agent_runs import AgentRunManager
 from app.services.agent_sessions import fail_interrupted_agent_turn_executions
-from app.services.auth_accounts import ensure_auth_database
+from app.services.auth_accounts import ensure_auth_database, get_auth_db_path
 from app.services.auth_oauth import OAUTH_SESSION_TTL_SECONDS
 from app.services.model_metadata import model_metadata_lifespan
 from app.services.pdf import cleanup_expired_exports
+from app.services.resume_renderer import ResumeRenderer
+from app.services.resumes import recover_unreferenced_resume_version_files
 from app.services.storage_deletions import recover_pending_storage_deletions
 from app.services.template_publications import recover_pending_template_publications
 
@@ -52,29 +55,39 @@ ExceptionHandler = Callable[[Request, Exception], Response | Awaitable[Response]
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Initialize or verify the current database before serving requests."""
 
-    ensure_auth_database()
-    ensure_database_schema()
-    recover_pending_template_publications()
-    recover_pending_storage_deletions()
-    with closing(connect()) as conn:
-        fail_interrupted_agent_turn_executions(conn)
-    cleanup_expired_exports()
-    app.state.agent_runs = AgentRunManager()
-    async with model_metadata_lifespan():
+    with backend_instance(get_settings()):
+        get_auth_db_path()
+        ensure_database_schema()
+        ensure_auth_database()
+        recover_pending_template_publications()
+        recover_pending_storage_deletions()
+        recover_unreferenced_resume_version_files()
+        with closing(connect()) as conn:
+            fail_interrupted_agent_turn_executions(conn)
+        cleanup_expired_exports()
+        app.state.agent_runs = AgentRunManager()
+        app.state.resume_renderer = ResumeRenderer()
         try:
-            yield
+            async with model_metadata_lifespan():
+                yield
         finally:
-            await app.state.agent_runs.shutdown()
+            try:
+                await app.state.agent_runs.shutdown()
+            finally:
+                await asyncio.to_thread(app.state.resume_renderer.close)
 
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application instance."""
 
-    settings = get_settings()
+    settings = initialize_settings()
     app = FastAPI(
         title=settings.app_name,
         version=settings.app_version,
         lifespan=lifespan,
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
     )
 
     app.add_exception_handler(
@@ -90,7 +103,7 @@ def create_app() -> FastAPI:
     app.add_middleware(
         OAuthSessionMiddleware,
         secret_key=hmac.digest(
-            os.environ[JWT_SECRET_ENV_NAME].encode(),
+            settings.jwt_secret.encode(),
             b"reseno-oauth-session",
             hashlib.sha256,
         ).hex(),
@@ -122,6 +135,3 @@ def create_app() -> FastAPI:
     app.include_router(exports.router)
 
     return app
-
-
-app = create_app()

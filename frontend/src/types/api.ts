@@ -97,6 +97,12 @@ export interface TemplateDetailResponse {
   template: ResumeTemplateDefinition;
 }
 
+export type TemplateSaveMode = "autosave" | "checkpoint";
+
+export interface TemplateEditingResponse extends TemplateDetailResponse {
+  checkpoint: ResumeTemplateDefinition | null;
+}
+
 export interface TemplateTrashResponse {
   template: DeletedResumeTemplateDefinition;
 }
@@ -192,20 +198,12 @@ export interface AgentChatUserMessage {
 
 export type AgentDraftDecisionStatus = "applied" | "discarded";
 type AgentDraftReviewItemStatus =
-  | "pending"
-  | "superseded"
-  | AgentDraftDecisionStatus;
+  "pending" | "superseded" | AgentDraftDecisionStatus;
 export type AgentTransactionState =
-  | "none"
-  | "provisional"
-  | "committed"
-  | "rolled_back";
+  "none" | "provisional" | "committed" | "rolled_back";
 export type AgentRunStatus = "active" | "completed" | "cancelled" | "failed";
 export type AgentTurnExecutionStatus =
-  | "running"
-  | "succeeded"
-  | "failed"
-  | "cancelled";
+  "running" | "succeeded" | "failed" | "cancelled";
 export type AgentTurnErrorCode =
   | "AGENT_PROVIDER_AUTH_ERROR"
   | "AGENT_PROVIDER_ERROR"

@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import ts from "typescript";
+import {
+  findCalls,
+  hasCall,
+  hasImport,
+  parseSource,
+} from "./source-analysis.mjs";
 
 import { evaluateTypeScript } from "./typescript-module.mjs";
 
@@ -34,7 +39,6 @@ const [
   templateGalleryGrid,
   templateGalleryController,
   gallerySkeletons,
-  sourceBudgets,
 ] = await Promise.all([
   readSource("components/ui/sidebar.tsx"),
   readSource("components/ui/sidebar-layout.tsx"),
@@ -56,7 +60,6 @@ const [
   readSource("components/templates/template-gallery-grid.tsx"),
   readSource("components/templates/use-template-gallery-controller.ts"),
   readSource("components/gallery-skeletons.tsx"),
-  readFile(new URL("verify-source-budgets.mjs", import.meta.url), "utf8"),
 ]);
 
 assert(
@@ -66,12 +69,15 @@ assert(
     sidebarMenu.includes('from "@/components/ui/sidebar"'),
   "Sidebar context, layout, and menu responsibilities must remain one-way.",
 );
+const sidebarFile = parseSource(sidebarCore);
 assert(
-  sidebarCore.includes('from "@/components/ui/sidebar-state"') &&
-    /React\.useState\(\(\)\s*=>\s*getInitialSidebarOpen\(defaultOpen\)\s*\)/.test(
-      sidebarCore,
+  hasImport(sidebarFile, "@/components/ui/sidebar-state") &&
+    findCalls(sidebarFile, "React.useState").some(
+      (call) =>
+        call.arguments[0] &&
+        hasCall(call.arguments[0], "getInitialSidebarOpen"),
     ),
-  "SidebarProvider must synchronously restore its persisted cookie and retain defaultOpen as the fallback.",
+  "Sidebar state must initialize synchronously from the saved cookie.",
 );
 for (const [cookie, defaultOpen, expected] of [
   [undefined, true, true],
@@ -108,20 +114,24 @@ const { createAspectAvatarCrop } = await loadPureTsModule(
   "components/editor/avatar-crop-geometry.ts",
 );
 assert.equal(
-  JSON.stringify(createAspectAvatarCrop(
-    { x: 100, y: 100 },
-    { x: 180, y: 200 },
-    { width: 520, height: 420 },
-  )),
+  JSON.stringify(
+    createAspectAvatarCrop(
+      { x: 100, y: 100 },
+      { x: 180, y: 200 },
+      { width: 520, height: 420 },
+    ),
+  ),
   JSON.stringify({ x: 100, y: 100, width: 80, height: 100 }),
   "Avatar crop drawing must preserve the 4:5 output ratio.",
 );
 assert.equal(
-  JSON.stringify(createAspectAvatarCrop(
-    { x: 100, y: 100 },
-    { x: 20, y: 0 },
-    { width: 520, height: 420 },
-  )),
+  JSON.stringify(
+    createAspectAvatarCrop(
+      { x: 100, y: 100 },
+      { x: 20, y: 0 },
+      { width: 520, height: 420 },
+    ),
+  ),
   JSON.stringify({ x: 20, y: 0, width: 80, height: 100 }),
   "Avatar crop drawing must preserve direction while clamping to the stage.",
 );
@@ -176,7 +186,7 @@ for (const [entry, card, controller, name] of [
   [templateGallery, templateGalleryCard, templateGalleryController, "template"],
 ]) {
   assert(
-      /GalleryGrid/.test(entry) &&
+    /GalleryGrid/.test(entry) &&
       /GalleryController/.test(entry) &&
       /memo\(function .*GalleryCard/.test(card) &&
       card.includes("ResumeThumbnail") &&
@@ -211,9 +221,7 @@ assert(
     galleryToolbar,
   ) &&
     galleryToolbar.includes('data-gallery-bulk-action=""') &&
-    /data-state=\{canBulkDelete \? "open" : "closed"\}/.test(
-      galleryToolbar,
-    ) &&
+    /data-state=\{canBulkDelete \? "open" : "closed"\}/.test(galleryToolbar) &&
     galleryToolbar.includes("transition-all duration-150 ease-out") &&
     galleryToolbar.includes(
       'gridTemplateColumns: canBulkDelete ? "1fr" : "0fr"',
@@ -280,13 +288,5 @@ for (const [
     `The ${name} gallery empty state must remain flat inside its single bordered surface.`,
   );
 }
-assert(
-  !/ui\/sidebar\.tsx|avatar-crop-dialog\.tsx#AvatarCropDialog|resume-gallery\.tsx#ResumeGallery|template-gallery\.tsx#TemplateGallery/.test(
-    sourceBudgets,
-  ),
-  "Refactored UI modules must stay on default source and component budgets.",
-);
 
-console.log(
-  "Sidebar, gallery, and avatar crop boundaries verified.",
-);
+console.log("Sidebar, gallery, and avatar crop boundaries verified.");

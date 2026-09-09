@@ -29,14 +29,18 @@ import { cn } from "@/lib/utils";
 // rather than the route shell that must render immediately.
 const DocumentCanvas = lazy(loadDocumentCanvas);
 const ResumeDetailLeaveDialog = lazy(() =>
-  import("@/components/workspace/resume-detail-leave-dialog").then((module) => ({
-    default: module.ResumeDetailLeaveDialog,
-  })),
+  import("@/components/workspace/resume-detail-leave-dialog").then(
+    (module) => ({
+      default: module.ResumeDetailLeaveDialog,
+    }),
+  ),
 );
 const ResumeDetailTitleDialog = lazy(() =>
-  import("@/components/workspace/resume-detail-title-dialog").then((module) => ({
-    default: module.ResumeDetailTitleDialog,
-  })),
+  import("@/components/workspace/resume-detail-title-dialog").then(
+    (module) => ({
+      default: module.ResumeDetailTitleDialog,
+    }),
+  ),
 );
 
 function ResumeDetailContent({
@@ -121,10 +125,7 @@ function ResumeDetailContent({
         </Suspense>
       )}
 
-      <ResumeDetailAgentHost
-        messages={messages}
-        model={model}
-      />
+      <ResumeDetailAgentHost messages={messages} model={model} />
     </div>
   );
 }

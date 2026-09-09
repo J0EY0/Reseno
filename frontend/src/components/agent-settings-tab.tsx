@@ -118,11 +118,7 @@ export function AgentSettingsTab({
                 )}
               </SelectValue>
             </SelectTrigger>
-            <SelectContent
-              align="end"
-              position="popper"
-              sideOffset={4}
-            >
+            <SelectContent align="end" position="popper" sideOffset={4}>
               <SelectGroup>
                 {agentModelConfigs.map((config) => (
                   <SelectItem key={config.id} value={config.id}>

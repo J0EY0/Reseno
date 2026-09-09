@@ -7,24 +7,41 @@ const [loginSource, oauthSource] = await Promise.all([
   readFile(new URL("src/lib/auth-oauth-login.ts", root), "utf8"),
   readFile(new URL("src/lib/auth-oauth.ts", root), "utf8"),
 ]);
-const token = { username: "owner", accessToken: "login-jwt", expiresAt: "2099-01-01" };
+const token = {
+  username: "owner",
+  accessToken: "login-jwt",
+  expiresAt: "2099-01-01",
+};
 const plain = (value) => JSON.parse(JSON.stringify(value));
-const tick = async () => { for (let i = 0; i < 8; i += 1) await Promise.resolve(); };
+const tick = async () => {
+  for (let i = 0; i < 8; i += 1) await Promise.resolve();
+};
 function deferred() {
   let resolve;
-  const promise = new Promise((accept) => { resolve = accept; });
+  const promise = new Promise((accept) => {
+    resolve = accept;
+  });
   return { promise, resolve };
 }
 
-function fixture({ start, complete, completion = { provider: "github", intent: "login", auth: token } } = {}) {
+function fixture({
+  start,
+  complete,
+  completion = { provider: "github", intent: "login", auth: token },
+} = {}) {
   const requests = [];
   const navigations = [];
   const saves = [];
   let accessToken = null;
   const session = {
     getAccessToken: () => accessToken,
-    clearAuthSession: () => { accessToken = null; },
-    saveAuthSession: (...args) => { saves.push(args); accessToken = args[1]; },
+    clearAuthSession: () => {
+      accessToken = null;
+    },
+    saveAuthSession: (...args) => {
+      saves.push(args);
+      accessToken = args[1];
+    },
   };
   const globals = {
     window: {
@@ -42,8 +59,14 @@ function fixture({ start, complete, completion = { provider: "github", intent: "
       "@/lib/api-client": {
         requestApi: async (path, options) => {
           requests.push({ path, options });
-          if (path.endsWith("/complete")) return complete ? complete.promise : completion;
-          return start ? start.promise : { authorizationUrl: "https://github.com/login/oauth/authorize?state=server" };
+          if (path.endsWith("/complete"))
+            return complete ? complete.promise : completion;
+          return start
+            ? start.promise
+            : {
+                authorizationUrl:
+                  "https://github.com/login/oauth/authorize?state=server",
+              };
         },
       },
       "@/lib/auth-session": session,
@@ -62,14 +85,25 @@ const test = (name, run) => tests.push({ name, run });
 test("callback parser accepts only one bounded code or error", () => {
   const { login } = fixture();
   assert.equal(login.parseOAuthLoginCallback("#section"), null);
-  assert.deepEqual(plain(login.parseOAuthLoginCallback("#oauth_code=once")), { code: "once" });
-  assert.deepEqual(plain(login.parseOAuthLoginCallback("#oauth_error=OAUTH_CANCELLED")), { error: "OAUTH_CANCELLED" });
+  assert.deepEqual(plain(login.parseOAuthLoginCallback("#oauth_code=once")), {
+    code: "once",
+  });
+  assert.deepEqual(
+    plain(login.parseOAuthLoginCallback("#oauth_error=OAUTH_CANCELLED")),
+    { error: "OAUTH_CANCELLED" },
+  );
   for (const hash of [
-    "#oauth_code=", "#oauth_error=", "#oauth_code=one&oauth_code=two",
-    "#oauth_error=one&oauth_error=two", "#oauth_code=one&oauth_error=two",
-    `#oauth_code=${"a".repeat(129)}`, `#oauth_error=${"a".repeat(129)}`,
+    "#oauth_code=",
+    "#oauth_error=",
+    "#oauth_code=one&oauth_code=two",
+    "#oauth_error=one&oauth_error=two",
+    "#oauth_code=one&oauth_error=two",
+    `#oauth_code=${"a".repeat(129)}`,
+    `#oauth_error=${"a".repeat(129)}`,
   ]) {
-    assert.deepEqual(plain(login.parseOAuthLoginCallback(hash)), { error: "OAUTH_INVALID_STATE" });
+    assert.deepEqual(plain(login.parseOAuthLoginCallback(hash)), {
+      error: "OAUTH_INVALID_STATE",
+    });
   }
 });
 
@@ -77,11 +111,24 @@ test("untrusted callback errors cannot read inherited properties or render arbit
   const { login } = fixture();
   const t = {
     oauthStartFailed: "failed",
-    apiMessages: { OAUTH_CANCELLED: "cancelled", OAUTH_INVALID_STATE: "invalid", wrong: {} },
+    apiMessages: {
+      OAUTH_CANCELLED: "cancelled",
+      OAUTH_INVALID_STATE: "invalid",
+      wrong: {},
+    },
   };
   assert.equal(login.resolveOAuthLoginError("OAUTH_CANCELLED", t), "cancelled");
-  for (const error of ["__proto__", "constructor", "toString", "hasOwnProperty", "wrong", "untrusted text"]) {
-    const callback = login.parseOAuthLoginCallback(`#oauth_error=${encodeURIComponent(error)}`);
+  for (const error of [
+    "__proto__",
+    "constructor",
+    "toString",
+    "hasOwnProperty",
+    "wrong",
+    "untrusted text",
+  ]) {
+    const callback = login.parseOAuthLoginCallback(
+      `#oauth_error=${encodeURIComponent(error)}`,
+    );
     assert.equal(login.resolveOAuthLoginError(callback.error, t), "failed");
   }
 });
@@ -116,7 +163,9 @@ test("an already cancelled login does not request authorization", async () => {
   const f = fixture();
   const controller = new AbortController();
   controller.abort();
-  await assert.rejects(f.login.redirectToGitHubLogin(controller.signal), { name: "AbortError" });
+  await assert.rejects(f.login.redirectToGitHubLogin(controller.signal), {
+    name: "AbortError",
+  });
   assert.deepEqual(f.requests, []);
 });
 
@@ -126,18 +175,28 @@ test("callback exchanges once and waits for the destination commit", async () =>
   const controller = new AbortController();
   let finished = false;
   let calls = 0;
-  const run = f.login.completeGitHubLogin("single-use-code", controller.signal, async (signal) => {
-    calls += 1;
-    assert.equal(signal, controller.signal);
-    assert.equal(f.session.getAccessToken(), token.accessToken);
-    await committed.promise;
-    signal.throwIfAborted();
-  }).then(() => { finished = true; });
+  const run = f.login
+    .completeGitHubLogin(
+      "single-use-code",
+      controller.signal,
+      async (signal) => {
+        calls += 1;
+        assert.equal(signal, controller.signal);
+        assert.equal(f.session.getAccessToken(), token.accessToken);
+        await committed.promise;
+        signal.throwIfAborted();
+      },
+    )
+    .then(() => {
+      finished = true;
+    });
   await tick();
   assert.equal(calls, 1);
   assert.equal(finished, false);
   assert.equal(f.requests.length, 1);
-  assert.deepEqual(plain(f.requests[0].options.body), { code: "single-use-code" });
+  assert.deepEqual(plain(f.requests[0].options.body), {
+    code: "single-use-code",
+  });
   committed.resolve();
   await run;
   assert.equal(finished, true);
@@ -148,7 +207,11 @@ test("cancelling exchange prevents a late response from saving a JWT", async () 
   const complete = deferred();
   const f = fixture({ complete });
   const controller = new AbortController();
-  const run = f.login.completeGitHubLogin("cancelled", controller.signal, async () => assert.fail("Unexpected completion"));
+  const run = f.login.completeGitHubLogin(
+    "cancelled",
+    controller.signal,
+    async () => assert.fail("Unexpected completion"),
+  );
   const rejected = assert.rejects(run, { name: "AbortError" });
   controller.abort();
   complete.resolve({ provider: "github", intent: "login", auth: token });
@@ -161,17 +224,25 @@ for (const changedSession of [false, true]) {
     const f = fixture();
     const committed = deferred();
     const controller = new AbortController();
-    const run = f.login.completeGitHubLogin("cancelled", controller.signal, async (signal) => {
-      await committed.promise;
-      signal.throwIfAborted();
-    });
+    const run = f.login.completeGitHubLogin(
+      "cancelled",
+      controller.signal,
+      async (signal) => {
+        await committed.promise;
+        signal.throwIfAborted();
+      },
+    );
     const rejected = assert.rejects(run, { name: "AbortError" });
     await tick();
-    if (changedSession) f.session.saveAuthSession("owner", "new-login-jwt", token.expiresAt);
+    if (changedSession)
+      f.session.saveAuthSession("owner", "new-login-jwt", token.expiresAt);
     controller.abort();
     committed.resolve();
     await rejected;
-    assert.equal(f.session.getAccessToken(), changedSession ? "new-login-jwt" : null);
+    assert.equal(
+      f.session.getAccessToken(),
+      changedSession ? "new-login-jwt" : null,
+    );
   });
 }
 
@@ -182,7 +253,11 @@ for (const completion of [
   test(`a ${completion.intent} callback with no login session cannot authenticate`, async () => {
     const f = fixture({ completion });
     await assert.rejects(
-      f.login.completeGitHubLogin("wrong-intent", new AbortController().signal, async () => assert.fail("Unexpected completion")),
+      f.login.completeGitHubLogin(
+        "wrong-intent",
+        new AbortController().signal,
+        async () => assert.fail("Unexpected completion"),
+      ),
       /OAUTH_INVALID_STATE/,
     );
     assert.deepEqual(f.saves, []);
@@ -191,8 +266,13 @@ for (const completion of [
 
 let failures = 0;
 for (const { name, run } of tests) {
-  try { await run(); process.stdout.write(`PASS ${name}\n`); }
-  catch (error) { failures += 1; process.stdout.write(`FAIL ${name}: ${error.message}\n`); }
+  try {
+    await run();
+    process.stdout.write(`PASS ${name}\n`);
+  } catch (error) {
+    failures += 1;
+    process.stdout.write(`FAIL ${name}: ${error.message}\n`);
+  }
 }
 process.stdout.write(`${tests.length - failures}/${tests.length} passed\n`);
 process.exitCode = failures ? 1 : 0;

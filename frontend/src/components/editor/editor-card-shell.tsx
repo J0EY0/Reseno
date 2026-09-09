@@ -1,14 +1,14 @@
-import { ChevronDown, type LucideIcon } from 'lucide-react'
-import type { ReactNode } from 'react'
+import { ChevronDown, type LucideIcon } from "lucide-react";
+import type { ReactNode } from "react";
 
-import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
-} from '@/components/ui/collapsible'
-import { cn } from '@/lib/utils'
+} from "@/components/ui/collapsible";
+import { cn } from "@/lib/utils";
 
 export function EditorCardShell({
   icon: Icon,
@@ -20,21 +20,21 @@ export function EditorCardShell({
   headerAction,
   children,
 }: {
-  icon: LucideIcon
-  title: string
-  titleMeta?: string
-  toggleLabel: string
-  collapsed: boolean
-  onToggle: () => void
-  headerAction?: ReactNode
-  children: ReactNode
+  icon: LucideIcon;
+  title: string;
+  titleMeta?: string;
+  toggleLabel: string;
+  collapsed: boolean;
+  onToggle: () => void;
+  headerAction?: ReactNode;
+  children: ReactNode;
 }) {
   return (
     <Card
-      data-collapsed={collapsed ? 'true' : 'false'}
+      data-collapsed={collapsed ? "true" : "false"}
       className={cn(
-        'gap-0 overflow-hidden border-border/75 py-0 transition-[border-color,box-shadow] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)]',
-        !collapsed && 'border-primary/20',
+        "gap-0 overflow-hidden border-border/75 py-0 transition-[border-color,box-shadow] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)]",
+        !collapsed && "border-primary/20",
       )}
     >
       <Collapsible open={!collapsed} onOpenChange={onToggle}>
@@ -64,7 +64,10 @@ export function EditorCardShell({
                 aria-label={toggleLabel}
               >
                 <ChevronDown
-                  className={cn('size-4 transition-transform', collapsed && '-rotate-90')}
+                  className={cn(
+                    "size-4 transition-transform",
+                    collapsed && "-rotate-90",
+                  )}
                 />
                 <span className="sr-only">{toggleLabel}</span>
               </Button>
@@ -78,5 +81,5 @@ export function EditorCardShell({
         </CollapsibleContent>
       </Collapsible>
     </Card>
-  )
+  );
 }

@@ -15,13 +15,9 @@ const defaultTypography: ResumeTypographySettings = {
   fontSize: 16,
 };
 
-type ResumeStyle = Pick<
-  ResumeWorkspaceItem,
-  "templateSettings" | "typography"
->;
+type ResumeStyle = Pick<ResumeWorkspaceItem, "templateSettings" | "typography">;
 type ResumeStyleUpdate =
-  | Partial<ResumeStyle>
-  | ((current: ResumeStyle) => Partial<ResumeStyle>);
+  Partial<ResumeStyle> | ((current: ResumeStyle) => Partial<ResumeStyle>);
 
 interface ResumeDetailSessionOptions {
   initialResume: ResumeWorkspaceItem | null;
@@ -36,12 +32,16 @@ export function useResumeDetailSession({
     document: ResumeWorkspaceItem | null;
     openSectionId: string | null;
   }>(() => ({ document: initialResume, openSectionId: null }));
-  const latestRef = useRef(document);
+  const fingerprint = useMemo(
+    () => createResumeFingerprint(document),
+    [document],
+  );
+  const latestRef = useRef({ document, fingerprint });
 
   // Saves read the latest committed document after awaiting other requests.
   useLayoutEffect(() => {
-    latestRef.current = document;
-  }, [document]);
+    latestRef.current = { document, fingerprint };
+  }, [document, fingerprint]);
 
   const updateDocument = useCallback(
     (update: (current: ResumeWorkspaceItem) => ResumeWorkspaceItem) => {
@@ -64,11 +64,13 @@ export function useResumeDetailSession({
 
   const getSnapshot = useCallback(
     (updatedAt: string): ResumeWorkspaceItem | null => {
-      const latest = latestRef.current;
+      const latest = latestRef.current.document;
       return latest ? { ...latest, updatedAt } : null;
     },
     [],
   );
+
+  const getFingerprint = useCallback(() => latestRef.current.fingerprint, []);
 
   const adoptSavedResume = useCallback(
     (item: ResumeWorkspaceItem, submitted: ResumeWorkspaceItem) => {
@@ -76,7 +78,8 @@ export function useResumeDetailSession({
         current.id === item.id
           ? {
               ...current,
-              title: current.title === submitted.title ? item.title : current.title,
+              title:
+                current.title === submitted.title ? item.title : current.title,
               updatedAt: item.updatedAt,
             }
           : current,
@@ -88,7 +91,8 @@ export function useResumeDetailSession({
   const updateContent = useCallback(
     (update: ResumeData | ((current: ResumeData) => ResumeData)) => {
       updateDocument((current) => {
-        const resume = typeof update === "function" ? update(current.resume) : update;
+        const resume =
+          typeof update === "function" ? update(current.resume) : update;
         return resume === current.resume ? current : { ...current, resume };
       });
     },
@@ -168,7 +172,8 @@ export function useResumeDetailSession({
                 ),
               },
             },
-            openSectionId: current.openSectionId === id ? null : current.openSectionId,
+            openSectionId:
+              current.openSectionId === id ? null : current.openSectionId,
           }
         : current,
     );
@@ -187,7 +192,8 @@ export function useResumeDetailSession({
     applyAgentResume,
     applyTemplate,
     document,
-    fingerprint: createResumeFingerprint(document),
+    fingerprint,
+    getFingerprint,
     getSnapshot,
     hydrate,
     jobBrief: document?.jobBrief ?? "",

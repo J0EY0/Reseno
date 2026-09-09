@@ -12,7 +12,8 @@ import { toast } from "sonner";
 
 import { getMessagesSync, type AppMessages, type Locale } from "@/i18n";
 import { useLocalizedMessages } from "@/i18n/use-localized-messages";
-import { isAbortError, isApiErrorToastShown } from "@/lib/api-client";
+import { isAbortError } from "@/lib/api-client";
+import { notifyApiError } from "@/lib/api-error-notifier";
 import { importTemplatePayload } from "@/lib/import-api";
 import { createTemplatePreviewResumes } from "@/lib/template-preview-resume";
 import {
@@ -36,17 +37,15 @@ import {
   getTemplateById,
   getTemplateCatalog,
 } from "@/lib/templates";
-import type { WorkspaceTemplateRouteData } from "@/lib/workspace-route-data";
+import type { PreparedTemplateDetailRouteData } from "@/lib/workspace-route-data";
 import type { TemplateArtifactItem } from "@/types/api";
 import {
   createTemplateApi,
   moveTemplateToTrashApi,
   saveDefaultTemplateApi,
 } from "@/lib/workspace-api";
-import {
-  createTemplateDetailRouteHandoff,
-  getTemplatePath,
-} from "@/lib/workspace-route";
+import { getTemplatePath } from "@/lib/workspace-route";
+import { createTemplateDetailRouteHandoff } from "@/lib/workspace-detail-route-handoff";
 import type {
   DefaultTemplateIds,
   DocumentLocale,
@@ -73,7 +72,10 @@ export function useTemplateGalleryWorkspace({
   const requestIdRef = useRef(0);
   const createInFlightRef = useRef(false);
   const importInFlightRef = useRef(false);
-  const importRetryRef = useRef({ active: false, toasts: new Set<string | number>() });
+  const importRetryRef = useRef({
+    active: false,
+    toasts: new Set<string | number>(),
+  });
   const setDefaultInFlightRef = useRef(false);
   const { beginNavigation } = useWorkspaceNavigationTransaction();
   useEffect(() => {
@@ -91,24 +93,31 @@ export function useTemplateGalleryWorkspace({
   const [isLoading, setIsLoading] = useState(!preparedRouteData);
   const [isCreating, setIsCreating] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
-  const [templateLocale, setTemplateLocale] =
-    useState<DocumentLocale>(() => locale);
-  const [openingTemplateId, setOpeningTemplateId] = useState<string | null>(null);
+  const [templateLocale, setTemplateLocale] = useState<DocumentLocale>(
+    () => locale,
+  );
+  const [openingTemplateId, setOpeningTemplateId] = useState<string | null>(
+    null,
+  );
   const [settingDefaultTemplateId, setSettingDefaultTemplateId] = useState<
     string | null
   >(null);
   const [catalog, setCatalog] = useState(() => ({
-    defaultTemplateIds: preparedRouteData?.defaultTemplateIds ?? initialDefaultTemplateIds,
+    defaultTemplateIds:
+      preparedRouteData?.defaultTemplateIds ?? initialDefaultTemplateIds,
     customTemplates: preparedRouteData?.customTemplates ?? [],
   }));
   const catalogRef = useRef(catalog);
   const deletingTemplateIdsRef = useRef(new Set<string>());
-  const updateCatalog = useCallback((update: (current: typeof catalog) => typeof catalog) => {
-    const next = update(catalogRef.current);
-    catalogRef.current = next;
-    setCatalog(next);
-    return next;
-  }, []);
+  const updateCatalog = useCallback(
+    (update: (current: typeof catalog) => typeof catalog) => {
+      const next = update(catalogRef.current);
+      catalogRef.current = next;
+      setCatalog(next);
+      return next;
+    },
+    [],
+  );
   const { customTemplates, defaultTemplateIds } = catalog;
   const templateCatalog = useMemo(
     () => getTemplateCatalog(messages, customTemplates),
@@ -122,9 +131,7 @@ export function useTemplateGalleryWorkspace({
   const previewResumes = useDeferredValue(
     useMemo(
       () =>
-        previewMessages
-          ? createTemplatePreviewResumes(previewMessages)
-          : null,
+        previewMessages ? createTemplatePreviewResumes(previewMessages) : null,
       [previewMessages],
     ),
   );
@@ -137,10 +144,14 @@ export function useTemplateGalleryWorkspace({
       dismissWorkspaceLoadError();
 
       try {
-        const source = await fetchWorkspacePageData("template-gallery", persistence, {
-          notifyOnError: false,
-          signal,
-        });
+        const source = await fetchWorkspacePageData(
+          "template-gallery",
+          persistence,
+          {
+            notifyOnError: false,
+            signal,
+          },
+        );
         if (signal.aborted || requestIdRef.current !== requestId) {
           return;
         }
@@ -160,18 +171,14 @@ export function useTemplateGalleryWorkspace({
         }
 
         console.error("Failed to load the template gallery route.", error);
-        if (!isApiErrorToastShown(error)) {
-          showWorkspaceLoadError(
-            getMessagesSync(initialLocaleRef.current).apiMessages.REQUEST_FAILED,
-          );
-        }
+        showWorkspaceLoadError(
+          error,
+          getMessagesSync(initialLocaleRef.current).apiMessages.REQUEST_FAILED,
+        );
         setHasLoaded(false);
         setHasLoadError(true);
       } finally {
-        if (
-          !signal.aborted &&
-          requestIdRef.current === requestId
-        ) {
+        if (!signal.aborted && requestIdRef.current === requestId) {
           setIsLoading(false);
         }
       }
@@ -213,7 +220,7 @@ export function useTemplateGalleryWorkspace({
     (
       intent: WorkspaceNavigationIntent,
       templateId: string,
-      readData: () => WorkspaceTemplateRouteData,
+      readData: () => PreparedTemplateDetailRouteData,
       targetLocale: DocumentLocale,
       onCommit?: () => void,
     ) => {
@@ -255,7 +262,7 @@ export function useTemplateGalleryWorkspace({
         { once: true },
       );
       toast.dismiss(WORKSPACE_NAVIGATION_ERROR_TOAST_ID);
-      let data: WorkspaceTemplateRouteData;
+      let data: PreparedTemplateDetailRouteData;
       try {
         data = await prepareTemplateDetailRoute(templateId, persistence, {
           signal: intent.signal,
@@ -345,7 +352,11 @@ export function useTemplateGalleryWorkspace({
       commitTemplateDetailNavigation(
         intent,
         result.template.id,
-        () => ({ ...catalogRef.current, theme }),
+        () => ({
+          checkpoint: null,
+          ...catalogRef.current,
+          theme,
+        }),
         templateLocale,
         publishCreatedTemplate,
       );
@@ -355,9 +366,7 @@ export function useTemplateGalleryWorkspace({
         intent.finish();
       }
       console.error("Failed to create template in backend.", error);
-      if (!isApiErrorToastShown(error)) {
-        toast.error(messages.loadError, { closeButton: true });
-      }
+      notifyApiError(error, messages.loadError);
     } finally {
       createInFlightRef.current = false;
       setIsCreating(false);
@@ -398,7 +407,9 @@ export function useTemplateGalleryWorkspace({
         const failedImports: TemplateArtifactItem[] = [];
         for (const item of templates) {
           try {
-            const result = await createTemplateApi(item, { notifyOnError: false });
+            const result = await createTemplateApi(item, {
+              notifyOnError: false,
+            });
             savedImports.push(result.template);
             updateCatalog((current) => ({
               ...current,
@@ -412,23 +423,26 @@ export function useTemplateGalleryWorkspace({
         if (failedImports.length > 0) {
           if (intent.isCurrent()) intent.finish();
           if (!importRetryRef.current.active) return;
-          importRetryRef.current.toasts.add(toast.error(
-            messages.templateImportPartial
-              .replace("{count}", String(savedImports.length))
-              .replace("{failed}", String(failedImports.length)),
-            {
-              closeButton: true,
-              duration: Infinity,
-              onDismiss: ({ id }) => importRetryRef.current.toasts.delete(id),
-              action: {
-                label: messages.retry,
-                onClick: (event) => {
-                  if (importInFlightRef.current) return event.preventDefault();
-                  void persistImports(async () => failedImports);
+          importRetryRef.current.toasts.add(
+            toast.error(
+              messages.templateImportPartial
+                .replace("{count}", String(savedImports.length))
+                .replace("{failed}", String(failedImports.length)),
+              {
+                closeButton: true,
+                duration: Infinity,
+                onDismiss: ({ id }) => importRetryRef.current.toasts.delete(id),
+                action: {
+                  label: messages.retry,
+                  onClick: (event) => {
+                    if (importInFlightRef.current)
+                      return event.preventDefault();
+                    void persistImports(async () => failedImports);
+                  },
                 },
               },
-            },
-          ));
+            ),
+          );
           return;
         }
 
@@ -442,7 +456,10 @@ export function useTemplateGalleryWorkspace({
             return;
           }
           intent.finish();
-          console.error("Failed to prepare the imported template route.", error);
+          console.error(
+            "Failed to prepare the imported template route.",
+            error,
+          );
           toast.error(messages.loadError, {
             closeButton: true,
             id: WORKSPACE_NAVIGATION_ERROR_TOAST_ID,
@@ -450,7 +467,9 @@ export function useTemplateGalleryWorkspace({
           return;
         }
         const firstImportedTemplate = savedImports.find((saved) =>
-          catalogRef.current.customTemplates.some((item) => item.id === saved.id),
+          catalogRef.current.customTemplates.some(
+            (item) => item.id === saved.id,
+          ),
         );
         if (!firstImportedTemplate) {
           intent.finish();
@@ -459,7 +478,7 @@ export function useTemplateGalleryWorkspace({
         commitTemplateDetailNavigation(
           intent,
           firstImportedTemplate.id,
-          () => ({ ...catalogRef.current, theme }),
+          () => ({ ...catalogRef.current, checkpoint: null, theme }),
           templateLocale,
         );
         toast.success(messages.templateImported, { closeButton: true });
@@ -468,9 +487,7 @@ export function useTemplateGalleryWorkspace({
           intent.finish();
         }
         console.error("Failed to import template JSON.", error);
-        if (!isApiErrorToastShown(error)) {
-          toast.error(messages.templateImportFailed, { closeButton: true });
-        }
+        notifyApiError(error, messages.templateImportFailed);
       } finally {
         importInFlightRef.current = false;
         setIsImporting(false);
@@ -486,15 +503,21 @@ export function useTemplateGalleryWorkspace({
     ],
   );
   const importTemplates = useCallback(
-    (file: File) => importTemplateItems(async () => (await importTemplatePayload(file)).templates),
+    (file: File) =>
+      importTemplateItems(
+        async () => (await importTemplatePayload(file)).templates,
+      ),
     [importTemplateItems],
   );
 
   const deleteTemplates = useCallback(
     async (templateIds: string[]) => {
-      const customTemplateIds = [...new Set(templateIds)].filter((templateId) =>
-        !deletingTemplateIdsRef.current.has(templateId) &&
-        catalogRef.current.customTemplates.some((item) => item.id === templateId),
+      const customTemplateIds = [...new Set(templateIds)].filter(
+        (templateId) =>
+          !deletingTemplateIdsRef.current.has(templateId) &&
+          catalogRef.current.customTemplates.some(
+            (item) => item.id === templateId,
+          ),
       );
       if (customTemplateIds.length === 0) {
         return [];
@@ -506,10 +529,18 @@ export function useTemplateGalleryWorkspace({
           await moveTemplateToTrashApi(templateId, { notifyOnError: false });
           deletedIds.push(templateId);
           updateCatalog((current) => ({
-            customTemplates: current.customTemplates.filter((item) => item.id !== templateId),
+            customTemplates: current.customTemplates.filter(
+              (item) => item.id !== templateId,
+            ),
             defaultTemplateIds: {
-              zh: current.defaultTemplateIds.zh === templateId ? baseTemplateId : current.defaultTemplateIds.zh,
-              en: current.defaultTemplateIds.en === templateId ? baseTemplateId : current.defaultTemplateIds.en,
+              zh:
+                current.defaultTemplateIds.zh === templateId
+                  ? baseTemplateId
+                  : current.defaultTemplateIds.zh,
+              en:
+                current.defaultTemplateIds.en === templateId
+                  ? baseTemplateId
+                  : current.defaultTemplateIds.en,
             },
           }));
         } catch (error) {
@@ -519,13 +550,22 @@ export function useTemplateGalleryWorkspace({
         }
       }
       if (deletedIds.length < customTemplateIds.length) {
-        toast.error(messages.templateDeletePartial
-          .replace("{count}", String(deletedIds.length))
-          .replace("{failed}", String(customTemplateIds.length - deletedIds.length)),
-        { closeButton: true });
+        toast.error(
+          messages.templateDeletePartial
+            .replace("{count}", String(deletedIds.length))
+            .replace(
+              "{failed}",
+              String(customTemplateIds.length - deletedIds.length),
+            ),
+          { closeButton: true },
+        );
       } else {
-        toast.success(customTemplateIds.length > 1 ? messages.templatesDeleted : messages.templateDeleted,
-          { closeButton: true });
+        toast.success(
+          customTemplateIds.length > 1
+            ? messages.templatesDeleted
+            : messages.templateDeleted,
+          { closeButton: true },
+        );
       }
       return deletedIds;
     },
@@ -546,16 +586,17 @@ export function useTemplateGalleryWorkspace({
       setDefaultInFlightRef.current = true;
       setSettingDefaultTemplateId(templateId);
       try {
-        const result = await saveDefaultTemplateApi(
-          templateLocale,
-          templateId,
-        );
+        const result = await saveDefaultTemplateApi(templateLocale, templateId);
         updateCatalog((current) => ({
           ...current,
           defaultTemplateIds: {
             ...current.defaultTemplateIds,
-            [templateLocale]: getTemplateCatalog(messages, current.customTemplates)
-              .some((item) => item.id === result.defaultTemplateIds[templateLocale])
+            [templateLocale]: getTemplateCatalog(
+              messages,
+              current.customTemplates,
+            ).some(
+              (item) => item.id === result.defaultTemplateIds[templateLocale],
+            )
               ? result.defaultTemplateIds[templateLocale]
               : baseTemplateId,
           },
@@ -563,15 +604,19 @@ export function useTemplateGalleryWorkspace({
         toast.success(messages.defaultTemplateUpdated, { closeButton: true });
       } catch (error) {
         console.error("Failed to update default template.", error);
-        if (!isApiErrorToastShown(error)) {
-          toast.error(messages.loadError, { closeButton: true });
-        }
+        notifyApiError(error, messages.loadError);
       } finally {
         setDefaultInFlightRef.current = false;
         setSettingDefaultTemplateId(null);
       }
     },
-    [defaultTemplateIds, messages, templateCatalog, templateLocale, updateCatalog],
+    [
+      defaultTemplateIds,
+      messages,
+      templateCatalog,
+      templateLocale,
+      updateCatalog,
+    ],
   );
 
   return {

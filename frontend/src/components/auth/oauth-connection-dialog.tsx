@@ -21,16 +21,18 @@ export function OAuthConnectionDialog({
   onCancel: () => void;
   t: AppMessages;
 }) {
-  const title = progress?.stage === "preparing"
-    ? t.oauthConnectionPreparingTitle
-    : progress?.stage === "blocked"
-      ? t.oauthConnectionBlockedTitle
-      : t.oauthConnectionTitle;
-  const description = progress?.stage === "preparing"
-    ? t.oauthConnectionPreparingDescription
-    : progress?.stage === "blocked"
-      ? t.oauthConnectionBlockedDescription
-      : t.oauthConnectionDescription;
+  const title =
+    progress?.stage === "preparing"
+      ? t.oauthConnectionPreparingTitle
+      : progress?.stage === "blocked"
+        ? t.oauthConnectionBlockedTitle
+        : t.oauthConnectionTitle;
+  const description =
+    progress?.stage === "preparing"
+      ? t.oauthConnectionPreparingDescription
+      : progress?.stage === "blocked"
+        ? t.oauthConnectionBlockedDescription
+        : t.oauthConnectionDescription;
 
   return (
     <Dialog

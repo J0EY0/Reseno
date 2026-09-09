@@ -51,7 +51,8 @@ export function ProviderLoginButtons({
           {isPending ? t.oauthStarting : ""}
         </span>
         <FieldError>
-          {requestError ?? (availability.status === "error" ? availability.message : null)}
+          {requestError ??
+            (availability.status === "error" ? availability.message : null)}
         </FieldError>
         {availability.status === "error" ? (
           <Button

@@ -3,6 +3,7 @@ import json
 import re
 import secrets
 import shutil
+from collections import OrderedDict
 from collections.abc import Iterable
 from contextlib import closing
 from dataclasses import dataclass, field
@@ -10,6 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from sqlite3 import Connection, Row
 from sqlite3 import Error as SqliteError
+from threading import Lock
 from typing import Any, Literal, NamedTuple, cast
 
 from fastapi import HTTPException, status
@@ -55,10 +57,17 @@ RESUME_COPY_SUFFIX_PATTERN = re.compile(
 )
 RESUME_ID_ALPHABET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 RESUME_ID_LENGTH = 16
+RESUME_VERSION_FILENAME_PATTERN = re.compile(
+    r"(?P<version_id>[1-9][0-9]*)\.json(?P<temporary>\.tmp)?"
+)
 RESUME_VERSION_EXCLUDED_KEYS = {"deletedAt"}
 VOLATILE_HASH_KEYS = {"savedAt", "updatedAt"}
 ResumeVersionKind = Literal["autosave", "checkpoint"]
 ResumeVersionFile = tuple[str, int]
+
+_MAX_VALIDATED_SNAPSHOTS = 1024
+_VALIDATED_SNAPSHOTS: OrderedDict[bytes, None] = OrderedDict()
+_VALIDATED_SNAPSHOTS_LOCK = Lock()
 
 
 @dataclass
@@ -97,7 +106,7 @@ def _allocate_resume_id(conn: Connection) -> str:
 
     raise HTTPException(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        detail="Failed to allocate a resume id.",
+        detail="RESUME_ID_ALLOCATION_FAILED",
     )
 
 
@@ -120,7 +129,7 @@ def _validate_resume_id(resume_id: str) -> str:
     if not is_valid_resume_id(resume_id):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Resume id may only contain ASCII letters and numbers.",
+            detail="RESUME_ID_INVALID",
         )
 
     return resume_id
@@ -259,17 +268,34 @@ def _read_resume_bytes(resume_id: str, version_id: int) -> bytes:
     """Capture a version's file contents while its database pointer is locked."""
 
     path = _resume_version_path(resume_id, version_id)
-    if not path.exists():
+    try:
+        return path.read_bytes()
+    except (FileNotFoundError, NotADirectoryError) as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Resume version JSON is missing.",
-        )
-
-    return path.read_bytes()
+            detail="RESUME_VERSION_STORAGE_MISSING",
+        ) from exc
 
 
 def _parse_resume_bytes(content: bytes) -> ResumeWorkspaceItemResponse:
-    return _validate_stored_resume_item(json.loads(content.decode("utf-8")))
+    """Parse a fresh item, validating each distinct snapshot's document once."""
+
+    value = json.loads(content.decode("utf-8"))
+    digest = hashlib.sha256(content).digest()
+    with _VALIDATED_SNAPSHOTS_LOCK:
+        validated = digest in _VALIDATED_SNAPSHOTS
+        if validated:
+            _VALIDATED_SNAPSHOTS.move_to_end(digest)
+    if validated:
+        return ResumeWorkspaceItemResponse.model_validate(value)
+
+    item = _validate_stored_resume_item(value)
+    with _VALIDATED_SNAPSHOTS_LOCK:
+        _VALIDATED_SNAPSHOTS[digest] = None
+        _VALIDATED_SNAPSHOTS.move_to_end(digest)
+        if len(_VALIDATED_SNAPSHOTS) > _MAX_VALIDATED_SNAPSHOTS:
+            _VALIDATED_SNAPSHOTS.popitem(last=False)
+    return item
 
 
 def _read_resume_json(resume_id: str, version_id: int) -> dict[str, Any]:
@@ -418,7 +444,7 @@ def _save_resume_item(
     if not isinstance(resume_id, str) or not resume_id.strip():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Resume id is required.",
+            detail="RESUME_ID_REQUIRED",
         )
     resume_id = _validate_resume_id(resume_id.strip())
 
@@ -626,6 +652,51 @@ def cleanup_resume_version_files(version_files: Iterable[ResumeVersionFile]) -> 
         return
 
 
+def recover_unreferenced_resume_version_files() -> None:
+    """Remove abandoned version files while protecting committed references."""
+
+    root = get_settings().storage_dir / "resumes"
+    if root.is_symlink() or not root.is_dir():
+        return
+
+    try:
+        with closing(connect()) as conn, conn:
+            conn.execute("BEGIN IMMEDIATE")
+            referenced = {
+                (str(row["resume_id"]), str(row["version_id"]))
+                for row in conn.execute(
+                    """
+                    SELECT resume_id, version_id FROM resume_versions
+                    UNION
+                    SELECT id, current_version_id FROM resumes
+                    """
+                )
+            }
+            for resume_dir in root.iterdir():
+                if (
+                    resume_dir.is_symlink()
+                    or not resume_dir.is_dir()
+                    or not is_valid_resume_id(resume_dir.name)
+                ):
+                    continue
+                versions = resume_dir / "versions"
+                if versions.is_symlink() or not versions.is_dir():
+                    continue
+                for path in versions.iterdir():
+                    if path.is_symlink() or not path.is_file():
+                        continue
+                    match = RESUME_VERSION_FILENAME_PATTERN.fullmatch(path.name)
+                    if match is None:
+                        continue
+                    if (
+                        match["temporary"]
+                        or (resume_dir.name, match["version_id"]) not in referenced
+                    ):
+                        path.unlink(missing_ok=True)
+    except (OSError, SqliteError):
+        return
+
+
 def _deleted_resume_preview(
     row: Row,
     item: ResumeWorkspaceItemResponse,
@@ -698,7 +769,7 @@ def _require_resume_row(conn: Connection, resume_id: str) -> Row:
     if row is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Resume not found.",
+            detail="RESUME_NOT_FOUND",
         )
 
     return row
@@ -712,13 +783,13 @@ def _version_id_from_string(version_id: str) -> int:
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Resume version not found.",
+            detail="RESUME_VERSION_NOT_FOUND",
         ) from exc
 
     if parsed < 1:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Resume version not found.",
+            detail="RESUME_VERSION_NOT_FOUND",
         )
 
     return parsed
@@ -743,7 +814,7 @@ def _resume_version_row(
     if row is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Resume version not found.",
+            detail="RESUME_VERSION_NOT_FOUND",
         )
 
     return cast(Row, row)
@@ -762,7 +833,7 @@ def _load_resume_detail(
     if row["deleted"] and not include_deleted:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Resume not found.",
+            detail="RESUME_NOT_FOUND",
         )
 
     if version_id is None:
@@ -770,7 +841,7 @@ def _load_resume_detail(
         if current_version_id < 1:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Resume version not found.",
+                detail="RESUME_VERSION_NOT_FOUND",
             )
 
         item = _read_resume_json(row["id"], current_version_id)
@@ -876,7 +947,7 @@ def list_resumes(status_filter: str = "active") -> ResumeListResponse:
     if status_filter not in {"active", "deleted"}:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Unsupported resume status filter.",
+            detail="RESUME_STATUS_INVALID",
         )
 
     with closing(connect()) as conn, conn:
@@ -966,14 +1037,14 @@ def duplicate_resume(resume_id: str) -> dict[str, Any]:
         if row["deleted"]:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Deleted resumes cannot be duplicated.",
+                detail="RESUME_DELETED",
             )
 
         current_version_id = int(row["current_version_id"])
         if current_version_id < 1:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Resume version not found.",
+                detail="RESUME_VERSION_NOT_FOUND",
             )
 
         source_item = _read_resume_json(row["id"], current_version_id)
@@ -1069,7 +1140,7 @@ def save_resume_in_transaction(
     if row["deleted"]:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Deleted resumes cannot be saved.",
+            detail="RESUME_DELETED",
         )
 
     submitted_template_id = payload["template"]
@@ -1218,7 +1289,7 @@ def trash_resume(resume_id: str) -> dict[str, Any]:
         if current_version_id < 1:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Resume version not found.",
+                detail="RESUME_VERSION_NOT_FOUND",
             )
 
         resume_item = _parse_resume_bytes(
@@ -1335,7 +1406,7 @@ def delete_resume_forever(resume_id: str) -> dict[str, Any]:
         if not row["deleted"]:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Only deleted resumes can be permanently deleted.",
+                detail="RESUME_NOT_DELETED",
             )
 
         _reject_running_agent_turns(conn, [row["id"]])

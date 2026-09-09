@@ -84,7 +84,7 @@ def get_settings_page() -> ApiResponse[SettingsPageResponse]:
 )
 def put_user_settings(
     request: UserSettingsSaveRequest,
-    locale: Literal["zh", "en"] = Query(default="zh"),
+    locale: Literal["zh", "en"] | None = Query(default=None),
 ) -> ApiResponse[UserSettingsSaveResponse]:
     """Persist settings-page preferences without saving resume content."""
 

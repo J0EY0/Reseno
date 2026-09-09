@@ -42,10 +42,7 @@ export function SettingsPanel({
         onValueChange={changeTab}
         className="mx-auto w-full max-w-6xl gap-0"
       >
-        <TabsList
-          aria-label={t.settings}
-          className="relative grid grid-cols-2"
-        >
+        <TabsList aria-label={t.settings} className="relative grid grid-cols-2">
           <span
             aria-hidden="true"
             className={cn(

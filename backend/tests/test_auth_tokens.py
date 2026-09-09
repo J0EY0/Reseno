@@ -14,7 +14,7 @@ def test_access_tokens_and_refresh_have_a_36_hour_lifetime(client: TestClient) -
     assert refreshed_claims.expires_at - refreshed_claims.issued_at == 36 * 60 * 60
     assert auth_tokens.decode_access_token(refreshed).subject == "admin"
     with pytest.raises(auth_tokens.AuthTokenError, match="revoked"):
-        auth_tokens.decode_access_token(token)
+        auth_tokens.authenticate_access_token(token)
 
 
 def test_access_token_expires_at_the_36_hour_boundary(
@@ -142,4 +142,4 @@ def test_refreshed_token_stays_revoked_until_its_original_expiry(
 
     assert now < original_payload.expires_at
     with pytest.raises(auth_tokens.AuthTokenError, match="revoked"):
-        auth_tokens.decode_access_token(token)
+        auth_tokens.authenticate_access_token(token)

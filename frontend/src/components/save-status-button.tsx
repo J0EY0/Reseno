@@ -1,32 +1,35 @@
-import { useState } from 'react'
-import { CircleCheck, History, LoaderCircle, Save } from 'lucide-react'
+import { useState } from "react";
+import { CircleCheck, History, LoaderCircle, Save } from "lucide-react";
 
-import type { Locale } from '@/i18n'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
+import type { Locale } from "@/i18n";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
-} from '@/components/ui/popover'
-import type { WorkspaceVersionSummary } from '@/types/api'
+} from "@/components/ui/popover";
+import type { WorkspaceVersionSummary } from "@/types/api";
 
-type SaveState = 'idle' | 'saving' | 'saved'
+type SaveState = "idle" | "saving" | "saved";
 
 function formatSavedTime(locale: Locale, value: string | null) {
   if (!value) {
-    return null
+    return null;
   }
 
-  const formatter = new Intl.DateTimeFormat(locale === 'zh' ? 'zh-CN' : 'en-US', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  })
+  const formatter = new Intl.DateTimeFormat(
+    locale === "zh" ? "zh-CN" : "en-US",
+    {
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    },
+  );
 
-  return formatter.format(new Date(value))
+  return formatter.format(new Date(value));
 }
 
 export function SaveStatusButton({
@@ -48,35 +51,35 @@ export function SaveStatusButton({
   onSelectVersion,
   showVersions = true,
 }: {
-  locale: Locale
-  label: string
-  savingText: string
-  savedText: string
-  unsavedText: string
-  lastSavedLabel: string
-  state: SaveState
-  hasUnsavedChanges: boolean
-  lastSavedAt: string | null
-  versions: WorkspaceVersionSummary[]
-  activeVersionId: string | null
-  versionsLabel: string
-  currentVersionLabel: string
-  noVersionsText: string
-  onSave: () => void
-  onSelectVersion: (versionId: string) => void
-  showVersions?: boolean
+  locale: Locale;
+  label: string;
+  savingText: string;
+  savedText: string;
+  unsavedText: string;
+  lastSavedLabel: string;
+  state: SaveState;
+  hasUnsavedChanges: boolean;
+  lastSavedAt: string | null;
+  versions: WorkspaceVersionSummary[];
+  activeVersionId: string | null;
+  versionsLabel: string;
+  currentVersionLabel: string;
+  noVersionsText: string;
+  onSave: () => void;
+  onSelectVersion: (versionId: string) => void;
+  showVersions?: boolean;
 }) {
-  const [versionsOpen, setVersionsOpen] = useState(false)
-  const formattedTime = formatSavedTime(locale, lastSavedAt)
-  const isSaving = state === 'saving'
-  let tooltipText = savedText
+  const [versionsOpen, setVersionsOpen] = useState(false);
+  const formattedTime = formatSavedTime(locale, lastSavedAt);
+  const isSaving = state === "saving";
+  let tooltipText = savedText;
 
   if (isSaving) {
-    tooltipText = savingText
+    tooltipText = savingText;
   } else if (hasUnsavedChanges) {
-    tooltipText = unsavedText
+    tooltipText = unsavedText;
   } else if (formattedTime) {
-    tooltipText = `${savedText} · ${lastSavedLabel}: ${formattedTime}`
+    tooltipText = `${savedText} · ${lastSavedLabel}: ${formattedTime}`;
   }
 
   const saveButton = (
@@ -98,7 +101,7 @@ export function SaveStatusButton({
         <CircleCheck />
       )}
     </Button>
-  )
+  );
   const statusAnnouncement = (
     <span
       data-slot="save-status-announcement"
@@ -109,7 +112,7 @@ export function SaveStatusButton({
     >
       {tooltipText}
     </span>
-  )
+  );
 
   if (!showVersions) {
     return (
@@ -117,7 +120,7 @@ export function SaveStatusButton({
         {saveButton}
         {statusAnnouncement}
       </>
-    )
+    );
   }
 
   return (
@@ -156,8 +159,8 @@ export function SaveStatusButton({
             {versions.length > 0 ? (
               <div className="max-h-56 overflow-y-auto overscroll-contain">
                 {versions.map((version) => {
-                  const isActive = version.versionId === activeVersionId
-                  const savedTime = formatSavedTime(locale, version.savedAt)
+                  const isActive = version.versionId === activeVersionId;
+                  const savedTime = formatSavedTime(locale, version.savedAt);
 
                   return (
                     <Button
@@ -176,7 +179,7 @@ export function SaveStatusButton({
                         </Badge>
                       ) : null}
                     </Button>
-                  )
+                  );
                 })}
               </div>
             ) : (
@@ -188,5 +191,5 @@ export function SaveStatusButton({
         </PopoverContent>
       </Popover>
     </div>
-  )
+  );
 }

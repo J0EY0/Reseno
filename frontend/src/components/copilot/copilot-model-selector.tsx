@@ -9,49 +9,49 @@ import {
   ModelSelectorLogo,
   ModelSelectorName,
   ModelSelectorTrigger,
-} from '@/components/ai-elements/model-selector'
-import { PromptInputButton } from '@/components/ai-elements/prompt-input'
-import { Button } from '@/components/ui/button'
-import type { AppMessages } from '@/i18n'
-import { cn } from '@/lib/utils'
-import type { ModelConfig } from '@/types/resume'
-import { Check } from 'lucide-react'
-import { useCallback, useMemo, useState } from 'react'
-import { toast } from 'sonner'
+} from "@/components/ai-elements/model-selector";
+import { PromptInputButton } from "@/components/ai-elements/prompt-input";
+import { Button } from "@/components/ui/button";
+import type { AppMessages } from "@/i18n";
+import { cn } from "@/lib/utils";
+import type { ModelConfig } from "@/types/resume";
+import { Check } from "lucide-react";
+import { useCallback, useMemo, useState } from "react";
+import { toast } from "sonner";
 
 function getModelProvider(config: ModelConfig) {
   return {
     id: config.iconProvider || config.provider,
     label: config.providerLabel || config.provider,
-  }
+  };
 }
 
 function getModelDisplayName(config: ModelConfig) {
-  return config.nickname.trim() || config.model
+  return config.nickname.trim() || config.model;
 }
 
 function getModelTriggerName(config: ModelConfig) {
-  const raw = config.model.trim()
+  const raw = config.model.trim();
 
   if (!raw) {
-    return ''
+    return "";
   }
 
-  if (raw.toLowerCase().startsWith('claude-')) {
-    return raw.replace(/^claude-/i, '').toUpperCase()
+  if (raw.toLowerCase().startsWith("claude-")) {
+    return raw.replace(/^claude-/i, "").toUpperCase();
   }
 
-  return raw.toUpperCase()
+  return raw.toUpperCase();
 }
 
 function getModelSecondaryName(config: ModelConfig) {
-  const nickname = config.nickname.trim()
+  const nickname = config.nickname.trim();
 
   if (!nickname || nickname === config.model) {
-    return null
+    return null;
   }
 
-  return config.model
+  return config.model;
 }
 
 export function CopilotModelSelector({
@@ -64,43 +64,43 @@ export function CopilotModelSelector({
   selectedModelConfigId,
   t,
 }: {
-  appliesToNextMessage: boolean
-  disabled: boolean
-  modelConfigs: ModelConfig[]
-  onOpenModelSettings: () => void
-  onSelectedModelConfigChange: (modelConfigId: string) => void
-  selectedModelConfig: ModelConfig | null
-  selectedModelConfigId: string
-  t: AppMessages
+  appliesToNextMessage: boolean;
+  disabled: boolean;
+  modelConfigs: ModelConfig[];
+  onOpenModelSettings: () => void;
+  onSelectedModelConfigChange: (modelConfigId: string) => void;
+  selectedModelConfig: ModelConfig | null;
+  selectedModelConfigId: string;
+  t: AppMessages;
 }) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(false);
   const modelGroups = useMemo(() => {
-    const grouped = new Map<string, { items: ModelConfig[] }>()
+    const grouped = new Map<string, { items: ModelConfig[] }>();
 
     modelConfigs.forEach((config) => {
-      const provider = getModelProvider(config)
-      const current = grouped.get(provider.label)
+      const provider = getModelProvider(config);
+      const current = grouped.get(provider.label);
 
       if (current) {
-        current.items.push(config)
-        return
+        current.items.push(config);
+        return;
       }
 
-      grouped.set(provider.label, { items: [config] })
-    })
+      grouped.set(provider.label, { items: [config] });
+    });
 
-    return Array.from(grouped.entries())
-  }, [modelConfigs])
+    return Array.from(grouped.entries());
+  }, [modelConfigs]);
   const handleModelSelect = useCallback(
     (modelConfigId: string) => {
-      const changed = modelConfigId !== selectedModelConfigId
-      onSelectedModelConfigChange(modelConfigId)
-      setOpen(false)
+      const changed = modelConfigId !== selectedModelConfigId;
+      onSelectedModelConfigChange(modelConfigId);
+      setOpen(false);
 
       // The selector controls the next accepted user turn. The active run owns
       // an immutable backend snapshot and continues with its original model.
       if (changed && appliesToNextMessage) {
-        toast.info(t.agentModelChangedNextTurn, { closeButton: true })
+        toast.info(t.agentModelChangedNextTurn, { closeButton: true });
       }
     },
     [
@@ -109,22 +109,22 @@ export function CopilotModelSelector({
       selectedModelConfigId,
       t.agentModelChangedNextTurn,
     ],
-  )
+  );
 
   const selectedModelConfigDisplayName = selectedModelConfig
     ? getModelDisplayName(selectedModelConfig)
-    : ''
+    : "";
   const selectedModelConfigTriggerName = selectedModelConfig
     ? getModelTriggerName(selectedModelConfig)
-    : ''
+    : "";
   const triggerAriaLabel = selectedModelConfig
     ? appliesToNextMessage
       ? t.agentModelNextTurnAria.replace(
-          '{model}',
+          "{model}",
           selectedModelConfigDisplayName,
         )
       : selectedModelConfigDisplayName
-    : t.agentModelConfigureHover
+    : t.agentModelConfigureHover;
 
   return (
     <ModelSelector open={open} onOpenChange={setOpen}>
@@ -145,8 +145,8 @@ export function CopilotModelSelector({
           )}
           <ModelSelectorName
             className={cn(
-              'min-w-0 text-[12px] font-medium',
-              !selectedModelConfig && 'text-muted-foreground',
+              "min-w-0 text-[12px] font-medium",
+              !selectedModelConfig && "text-muted-foreground",
             )}
           >
             {selectedModelConfig
@@ -167,8 +167,8 @@ export function CopilotModelSelector({
                 <Button
                   className="mx-auto h-8 rounded-xl px-3 text-xs"
                   onClick={() => {
-                    setOpen(false)
-                    onOpenModelSettings()
+                    setOpen(false);
+                    onOpenModelSettings();
                   }}
                   size="sm"
                   type="button"
@@ -212,5 +212,5 @@ export function CopilotModelSelector({
         </ModelSelectorList>
       </ModelSelectorContent>
     </ModelSelector>
-  )
+  );
 }

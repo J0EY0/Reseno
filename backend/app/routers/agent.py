@@ -10,13 +10,14 @@ from fastapi import (
     Form,
     HTTPException,
     Query,
-    Request,
     UploadFile,
     status,
 )
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
 from app.db.connection import connect
+from app.exceptions import http_error_response
+from app.routers.dependencies import AgentRunManagerDep
 from app.routers.upload_route import LimitedUploadRoute
 from app.schemas.agent import (
     AgentAttachmentResponse,
@@ -45,7 +46,6 @@ from app.services.agent.resume_owner import (
 from app.services.agent_runs import (
     AgentRunCapacityError,
     AgentRunConflictError,
-    AgentRunManager,
     AgentRunNotFoundError,
 )
 from app.services.agent_sessions import (
@@ -73,11 +73,12 @@ def _agent_transport_error(
     code: str,
     **details: str,
 ) -> JSONResponse:
-    """Keep Agent protocol failures outside the HTTP-200 business envelope."""
+    """Return an Agent HTTP failure with its conflict or recovery metadata."""
 
-    return JSONResponse(
+    return http_error_response(
         status_code=status_code,
-        content={"detail": {"code": code, **details}},
+        message=code,
+        data=details or None,
     )
 
 
@@ -131,13 +132,6 @@ async def post_agent_attachment(
     # Cleanup is opportunistic and never delays the upload response.
     background_tasks.add_task(cleanup_expired_pending_attachments)
     return ok_response(attachment)
-
-
-def _run_manager(request: Request) -> AgentRunManager:
-    manager = getattr(request.app.state, "agent_runs", None)
-    if not isinstance(manager, AgentRunManager):
-        raise RuntimeError("Agent run manager is not initialized.")
-    return manager
 
 
 @router.get(
@@ -357,15 +351,14 @@ def patch_agent_resume_draft(
 
 @router.post("/chat")
 async def post_agent_chat(
-    http_request: Request,
     request: AgentChatRequest,
+    manager: AgentRunManagerDep,
 ) -> Response:
     """Start one background Agent run and subscribe to its event stream."""
 
     # Freeze persisted preferences before handing the request to the background
     # run. A settings change during this run takes effect on the next turn.
     prepared_request = prepare_agent_request(request, load_agent_settings())
-    manager = _run_manager(http_request)
     try:
         run = await manager.start(prepared_request)
     except AgentResumeUnavailableError as exc:
@@ -422,8 +415,8 @@ async def post_agent_chat(
     response_model=ApiResponse[AgentSessionRecoveryResponse],
 )
 async def get_agent_session_recovery(
-    http_request: Request,
     resume_id: str,
+    manager: AgentRunManagerDep,
 ) -> ApiResponse[AgentSessionRecoveryResponse] | JSONResponse:
     """Restore durable history and its matching reconnectable run together."""
 
@@ -433,7 +426,7 @@ async def get_agent_session_recovery(
             detail=APP_MESSAGE_BAD_REQUEST,
         )
     try:
-        recovery = await _run_manager(http_request).recover_session(resume_id)
+        recovery = await manager.recover_session(resume_id)
     except AgentRunNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE) from exc
     except AgentSessionDataError:
@@ -443,13 +436,12 @@ async def get_agent_session_recovery(
 
 @router.get("/runs/{run_id}/events")
 async def get_agent_run_events(
-    http_request: Request,
     run_id: str,
+    manager: AgentRunManagerDep,
     after: Annotated[int, Query(ge=0)] = 0,
 ) -> StreamingResponse:
     """Replay buffered events and continue following an in-process run."""
 
-    manager = _run_manager(http_request)
     try:
         await manager.get(run_id)
     except AgentRunNotFoundError as exc:
@@ -472,13 +464,13 @@ async def get_agent_run_events(
     response_model=ApiResponse[AgentRunResponse],
 )
 async def delete_agent_run(
-    http_request: Request,
     run_id: str,
+    manager: AgentRunManagerDep,
 ) -> ApiResponse[AgentRunResponse]:
     """Explicitly stop a run; subscriber disconnects never call this route."""
 
     try:
-        run = await _run_manager(http_request).stop(run_id)
+        run = await manager.stop(run_id)
     except AgentRunNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from exc
     return ok_response(run.response())

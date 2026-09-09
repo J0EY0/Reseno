@@ -67,21 +67,16 @@ export function PromptInput({
   syncHiddenInput,
   ...props
 }: PromptInputProps) {
-  const {
-    attachments,
-    formRef,
-    handleFileChange,
-    handleSubmit,
-    inputRef,
-  } = usePromptInputForm({
-    accept,
-    globalDrop,
-    maxFiles,
-    maxFileSize,
-    onError,
-    onSubmit,
-    syncHiddenInput,
-  });
+  const { attachments, formRef, handleFileChange, handleSubmit, inputRef } =
+    usePromptInputForm({
+      accept,
+      globalDrop,
+      maxFiles,
+      maxFileSize,
+      onError,
+      onSubmit,
+      syncHiddenInput,
+    });
 
   return (
     <LocalPromptInputAttachmentsContext.Provider value={attachments}>
@@ -109,16 +104,11 @@ export function PromptInput({
 
 type PromptInputBodyProps = HTMLAttributes<HTMLDivElement>;
 
-export function PromptInputBody({
-  className,
-  ...props
-}: PromptInputBodyProps) {
+export function PromptInputBody({ className, ...props }: PromptInputBodyProps) {
   return <div className={cn("contents", className)} {...props} />;
 }
 
-type PromptInputTextareaProps = ComponentProps<
-  typeof InputGroupTextarea
->;
+type PromptInputTextareaProps = ComponentProps<typeof InputGroupTextarea>;
 
 export function PromptInputTextarea({
   onChange,
@@ -313,10 +303,7 @@ export function PromptInputSubmit({
     icon = <Spinner />;
   } else if (status === "streaming") {
     icon = (
-      <span
-        aria-hidden="true"
-        className="size-3.5 rounded-[5px] bg-current"
-      />
+      <span aria-hidden="true" className="size-3.5 rounded-[5px] bg-current" />
     );
   } else if (status === "error") {
     icon = <XIcon className="size-4" />;

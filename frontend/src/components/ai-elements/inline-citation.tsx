@@ -74,19 +74,14 @@ export const InlineCitationCardTrigger = ({
   </HoverCardTrigger>
 );
 
-type InlineCitationCardBodyProps = ComponentProps<
-  typeof HoverCardContent
->;
+type InlineCitationCardBodyProps = ComponentProps<typeof HoverCardContent>;
 
 export const InlineCitationCardBody = ({
   className,
   ...props
 }: InlineCitationCardBodyProps) => (
   <HoverCardContent
-    className={cn(
-      "relative w-80 max-w-[calc(100vw-1.5rem)] p-0",
-      className
-    )}
+    className={cn("relative w-80 max-w-[calc(100vw-1.5rem)] p-0", className)}
     collisionPadding={12}
     side="top"
     sideOffset={8}
@@ -122,7 +117,7 @@ export const InlineCitationCarousel = ({
 type InlineCitationCarouselContentProps = ComponentProps<"div">;
 
 export const InlineCitationCarouselContent = (
-  props: InlineCitationCarouselContentProps
+  props: InlineCitationCarouselContentProps,
 ) => <CarouselContent {...props} />;
 
 type InlineCitationCarouselItemProps = ComponentProps<"div">;
@@ -146,7 +141,7 @@ export const InlineCitationCarouselHeader = ({
   <div
     className={cn(
       "flex items-center justify-between gap-2 rounded-t-md bg-secondary p-2",
-      className
+      className,
     )}
     {...props}
   />
@@ -190,7 +185,7 @@ export const InlineCitationCarouselIndex = ({
     <div
       className={cn(
         "flex flex-1 items-center justify-end px-3 py-1 text-muted-foreground text-xs",
-        className
+        className,
       )}
       {...props}
     >
@@ -283,7 +278,7 @@ export const InlineCitationSource = ({
       window.clearTimeout(copyTimeoutRef.current);
       copyTimeoutRef.current = window.setTimeout(
         () => setIsCopied(false),
-        1600
+        1600,
       );
     } catch {
       setIsCopied(false);
@@ -294,7 +289,7 @@ export const InlineCitationSource = ({
     () => () => {
       window.clearTimeout(copyTimeoutRef.current);
     },
-    []
+    [],
   );
 
   const CopyStatusIcon = isCopied ? CheckIcon : CopyIcon;

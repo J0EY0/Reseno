@@ -70,9 +70,7 @@ function StandardPaginatedResume({
             <TemplateImages
               images={model.layout.images}
               editable={editableTemplateImages}
-              showEmptyPlaceholders={
-                showEmptyTemplateImagePlaceholders
-              }
+              showEmptyPlaceholders={showEmptyTemplateImagePlaceholders}
               onMoveImage={onMoveTemplateImage}
             />
             <div

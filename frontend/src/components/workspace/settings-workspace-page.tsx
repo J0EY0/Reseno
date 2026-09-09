@@ -7,7 +7,10 @@ import { useRememberWorkspaceLateralRouteData } from "@/components/workspace/use
 import { WorkspaceRouteError } from "@/components/workspace/workspace-route-error";
 import { useWorkspacePreferences } from "@/components/workspace/workspace-preferences-context";
 
-export function SettingsWorkspacePage({ onLogout, onReady }: {
+export function SettingsWorkspacePage({
+  onLogout,
+  onReady,
+}: {
   onLogout: () => void;
   onReady?: () => void;
 }) {

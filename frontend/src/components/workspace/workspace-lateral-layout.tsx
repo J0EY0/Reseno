@@ -1,7 +1,10 @@
 import { Outlet, useLocation } from "react-router-dom";
 
 import { WorkspaceShell } from "@/components/workspace/workspace-shell";
-import { getWorkspaceRoute, getWorkspaceViewFromRoute } from "@/lib/workspace-route";
+import {
+  getWorkspaceRoute,
+  getWorkspaceViewFromRoute,
+} from "@/lib/workspace-route";
 
 export function WorkspaceLateralLayout({ onLogout }: { onLogout: () => void }) {
   const { pathname } = useLocation();

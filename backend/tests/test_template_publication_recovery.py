@@ -13,17 +13,21 @@ from tests.template_fixtures import portable_template
 
 
 @pytest.mark.parametrize("phase", ["journal", "before_commit", "after_commit"])
+@pytest.mark.parametrize("save_mode", ["autosave", "checkpoint", "discard"])
 def test_template_publication_recovers_after_process_interruption(
-    client: TestClient, phase: str
+    client: TestClient, phase: str, save_mode: str
 ) -> None:
-    before = templates.create_template(portable_template("Before"))["template"]
+    checkpoint = templates.create_template(portable_template("Explicit"))["template"]
+    before = templates.update_template(
+        checkpoint["id"], portable_template("Before"), save_mode="autosave"
+    )["template"]
     program = """
 import os
 import sys
 from pathlib import Path
 from app.services import templates, template_publications
 from tests.template_fixtures import portable_template
-entity_id, phase, clock = sys.argv[1:]
+entity_id, phase, clock, save_mode = sys.argv[1:]
 templates._utc_now = lambda: clock
 if phase == 'journal':
     original = template_publications.os.replace
@@ -50,10 +54,23 @@ else:
             if sql.strip().upper() == 'COMMIT': os._exit(23)
             return result
     templates.connect = lambda: Connection(original())
-templates.update_template(entity_id, portable_template('After'))
+if save_mode == 'discard':
+    templates.discard_template_changes(entity_id)
+else:
+    templates.update_template(
+        entity_id, portable_template('After'), save_mode=save_mode
+    )
 """
     process = subprocess.run(
-        [sys.executable, "-c", program, before["id"], phase, before["updatedAt"]],
+        [
+            sys.executable,
+            "-c",
+            program,
+            before["id"],
+            phase,
+            before["updatedAt"],
+            save_mode,
+        ],
         cwd=Path(__file__).parents[1],
         env=os.environ.copy(),
         capture_output=True,
@@ -61,7 +78,13 @@ templates.update_template(entity_id, portable_template('After'))
         timeout=15,
     )
     assert process.returncode == 23, process.stderr
-    expected_name = "After" if phase == "after_commit" else "Before"
+    committed_name = "Explicit" if save_mode == "discard" else "After"
+    expected_name = committed_name if phase == "after_commit" else "Before"
+    detail = templates.get_template_detail(before["id"])
+    expected_checkpoint = (
+        None if phase == "after_commit" and save_mode != "autosave" else checkpoint
+    )
+    assert detail["checkpoint"] == expected_checkpoint
     items = templates.list_templates()["templates"]
     assert items[0]["name"] == expected_name
     with closing(connect()) as conn:

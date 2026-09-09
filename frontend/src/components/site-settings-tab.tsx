@@ -1,10 +1,4 @@
-import {
-  KeyRound,
-  Languages,
-  Monitor,
-  Moon,
-  Sun,
-} from "lucide-react";
+import { KeyRound, Languages, Monitor, Moon, Sun } from "lucide-react";
 
 import { PasswordSettingsDialog } from "@/components/password-settings-dialog";
 import { OAuthConnectionDialog } from "@/components/auth/oauth-connection-dialog";
@@ -118,10 +112,7 @@ export function SiteSettingsTab({
             description={t.passwordSettingsDescription}
           >
             <div className="flex justify-end">
-              <PasswordSettingsDialog
-                t={t}
-                controller={passwordController}
-              />
+              <PasswordSettingsDialog t={t} controller={passwordController} />
             </div>
           </SettingsRow>
           <Separator className="mx-5 w-auto sm:mx-6" />

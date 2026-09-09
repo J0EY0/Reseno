@@ -8,10 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { AppMessages } from "@/i18n";
 import { cn } from "@/lib/utils";
-import type {
-  ResumeData,
-  ResumeTemplateDefinition,
-} from "@/types/resume";
+import type { ResumeData, ResumeTemplateDefinition } from "@/types/resume";
 
 export const TemplateGalleryCard = memo(function TemplateGalleryCard({
   t,

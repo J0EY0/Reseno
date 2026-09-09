@@ -25,8 +25,7 @@ type PanSession = [
   y: number,
 ];
 
-const DOCUMENT_CANVAS_SCALE_STORAGE_KEY =
-  "reseno-document-canvas-scale-v1";
+const DOCUMENT_CANVAS_SCALE_STORAGE_KEY = "reseno-document-canvas-scale-v1";
 
 function loadDocumentCanvasScale() {
   if (typeof window === "undefined") {
@@ -79,11 +78,7 @@ export function useDocumentCanvas() {
   };
 
   const setScale = useCallback(
-    (
-      requestedScale: number | null,
-      clientX?: number,
-      clientY?: number,
-    ) => {
+    (requestedScale: number | null, clientX?: number, clientY?: number) => {
       const viewport = viewportRef.current;
       if (!viewport) {
         return;
@@ -145,10 +140,7 @@ export function useDocumentCanvas() {
     };
 
     viewport.addEventListener("wheel", handleWheel, { passive: false });
-    viewport.style.setProperty(
-      "--canvas-scale",
-      String(zoomRef.current[0]),
-    );
+    viewport.style.setProperty("--canvas-scale", String(zoomRef.current[0]));
     const resizeObserver = new ResizeObserver(() => {
       const [, currentlyFitsWidth] = zoomRef.current;
       if (currentlyFitsWidth) {
@@ -188,10 +180,7 @@ export function useDocumentCanvas() {
     const viewport = event.currentTarget;
     if (event.detail > 0 && (event.button === 0 || event.button === 1)) {
       const activeElement = viewport.ownerDocument.activeElement;
-      if (
-        activeElement === viewport ||
-        !viewport.contains(activeElement)
-      ) {
+      if (activeElement === viewport || !viewport.contains(activeElement)) {
         viewport.dataset.focusOrigin = "pointer";
         if (activeElement !== viewport) {
           viewport.focus({ preventScroll: true });

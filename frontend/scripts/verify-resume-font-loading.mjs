@@ -87,9 +87,7 @@ assert(
 );
 assert(
   /inter:\s*[\s\S]{0,300}Noto Sans SC Variable/.test(previewStyles) &&
-    /noto_sans_sc:\s*[\s\S]{0,300}Noto Sans SC Variable/.test(
-      previewStyles,
-    ) &&
+    /noto_sans_sc:\s*[\s\S]{0,300}Noto Sans SC Variable/.test(previewStyles) &&
     /plex:\s*[\s\S]{0,300}Noto Sans SC Variable/.test(previewStyles) &&
     /serif:\s*[\s\S]{0,300}Noto Serif SC Variable/.test(previewStyles),
   "Conditional assets must preserve the exact preview font fallback stacks.",
@@ -109,7 +107,10 @@ const thumbnailFontModule = evaluateTypeScript(thumbnailFonts, {
 });
 for (const [fontFamilies, expectedFonts] of [
   [["times"], ["serif"]],
-  [["times", "serif", "inter"], ["inter", "serif"]],
+  [
+    ["times", "serif", "inter"],
+    ["inter", "serif"],
+  ],
   [[], []],
 ]) {
   requestedFonts.length = 0;

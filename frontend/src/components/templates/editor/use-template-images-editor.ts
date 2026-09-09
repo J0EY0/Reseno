@@ -1,39 +1,14 @@
 import { useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 
 import type { AppMessages } from "@/i18n";
-import { readAvatarFileAsDataUrl } from "@/lib/avatar";
-import { createId } from "@/lib/resume";
+import { createTemplateImageElement } from "@/lib/templates";
 import type {
   ResumeTemplateDefinition,
   ResumeTemplateUpdate,
   ResumeTemplateImageElement,
   ResumeTemplateLayout,
 } from "@/types/resume";
-
-function createTemplateImageElement(
-  index: number,
-  defaultName: string,
-  layout?: ResumeTemplateLayout,
-): ResumeTemplateImageElement {
-  const placeOnLeft = layout?.avatarPosition === "right";
-
-  return {
-    id: createId("image"),
-    name: `${defaultName} ${index}`,
-    src: "",
-    alt: "",
-    x: placeOnLeft ? 14 : 166,
-    y: 18,
-    width: 30,
-    height: 20,
-    opacity: 1,
-    borderWidth: 0.8,
-    borderColor: "#d4d4d8",
-    borderRadius: 8,
-    objectFit: "contain",
-    visible: true,
-  };
-}
 
 export function useTemplateImagesEditor({
   t,
@@ -102,7 +77,9 @@ export function useTemplateImagesEditor({
     imageId: string,
     patch:
       | Partial<ResumeTemplateImageElement>
-      | ((image: ResumeTemplateImageElement) => Partial<ResumeTemplateImageElement>),
+      | ((
+          image: ResumeTemplateImageElement,
+        ) => Partial<ResumeTemplateImageElement>),
   ) {
     if (isReadonly) {
       return;
@@ -185,7 +162,9 @@ export function useTemplateImagesEditor({
   }
 
   async function uploadImage(imageId: string, file: File | undefined) {
-    const original = template.layout.images.find((image) => image.id === imageId);
+    const original = template.layout.images.find(
+      (image) => image.id === imageId,
+    );
     if (!file || !original || isReadonly) {
       return;
     }
@@ -193,19 +172,34 @@ export function useTemplateImagesEditor({
     const upload = Symbol();
     uploadsRef.current.set(imageKey, upload);
     try {
-      const src = await readAvatarFileAsDataUrl(file);
+      const { prepareTemplateImage } =
+        await import("@/lib/template-image-upload");
+      const src = await prepareTemplateImage(file);
       if (uploadsRef.current.get(imageKey) !== upload) {
         return;
       }
       updateImage(imageId, (current) => ({
         src,
         alt: file.name,
-        name: current.name === original.name
-          ? file.name.replace(/\.[^.]+$/, "") || file.name
-          : current.name,
+        name:
+          current.name === original.name
+            ? file.name.replace(/\.[^.]+$/, "") || file.name
+            : current.name,
       }));
     } catch (error) {
+      if (uploadsRef.current.get(imageKey) !== upload) {
+        return;
+      }
       console.error("Failed to import template image.", error);
+      const messageKey = error instanceof Error ? error.message : "";
+      const message =
+        Object.hasOwn(t, messageKey) && messageKey.startsWith("templateImage")
+          ? t[messageKey as keyof AppMessages]
+          : t.templateImageProcessingFailed;
+      toast.error(
+        typeof message === "string" ? message : t.templateImageProcessingFailed,
+        { closeButton: true },
+      );
     } finally {
       if (uploadsRef.current.get(imageKey) === upload) {
         uploadsRef.current.delete(imageKey);

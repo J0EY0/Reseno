@@ -1,13 +1,13 @@
-import type { ExperienceItem } from '@/types/resume'
+import type { ExperienceItem } from "@/types/resume";
 
-import { FormField } from './form-field'
-import { InlineTextInput } from './inline-text-input'
-import { ResumeItemEditorShell } from './resume-item-editor-shell'
+import { FormField } from "./form-field";
+import { InlineTextInput } from "./inline-text-input";
+import { ResumeItemEditorShell } from "./resume-item-editor-shell";
 import {
   HighlightsField,
   compactResumeFieldClassName,
-} from './resume-section-editor-fields'
-import type { TypedSectionEditorProps } from './resume-section-editor-types'
+} from "./resume-section-editor-fields";
+import type { TypedSectionEditorProps } from "./resume-section-editor-types";
 
 export function ExperienceSectionEditor({
   t,
@@ -16,18 +16,18 @@ export function ExperienceSectionEditor({
   onUpdateItem,
   onRemoveItem,
   onMoveItem,
-}: TypedSectionEditorProps<'experience'>) {
+}: TypedSectionEditorProps<"experience">) {
   function updateItem(
     item: ExperienceItem,
-    patch: Partial<Omit<ExperienceItem, 'id'>>,
+    patch: Partial<Omit<ExperienceItem, "id">>,
   ) {
     onUpdateItem({
-      type: 'item.update',
+      type: "item.update",
       sectionId: section.id,
-      sectionKind: 'experience',
+      sectionKind: "experience",
       itemId: item.id,
       patch,
-    })
+    });
   }
 
   return section.items.map((item, index) => (
@@ -43,8 +43,8 @@ export function ExperienceSectionEditor({
       moveDownLabel={t.moveItemDown}
       toggleLabel={t.toggleItem}
       onRemove={() => onRemoveItem(item.id)}
-      onMoveUp={() => onMoveItem(item.id, 'up')}
-      onMoveDown={() => onMoveItem(item.id, 'down')}
+      onMoveUp={() => onMoveItem(item.id, "up")}
+      onMoveDown={() => onMoveItem(item.id, "down")}
     >
       <div className="grid min-w-0 gap-3 md:grid-cols-2">
         <FormField label={t.fieldLabels.company}>
@@ -105,5 +105,5 @@ export function ExperienceSectionEditor({
         />
       </div>
     </ResumeItemEditorShell>
-  ))
+  ));
 }

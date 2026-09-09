@@ -43,7 +43,13 @@ function getValidSourceUrl(source: AgentSource) {
 
 type AgentWebSource = AgentSource & { url: string };
 
-function AgentSourcesCitation({ sources, t }: { sources: AgentWebSource[]; t: AppMessages }) {
+function AgentSourcesCitation({
+  sources,
+  t,
+}: {
+  sources: AgentWebSource[];
+  t: AppMessages;
+}) {
   if (!sources.length) {
     return null;
   }

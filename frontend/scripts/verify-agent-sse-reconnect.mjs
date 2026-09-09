@@ -15,17 +15,11 @@ const apiClient = {
     agentRunEvents: (runId) => `/api/agent/runs/${runId}/events`,
   },
   clearApiCache: (route) => clearedRoutes.push(route),
-  fetchApiResource: (...args) => activeFetch(...args),
+  fetchApiResource: (route, options) =>
+    activeFetch(new URL(route, "http://agent.test").href, options),
   getApiErrorStatus: () => undefined,
   requestApi: () => {
     throw new Error("Unexpected requestApi call.");
-  },
-  resolveApiUrl: (route, options = {}) => {
-    const url = new URL(route, "http://agent.test");
-    for (const [key, value] of Object.entries(options.searchParams ?? {})) {
-      url.searchParams.set(key, String(value));
-    }
-    return url.toString();
   },
   uploadApi: () => {
     throw new Error("Unexpected uploadApi call.");
@@ -90,13 +84,10 @@ function setAgentRequestPhase(runtime, updates, phase) {
 }
 
 const messageCodec = await loadTypeScriptModule("agent-message-codec.ts");
-const agentStreamClient = await loadTypeScriptModule(
-  "agent-stream-client.ts",
-  {
-    "@/lib/agent-message-codec": messageCodec,
-    "@/lib/api-client": apiClient,
-  },
-);
+const agentStreamClient = await loadTypeScriptModule("agent-stream-client.ts", {
+  "@/lib/agent-message-codec": messageCodec,
+  "@/lib/api-client": apiClient,
+});
 const agentRunStreamHook = await loadTypeScriptModule(
   "../components/copilot/use-agent-run-stream.ts",
   {
@@ -107,8 +98,8 @@ const agentRunStreamHook = await loadTypeScriptModule(
     },
     "@/lib/api-client": {
       isAbortError: (error) => error?.name === "AbortError",
-      isApiErrorToastShown: () => false,
     },
+    "@/lib/api-error-notifier": { notifyApiError: () => false },
     "./agent-conversation-runtime": { setAgentRequestPhase },
     "./copilot-message-model": {
       getEditsPreviewKey: () => "",
@@ -117,6 +108,38 @@ const agentRunStreamHook = await loadTypeScriptModule(
   },
   { console: { error: () => undefined } },
 );
+
+for (const abrupt of [false, true]) {
+  let requests = 0;
+  const cursors = [];
+  activeFetch = async (url) => {
+    cursors.push(Number(new URL(url).searchParams.get("after")));
+    const id = ++requests;
+    const event =
+      id === 9
+        ? `id: ${id}\nevent: run_done\ndata: {"status":"completed","executionState":"succeeded"}\n\n`
+        : `id: ${id}\nevent: text_delta\ndata: {"delta":"a","timelinePartId":"text-1"}\n\n`;
+    if (!abrupt || id === 9) return createEventStream(event);
+    let delivered = false;
+    return new Response(
+      new ReadableStream({
+        pull(controller) {
+          if (delivered)
+            controller.error(new Error("network interrupted after progress"));
+          else {
+            delivered = true;
+            controller.enqueue(new TextEncoder().encode(event));
+          }
+        },
+      }),
+      { headers: { "Content-Type": "text/event-stream" } },
+    );
+  };
+  const result = await agentStreamClient.connectAgentRun(createActiveRun());
+  assert.equal(result.status, "completed");
+  assert.equal(result.message.text, "aaaaaaaa");
+  assert.deepEqual(cursors, [0, 1, 2, 3, 4, 5, 6, 7, 8]);
+}
 
 {
   const requestedUrls = [];
@@ -397,7 +420,5 @@ const agentRunStreamHook = await loadTypeScriptModule(
     "An already-aborted stream subscription must not start a request.",
   );
 }
-
-await import("./verify-agent-client-boundaries.mjs");
 
 console.log("Agent SSE reconnect budget checks passed.");

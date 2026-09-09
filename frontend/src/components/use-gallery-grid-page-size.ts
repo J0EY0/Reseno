@@ -33,9 +33,7 @@ function getColumnCount(templateColumns: string) {
 }
 
 function getGridColumnCount(element: HTMLElement) {
-  return getColumnCount(
-    window.getComputedStyle(element).gridTemplateColumns,
-  );
+  return getColumnCount(window.getComputedStyle(element).gridTemplateColumns);
 }
 
 function getItemPositions(element: HTMLElement): ItemPositions {
@@ -97,9 +95,7 @@ function getTransitionEndWidth(transition: CSSTransition) {
   }
 
   const keyframes = effect.getKeyframes();
-  const width = Number.parseFloat(
-    String(keyframes.at(-1)?.width ?? ""),
-  );
+  const width = Number.parseFloat(String(keyframes.at(-1)?.width ?? ""));
 
   return Number.isFinite(width) ? width : null;
 }
@@ -113,18 +109,15 @@ function getGridTemplateAtWidth(grid: HTMLElement, width: number) {
   measurement.style.visibility = "hidden";
   measurement.style.width = `${width}px`;
   document.body.append(measurement);
-  const templateColumns = window.getComputedStyle(
-    measurement,
-  ).gridTemplateColumns;
+  const templateColumns =
+    window.getComputedStyle(measurement).gridTemplateColumns;
   measurement.remove();
   return templateColumns;
 }
 
 function isSingleRow(positions: ItemPositions) {
   const tops = new Set(
-    Array.from(positions.values(), (position) =>
-      Math.round(position.top),
-    ),
+    Array.from(positions.values(), (position) => Math.round(position.top)),
   );
   return tops.size === 1;
 }
@@ -230,9 +223,7 @@ export function useGalleryGridPageSize({
       return;
     }
 
-    const sidebarWrapper = element.closest(
-      '[data-slot="sidebar-wrapper"]',
-    );
+    const sidebarWrapper = element.closest('[data-slot="sidebar-wrapper"]');
     let hasMeasuredInitialLayout = false;
     let originalGridTemplateColumns: string | null = null;
     let lockedTransition: CSSTransition | null = null;
@@ -244,9 +235,7 @@ export function useGalleryGridPageSize({
         return;
       }
 
-      const firstPositions = animate
-        ? getItemPositions(element)
-        : null;
+      const firstPositions = animate ? getItemPositions(element) : null;
       const timingSource = animate
         ? getSidebarWidthTransition(element)
         : undefined;
@@ -296,8 +285,7 @@ export function useGalleryGridPageSize({
 
       const gridWidth = element.getBoundingClientRect().width;
       const sidebarWidth = sidebarGap.getBoundingClientRect().width;
-      const targetGridWidth =
-        gridWidth + sidebarWidth - targetSidebarWidth;
+      const targetGridWidth = gridWidth + sidebarWidth - targetSidebarWidth;
       const targetTemplateColumns = getGridTemplateAtWidth(
         element,
         targetGridWidth,
@@ -381,11 +369,7 @@ export function useGalleryGridPageSize({
       }
 
       if (columnCountRef.current !== nextColumnCount) {
-        animateReflow(
-          element,
-          itemPositionsRef.current,
-          activeAnimations,
-        );
+        animateReflow(element, itemPositionsRef.current, activeAnimations);
         columnCountRef.current = nextColumnCount;
         itemPositionsRef.current = getItemPositions(element);
         setColumnCount(nextColumnCount);

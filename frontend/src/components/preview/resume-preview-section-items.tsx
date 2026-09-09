@@ -50,9 +50,7 @@ function hasTextSlot(
   parts: RenderableSectionItem["subtitleParts"],
 ) {
   return Boolean(
-    value ||
-      fallbackDiffs.length > 0 ||
-      parts?.some((part) => part.value),
+    value || fallbackDiffs.length > 0 || parts?.some((part) => part.value),
   );
 }
 
@@ -171,11 +169,7 @@ function TimelineItem({
             )}
             style={{ fontSize: `${settings.metaScale}em` }}
           >
-            <ResumeDiffText
-              richText
-              value={item.period}
-              diffs={periodDiffs}
-            />
+            <ResumeDiffText richText value={item.period} diffs={periodDiffs} />
           </span>
         ) : null}
         {hasSubtitle ? (

@@ -3,7 +3,6 @@ import {
   clearApiCache,
   fetchApiResource,
   getApiErrorStatus,
-  resolveApiUrl,
 } from "@/lib/api-client";
 import {
   applyAgentTextStreamEvent,
@@ -202,7 +201,9 @@ async function readAgentChatStream(
     }
 
     if (type === "run_done") {
-      const status = isRecord(payload) ? toRunStatus(payload.status) : undefined;
+      const status = isRecord(payload)
+        ? toRunStatus(payload.status)
+        : undefined;
       if (status) {
         accumulator.status = status;
       }
@@ -311,7 +312,9 @@ function waitBeforeReconnect(signal: AbortSignal | undefined, delayMs: number) {
 
     function handleAbort() {
       window.clearTimeout(timeoutId);
-      reject(new DOMException("Agent stream subscription aborted.", "AbortError"));
+      reject(
+        new DOMException("Agent stream subscription aborted.", "AbortError"),
+      );
     }
 
     const timeoutId = window.setTimeout(() => {
@@ -344,15 +347,13 @@ async function fetchAgentRunEvents(
   signal: AbortSignal | undefined,
 ) {
   const route = apiRoutes.agentRunEvents(runId);
-  const response = await fetchApiResource(
-    resolveApiUrl(route, { searchParams: { after } }),
-    {
-      cache: "no-store",
-      headers: { Accept: "text/event-stream" },
-      method: "GET",
-      signal,
-    },
-  );
+  const response = await fetchApiResource(`${route}?after=${after}`, {
+    cache: "no-store",
+    notifyOnError: false,
+    headers: { Accept: "text/event-stream" },
+    method: "GET",
+    signal,
+  });
   assertEventStreamResponse(response, route);
   return response;
 }
@@ -373,6 +374,7 @@ async function consumeAgentRun(
   while (accumulator.status === "active") {
     throwIfAborted(options.signal);
 
+    const previousEventId = accumulator.lastEventId;
     try {
       response ??= await fetchAgentRunEvents(
         run.id,
@@ -401,6 +403,10 @@ async function consumeAgentRun(
       // A subscriber can disappear while the process-local Agent run keeps
       // working. Retry bounded transport interruptions from the last
       // acknowledged SSE id, but never loop forever on a broken connection.
+      if (accumulator.lastEventId > previousEventId) {
+        reconnectAttempts = 0;
+        reconnectDelayMs = 250;
+      }
       reconnectAttempts += 1;
       if (reconnectAttempts > maxReconnectAttempts) {
         throw error;
@@ -439,19 +445,17 @@ export async function sendAgentChatMessage(
   request: AgentChatRequest,
   options: AgentChatStreamOptions = {},
 ) {
-  const response = await fetchApiResource(
-    resolveApiUrl(apiRoutes.agentChat),
-    {
-      body: JSON.stringify({ ...request, stream: true }),
-      cache: "no-store",
-      headers: {
-        Accept: "text/event-stream",
-        "Content-Type": "application/json",
-      },
-      method: "POST",
-      signal: options.signal,
+  const response = await fetchApiResource(apiRoutes.agentChat, {
+    body: JSON.stringify({ ...request, stream: true }),
+    cache: "no-store",
+    notifyOnError: false,
+    headers: {
+      Accept: "text/event-stream",
+      "Content-Type": "application/json",
     },
-  );
+    method: "POST",
+    signal: options.signal,
+  });
 
   assertEventStreamResponse(response, apiRoutes.agentChat);
   const runId = response.headers.get("X-Agent-Run-Id")?.trim();

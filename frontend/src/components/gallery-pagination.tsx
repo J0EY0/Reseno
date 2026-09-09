@@ -83,12 +83,7 @@ export function GalleryPagination({
   }
 
   function goToPage(page: number) {
-    if (
-      disabled ||
-      page < 1 ||
-      page > totalPages ||
-      page === currentPage
-    ) {
+    if (disabled || page < 1 || page > totalPages || page === currentPage) {
       return;
     }
 
@@ -135,9 +130,7 @@ export function GalleryPagination({
         <PaginationItem>
           <PaginationPrevious
             href={
-              previousUnavailable
-                ? undefined
-                : getPageHref(currentPage - 1)
+              previousUnavailable ? undefined : getPageHref(currentPage - 1)
             }
             text={t.paginationPrevious}
             aria-label={t.paginationPrevious}
@@ -147,11 +140,7 @@ export function GalleryPagination({
               previousUnavailable && "pointer-events-none opacity-45",
             )}
             onClick={(event) => {
-              handlePageClick(
-                event,
-                currentPage - 1,
-                previousUnavailable,
-              );
+              handlePageClick(event, currentPage - 1, previousUnavailable);
             }}
           />
         </PaginationItem>
@@ -182,16 +171,12 @@ export function GalleryPagination({
 
         <PaginationItem>
           <PaginationNext
-            href={
-              nextUnavailable ? undefined : getPageHref(currentPage + 1)
-            }
+            href={nextUnavailable ? undefined : getPageHref(currentPage + 1)}
             text={t.paginationNext}
             aria-label={t.paginationNext}
             aria-disabled={nextUnavailable}
             tabIndex={nextUnavailable ? -1 : undefined}
-            className={cn(
-              nextUnavailable && "pointer-events-none opacity-45",
-            )}
+            className={cn(nextUnavailable && "pointer-events-none opacity-45")}
             onClick={(event) => {
               handlePageClick(event, currentPage + 1, nextUnavailable);
             }}

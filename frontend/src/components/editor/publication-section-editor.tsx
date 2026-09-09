@@ -1,11 +1,11 @@
-import { Input } from '@/components/ui/input'
-import type { PublicationItem } from '@/types/resume'
+import { Input } from "@/components/ui/input";
+import type { PublicationItem } from "@/types/resume";
 
-import { FormField } from './form-field'
-import { InlineTextInput } from './inline-text-input'
-import { ResumeItemEditorShell } from './resume-item-editor-shell'
-import { compactResumeFieldClassName } from './resume-section-editor-fields'
-import type { TypedSectionEditorProps } from './resume-section-editor-types'
+import { FormField } from "./form-field";
+import { InlineTextInput } from "./inline-text-input";
+import { ResumeItemEditorShell } from "./resume-item-editor-shell";
+import { compactResumeFieldClassName } from "./resume-section-editor-fields";
+import type { TypedSectionEditorProps } from "./resume-section-editor-types";
 
 export function PublicationSectionEditor({
   t,
@@ -14,18 +14,18 @@ export function PublicationSectionEditor({
   onUpdateItem,
   onRemoveItem,
   onMoveItem,
-}: TypedSectionEditorProps<'publication'>) {
+}: TypedSectionEditorProps<"publication">) {
   function updateItem(
     item: PublicationItem,
-    patch: Partial<Omit<PublicationItem, 'id'>>,
+    patch: Partial<Omit<PublicationItem, "id">>,
   ) {
     onUpdateItem({
-      type: 'item.update',
+      type: "item.update",
       sectionId: section.id,
-      sectionKind: 'publication',
+      sectionKind: "publication",
       itemId: item.id,
       patch,
-    })
+    });
   }
 
   return section.items.map((item, index) => (
@@ -41,11 +41,14 @@ export function PublicationSectionEditor({
       moveDownLabel={t.moveItemDown}
       toggleLabel={t.toggleItem}
       onRemove={() => onRemoveItem(item.id)}
-      onMoveUp={() => onMoveItem(item.id, 'up')}
-      onMoveDown={() => onMoveItem(item.id, 'down')}
+      onMoveUp={() => onMoveItem(item.id, "up")}
+      onMoveDown={() => onMoveItem(item.id, "down")}
     >
       <div className="grid min-w-0 gap-3 md:grid-cols-2">
-        <FormField label={t.fieldLabels.publicationTitle} className="md:col-span-2">
+        <FormField
+          label={t.fieldLabels.publicationTitle}
+          className="md:col-span-2"
+        >
           <InlineTextInput
             t={t}
             aria-label={t.fieldLabels.publicationTitle}
@@ -110,5 +113,5 @@ export function PublicationSectionEditor({
         </FormField>
       </div>
     </ResumeItemEditorShell>
-  ))
+  ));
 }

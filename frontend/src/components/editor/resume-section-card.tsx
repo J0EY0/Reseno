@@ -10,19 +10,19 @@ import {
   Plus,
   Trash2,
   type LucideIcon,
-} from 'lucide-react'
-import { lazy, Suspense, useEffect, useState } from 'react'
+} from "lucide-react";
+import { lazy, Suspense, useEffect, useState } from "react";
 
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import type { AppMessages } from '@/i18n'
-import { createId } from '@/lib/resume-id'
-import type { ResumeSectionMutation } from '@/lib/resume-section-mutations'
-import type { ResumeSection, SectionKind } from '@/types/resume'
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import type { AppMessages } from "@/i18n";
+import { createId } from "@/lib/resume-id";
+import type { ResumeSectionMutation } from "@/lib/resume-section-mutations";
+import type { ResumeSection, SectionKind } from "@/types/resume";
 
-import { EditorCardShell } from './editor-card-shell'
-import { FormField } from './form-field'
-import { ResumeSectionItemsEditor } from './resume-section-editors'
+import { EditorCardShell } from "./editor-card-shell";
+import { FormField } from "./form-field";
+import { ResumeSectionItemsEditor } from "./resume-section-editors";
 
 const sectionIcons: Record<SectionKind, LucideIcon> = {
   education: GraduationCap,
@@ -31,30 +31,30 @@ const sectionIcons: Record<SectionKind, LucideIcon> = {
   publication: LibraryBig,
   achievement: Award,
   simple_list: List,
-}
+};
 
 const compactFieldClassName =
-  'border-border/60 bg-muted/35 shadow-none focus-visible:border-ring/50 focus-visible:ring-1 focus-visible:ring-ring/20'
+  "border-border/60 bg-muted/35 shadow-none focus-visible:border-ring/50 focus-visible:ring-1 focus-visible:ring-ring/20";
 
 const ResumeSectionDeleteDialog = lazy(() =>
-  import('./resume-section-delete-dialog').then((module) => ({
+  import("./resume-section-delete-dialog").then((module) => ({
     default: module.ResumeSectionDeleteDialog,
   })),
-)
+);
 
 type ResumeSectionCardProps = {
-  t: AppMessages
-  documentT: AppMessages | null
-  section: ResumeSection
-  collapsed: boolean
-  onToggle: () => void
-  onMutation: (mutation: ResumeSectionMutation) => void
-  onRemoveSection: (sectionId: string) => void
-  onMoveSectionUp: (sectionId: string) => void
-  onMoveSectionDown: (sectionId: string) => void
-  canMoveUp: boolean
-  canMoveDown: boolean
-}
+  t: AppMessages;
+  documentT: AppMessages | null;
+  section: ResumeSection;
+  collapsed: boolean;
+  onToggle: () => void;
+  onMutation: (mutation: ResumeSectionMutation) => void;
+  onRemoveSection: (sectionId: string) => void;
+  onMoveSectionUp: (sectionId: string) => void;
+  onMoveSectionDown: (sectionId: string) => void;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+};
 
 export function ResumeSectionCard({
   t,
@@ -71,13 +71,14 @@ export function ResumeSectionCard({
 }: ResumeSectionCardProps) {
   const [initiallyOpenItemId, setInitiallyOpenItemId] = useState<string | null>(
     null,
-  )
-  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
-  const Icon = sectionIcons[section.kind]
+  );
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const Icon = sectionIcons[section.kind];
   const sectionTitle =
-    section.title.trim() || documentT?.sectionTitles[section.kind] || ''
-  const itemLabel = section.items.length === 1 ? t.itemCountSingular : t.itemCount
-  const itemCountLabel = `${section.items.length} ${itemLabel}`
+    section.title.trim() || documentT?.sectionTitles[section.kind] || "";
+  const itemLabel =
+    section.items.length === 1 ? t.itemCountSingular : t.itemCount;
+  const itemCountLabel = `${section.items.length} ${itemLabel}`;
 
   useEffect(() => {
     if (
@@ -87,14 +88,14 @@ export function ResumeSectionCard({
       // The id only seeds the new child's initial state; clearing it prevents
       // that entry from reopening whenever the whole section remounts.
       // eslint-disable-next-line react-hooks/set-state-in-effect
-      setInitiallyOpenItemId(null)
+      setInitiallyOpenItemId(null);
     }
-  }, [initiallyOpenItemId, section.items])
+  }, [initiallyOpenItemId, section.items]);
 
   function addItem() {
-    const itemId = createId('item')
-    setInitiallyOpenItemId(itemId)
-    onMutation({ type: 'item.add', sectionId: section.id, itemId })
+    const itemId = createId("item");
+    setInitiallyOpenItemId(itemId);
+    onMutation({ type: "item.add", sectionId: section.id, itemId });
   }
 
   return (
@@ -133,8 +134,8 @@ export function ResumeSectionCard({
             size="icon"
             aria-label={`${sectionTitle}: ${t.deleteSection}`}
             onClick={(event) => {
-              event.stopPropagation()
-              setDeleteDialogOpen(true)
+              event.stopPropagation();
+              setDeleteDialogOpen(true);
             }}
           >
             <Trash2 aria-hidden="true" />
@@ -159,7 +160,7 @@ export function ResumeSectionCard({
             placeholder={t.placeholders.sectionName}
             onChange={(event) =>
               onMutation({
-                type: 'section.rename',
+                type: "section.rename",
                 sectionId: section.id,
                 title: event.target.value,
               })
@@ -167,7 +168,7 @@ export function ResumeSectionCard({
           />
         </FormField>
 
-        {section.kind !== 'simple_list' ? (
+        {section.kind !== "simple_list" ? (
           <Button
             type="button"
             variant="outline"
@@ -189,5 +190,5 @@ export function ResumeSectionCard({
         />
       </div>
     </EditorCardShell>
-  )
+  );
 }

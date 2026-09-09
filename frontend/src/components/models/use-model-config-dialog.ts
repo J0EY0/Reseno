@@ -95,7 +95,7 @@ export function useModelConfigDialog({
   );
   const modelDiscoveryApiUrl =
     draft.providerKind === "cloud"
-      ? selectedProvider?.defaultBaseUrl.trim() ?? ""
+      ? (selectedProvider?.defaultBaseUrl.trim() ?? "")
       : draft.apiUrl.trim();
   const canDiscoverModels =
     draft.providerKind === "cloud" &&
@@ -103,45 +103,42 @@ export function useModelConfigDialog({
   const modelOptionsLoading =
     !providersLoaded || (canDiscoverModels && !modelOptionsLoaded);
 
-  const applyDiscoveredModels = useCallback(
-    (models: DiscoveredModel[]) => {
-      setDiscoveredModels(models);
-      setDraft((current) => {
-        const selectedModel =
-          models.find((model) => model.id === current.model) ??
-          (models.length === 1 ? models[0] : null);
+  const applyDiscoveredModels = useCallback((models: DiscoveredModel[]) => {
+    setDiscoveredModels(models);
+    setDraft((current) => {
+      const selectedModel =
+        models.find((model) => model.id === current.model) ??
+        (models.length === 1 ? models[0] : null);
 
-        if (selectedModel) {
-          return applyDiscoveredModel(current, selectedModel);
-        }
-        if (models.length === 0 || current.providerKind !== "cloud") {
-          return current;
-        }
+      if (selectedModel) {
+        return applyDiscoveredModel(current, selectedModel);
+      }
+      if (models.length === 0 || current.providerKind !== "cloud") {
+        return current;
+      }
 
-        return {
-          ...current,
-          model: "",
-          maxTokens: "",
-          contextWindowTokens: String(DEFAULT_CONTEXT_WINDOW_TOKENS),
-          supportsImage: false,
-          supportsThinking: false,
-          thinkingMode: "auto",
-          availableThinkingModes: ["auto"],
-          supportsTools: true,
-          supportsStreaming: true,
-        };
-      });
-      setErrors((current) => {
-        const next = { ...current };
-        delete next.discovery;
-        if (models.length === 1) {
-          delete next.model;
-        }
-        return next;
-      });
-    },
-    [],
-  );
+      return {
+        ...current,
+        model: "",
+        maxTokens: "",
+        contextWindowTokens: String(DEFAULT_CONTEXT_WINDOW_TOKENS),
+        supportsImage: false,
+        supportsThinking: false,
+        thinkingMode: "auto",
+        availableThinkingModes: ["auto"],
+        supportsTools: true,
+        supportsStreaming: true,
+      };
+    });
+    setErrors((current) => {
+      const next = { ...current };
+      delete next.discovery;
+      if (models.length === 1) {
+        delete next.model;
+      }
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     let cancelled = false;

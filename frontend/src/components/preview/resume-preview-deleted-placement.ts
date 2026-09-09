@@ -15,10 +15,7 @@ export function interleaveDeletedDiffs<T extends { id: string }>(
       const before = beforeById.get(diff.beforeNextId) ?? [];
       before.push(diff);
       beforeById.set(diff.beforeNextId, before);
-    } else if (
-      diff.beforePreviousId &&
-      entryIds.has(diff.beforePreviousId)
-    ) {
+    } else if (diff.beforePreviousId && entryIds.has(diff.beforePreviousId)) {
       const after = afterById.get(diff.beforePreviousId) ?? [];
       after.push(diff);
       afterById.set(diff.beforePreviousId, after);

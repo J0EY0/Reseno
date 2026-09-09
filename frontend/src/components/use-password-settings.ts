@@ -114,6 +114,4 @@ export function usePasswordSettings({
   };
 }
 
-export type PasswordSettingsController = ReturnType<
-  typeof usePasswordSettings
->;
+export type PasswordSettingsController = ReturnType<typeof usePasswordSettings>;

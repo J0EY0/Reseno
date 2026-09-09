@@ -27,10 +27,7 @@ export function TemplateLocaleSelect({
 }) {
   return (
     <Field orientation="horizontal" className="w-auto gap-0">
-      <FieldLabel
-        htmlFor="template-resume-language"
-        className="sr-only"
-      >
+      <FieldLabel htmlFor="template-resume-language" className="sr-only">
         {messages.resumeLanguage}
       </FieldLabel>
       <Select

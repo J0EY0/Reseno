@@ -2,16 +2,16 @@
   overflow-anchor: none;
 }
 
-.model-output-settings-content[data-state='open'] {
+.model-output-settings-content[data-state="open"] {
   overflow: visible;
 }
 
-.model-output-settings-content[data-state='closed'] {
+.model-output-settings-content[data-state="closed"] {
   overflow: clip;
   animation: model-output-settings-exit 180ms var(--ease-move) both;
 }
 
-.model-output-settings-content[data-state='open']
+.model-output-settings-content[data-state="open"]
   .model-output-settings-content-inner {
   animation: model-output-settings-inner-enter 180ms var(--ease-move);
 }

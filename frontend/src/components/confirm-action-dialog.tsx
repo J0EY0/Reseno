@@ -40,7 +40,9 @@ export function ConfirmActionDialog({
         <AlertDialogHeader>
           <AlertDialogTitle>{resolvedTitle}</AlertDialogTitle>
           {resolvedDescription ? (
-            <AlertDialogDescription>{resolvedDescription}</AlertDialogDescription>
+            <AlertDialogDescription>
+              {resolvedDescription}
+            </AlertDialogDescription>
           ) : null}
         </AlertDialogHeader>
         <AlertDialogFooter>

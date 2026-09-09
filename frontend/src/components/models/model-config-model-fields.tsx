@@ -103,7 +103,9 @@ function DiscoveredModelField({
               className="[&>span:last-child]:min-w-0"
             >
               <span className="flex min-w-0 flex-col">
-                <span className="break-words whitespace-normal">{model.label}</span>
+                <span className="break-words whitespace-normal">
+                  {model.label}
+                </span>
                 <span className="whitespace-normal text-xs text-muted-foreground">
                   {messages.contextWindow}: {model.contextWindowTokens}
                   {model.supportsImage ? ` · ${messages.imageInput}` : ""}
@@ -203,12 +205,7 @@ export function ModelConfigModelFields({
   controller: ModelConfigDialogController;
   messages: AppMessages;
 }) {
-  const {
-    draft,
-    errors,
-    modelOptionsLoading,
-    selectedProvider,
-  } = controller;
+  const { draft, errors, modelOptionsLoading, selectedProvider } = controller;
   const usesDiscoveredModelSelect =
     Boolean(selectedProvider) && draft.providerKind === "cloud";
   const usesManualSettings =
@@ -258,7 +255,10 @@ export function ModelConfigModelFields({
         <CapabilityFields controller={controller} messages={messages} />
       ) : null}
       {!modelOptionsLoading ? (
-        <ModelConfigAdvancedSettingsField controller={controller} messages={messages} />
+        <ModelConfigAdvancedSettingsField
+          controller={controller}
+          messages={messages}
+        />
       ) : null}
     </>
   );

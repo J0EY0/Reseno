@@ -265,9 +265,7 @@ function TemplateImageAppearanceFields({
                   ? "bg-primary hover:bg-primary/90"
                   : "bg-muted-foreground/30 hover:bg-muted-foreground/40",
               )}
-              onClick={() =>
-                onUpdate({ borderWidth: hasImageBorder ? 0 : 1 })
-              }
+              onClick={() => onUpdate({ borderWidth: hasImageBorder ? 0 : 1 })}
               disabled={isReadonly}
             >
               <span

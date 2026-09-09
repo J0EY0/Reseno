@@ -38,9 +38,7 @@ export function ModelConfigAdvancedSettingsField({
   const previousErrorsRef = useRef<typeof errors>({});
   const revealOutputField = useCallback((target?: HTMLElement | null) => {
     const content = contentRef.current;
-    const viewport = content?.closest<HTMLElement>(
-      '[data-slot="field-group"]',
-    );
+    const viewport = content?.closest<HTMLElement>('[data-slot="field-group"]');
     if (!content || !viewport) {
       return;
     }
@@ -70,9 +68,9 @@ export function ModelConfigAdvancedSettingsField({
   }, []);
   const advancedSettingsError = Boolean(
     (usesManualSettings && errors.contextWindowTokens) ||
-      (usesSamplingSettings && (errors.temperature || errors.topP)) ||
-      errors.thinkingMode ||
-      errors.maxTokens,
+    (usesSamplingSettings && (errors.temperature || errors.topP)) ||
+    errors.thinkingMode ||
+    errors.maxTokens,
   );
   const expanded = open || advancedSettingsError;
 
@@ -83,11 +81,13 @@ export function ModelConfigAdvancedSettingsField({
       (usesManualSettings &&
         errors.contextWindowTokens &&
         errors.contextWindowTokens !== previousErrors.contextWindowTokens) ||
-        (usesSamplingSettings &&
-          ((errors.temperature && errors.temperature !== previousErrors.temperature) ||
-            (errors.topP && errors.topP !== previousErrors.topP))) ||
-        (errors.maxTokens && errors.maxTokens !== previousErrors.maxTokens) ||
-        (errors.thinkingMode && errors.thinkingMode !== previousErrors.thinkingMode),
+      (usesSamplingSettings &&
+        ((errors.temperature &&
+          errors.temperature !== previousErrors.temperature) ||
+          (errors.topP && errors.topP !== previousErrors.topP))) ||
+      (errors.maxTokens && errors.maxTokens !== previousErrors.maxTokens) ||
+      (errors.thinkingMode &&
+        errors.thinkingMode !== previousErrors.thinkingMode),
     );
     if (!expanded || (!revealOnOpenRef.current && !newAdvancedError)) {
       return;
@@ -99,8 +99,9 @@ export function ModelConfigAdvancedSettingsField({
       focusFirstModelConfigError(form, errors, draft.providerKind);
       revealOutputField(
         document.activeElement instanceof HTMLElement
-          ? document.activeElement.closest<HTMLElement>('[data-slot="field"]') ??
-            document.activeElement
+          ? (document.activeElement.closest<HTMLElement>(
+              '[data-slot="field"]',
+            ) ?? document.activeElement)
           : null,
       );
     } else {
@@ -175,7 +176,9 @@ export function ModelConfigAdvancedSettingsField({
               value={draft.contextWindowTokens}
               error={errors.contextWindowTokens}
               messages={messages}
-              onChange={(value) => updateAdvancedField("contextWindowTokens", value)}
+              onChange={(value) =>
+                updateAdvancedField("contextWindowTokens", value)
+              }
             />
           ) : null}
           <Field
@@ -204,16 +207,14 @@ export function ModelConfigAdvancedSettingsField({
                 updateAdvancedField("maxTokens", event.target.value)
               }
             />
-            <FieldError
-              id="model-max-tokens-error"
-              className="basis-full"
-            >
+            <FieldError id="model-max-tokens-error" className="basis-full">
               {errors.maxTokens}
             </FieldError>
           </Field>
           {usesSamplingSettings
             ? (["temperature", "topP"] as const).map((field) => {
-                const id = field === "temperature" ? "model-temperature" : "model-top-p";
+                const id =
+                  field === "temperature" ? "model-temperature" : "model-top-p";
                 const error = errors[field];
 
                 return (
@@ -234,7 +235,9 @@ export function ModelConfigAdvancedSettingsField({
                       aria-invalid={Boolean(error)}
                       aria-describedby={error ? `${id}-error` : undefined}
                       className="w-32 max-w-[55%] shrink-0"
-                      onChange={(event) => updateAdvancedField(field, event.target.value)}
+                      onChange={(event) =>
+                        updateAdvancedField(field, event.target.value)
+                      }
                     />
                     <FieldError id={`${id}-error`} className="basis-full">
                       {error}

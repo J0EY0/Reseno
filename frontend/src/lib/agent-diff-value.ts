@@ -61,7 +61,9 @@ function isDescendantPath(path: string[], parentPath: string[]) {
 }
 
 function relativePathSegments(diff: ResumeDraftDiff, parent: ResumeDraftDiff) {
-  return canonicalPathSegments(diff).slice(canonicalPathSegments(parent).length);
+  return canonicalPathSegments(diff).slice(
+    canonicalPathSegments(parent).length,
+  );
 }
 
 function replaceSnapshotField(
@@ -78,11 +80,7 @@ function replaceSnapshotField(
     return { ok: true, value: replacement };
   }
 
-  if (
-    !current.every(
-      (item) => isRecord(item) && typeof item.id === "string",
-    )
-  ) {
+  if (!current.every((item) => isRecord(item) && typeof item.id === "string")) {
     return { ok: false };
   }
 
@@ -195,11 +193,12 @@ export function compactResumeDraftDiffs(diffs: ResumeDraftDiff[]) {
     }
 
     const previous = compactedByPath.get(diffPathKey);
-    let compacted = previous
-      ? { ...diff, before: previous.before }
-      : diff;
+    let compacted = previous ? { ...diff, before: previous.before } : diff;
 
-    if (diff.kind === "deleted" && !valuesEqual(compacted.before, compacted.after)) {
+    if (
+      diff.kind === "deleted" &&
+      !valuesEqual(compacted.before, compacted.after)
+    ) {
       const descendants = [...compactedByPath.values()]
         .filter((candidate) =>
           isDescendantPath(canonicalPathSegments(candidate), diffPath),

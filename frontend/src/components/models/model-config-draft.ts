@@ -178,7 +178,11 @@ export function validateModelConfigDraft(
   if (!draft.model.trim()) {
     errors.model = messages.validationRequired;
   }
-  if (provider.authRequired && !draft.apiKey.trim() && !draft.apiKeyPreview.trim()) {
+  if (
+    provider.authRequired &&
+    !draft.apiKey.trim() &&
+    !draft.apiKeyPreview.trim()
+  ) {
     errors.apiKey = messages.validationRequired;
   }
   const maxTokens = draft.maxTokens.trim();
@@ -207,7 +211,10 @@ export function validateModelConfigDraft(
     );
   }
   if (draft.providerKind === "cloud") {
-    if (!provider.defaultBaseUrl.trim() || !isValidHttpUrl(provider.defaultBaseUrl.trim())) {
+    if (
+      !provider.defaultBaseUrl.trim() ||
+      !isValidHttpUrl(provider.defaultBaseUrl.trim())
+    ) {
       errors.discovery = messages.modelDiscoveryFailed;
     }
     if (!discoveredModels.some((model) => model.id === draft.model)) {
@@ -223,11 +230,14 @@ export function validateModelConfigDraft(
         value &&
         (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(value) ||
           !Number.isFinite(parsed) ||
-          (field === "temperature" ? parsed < 0 || parsed > 2 : parsed <= 0 || parsed > 1))
+          (field === "temperature"
+            ? parsed < 0 || parsed > 2
+            : parsed <= 0 || parsed > 1))
       ) {
-        errors[field] = field === "temperature"
-          ? messages.validationTemperature
-          : messages.validationTopP;
+        errors[field] =
+          field === "temperature"
+            ? messages.validationTemperature
+            : messages.validationTopP;
       }
     }
   }
@@ -236,7 +246,10 @@ export function validateModelConfigDraft(
   } else if (!isValidHttpUrl(draft.apiUrl.trim())) {
     errors.apiUrl = messages.validationApiUrl;
   }
-  if (!/^\d+$/.test(draft.contextWindowTokens.trim()) || Number(draft.contextWindowTokens) <= 0) {
+  if (
+    !/^\d+$/.test(draft.contextWindowTokens.trim()) ||
+    Number(draft.contextWindowTokens) <= 0
+  ) {
     errors.contextWindowTokens = messages.validationMaxTokens;
   }
   return errors;

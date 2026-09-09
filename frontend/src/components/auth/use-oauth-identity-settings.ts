@@ -8,15 +8,18 @@ import {
   unbindOAuth,
   type OAuthIdentitySettingsState,
 } from "@/lib/auth-oauth";
-import { authorizeGitHubBinding, type OAuthProgress } from "@/lib/auth-oauth-tab";
+import {
+  authorizeGitHubBinding,
+  type OAuthProgress,
+} from "@/lib/auth-oauth-tab";
 
 export function useOAuthIdentitySettings(t: AppMessages) {
   const [state, setState] = useState<OAuthIdentitySettingsState>();
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [progress, setProgress] = useState<OAuthProgress | null>(null);
-  const [pendingAction, setPendingAction] = useState<"authorize" | "unbind" | null>(
-    null,
-  );
+  const [pendingAction, setPendingAction] = useState<
+    "authorize" | "unbind" | null
+  >(null);
   const requestRef = useRef<AbortController | null>(null);
   const [unbindError, setUnbindError] = useState<string | null>(null);
   const data = state?.status === "ready" ? state.data : null;
@@ -45,11 +48,14 @@ export function useOAuthIdentitySettings(t: AppMessages) {
     };
   }, [loadAttempt]);
 
-  useEffect(() => () => {
-    const controller = requestRef.current;
-    requestRef.current = null;
-    controller?.abort();
-  }, []);
+  useEffect(
+    () => () => {
+      const controller = requestRef.current;
+      requestRef.current = null;
+      controller?.abort();
+    },
+    [],
+  );
 
   function retryLoad() {
     setState(undefined);
@@ -115,7 +121,9 @@ export function useOAuthIdentitySettings(t: AppMessages) {
       ) {
         if (identity) {
           setUnbindError(
-            error instanceof Error ? error.message : t.apiMessages.REQUEST_FAILED,
+            error instanceof Error
+              ? error.message
+              : t.apiMessages.REQUEST_FAILED,
           );
         } else {
           toast.error(t.oauthBindingFailed);

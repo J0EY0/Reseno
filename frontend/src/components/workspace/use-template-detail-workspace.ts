@@ -15,7 +15,8 @@ import { resolveInitialTemplateDetail } from "@/components/workspace/template-de
 import { loadTemplateDetailRouteData } from "@/components/workspace/workspace-route-preparation";
 import { getMessagesSync, type AppMessages, type Locale } from "@/i18n";
 import { useLocalizedMessages } from "@/i18n/use-localized-messages";
-import { isAbortError, isApiErrorToastShown } from "@/lib/api-client";
+import { isAbortError } from "@/lib/api-client";
+import { notifyApiError } from "@/lib/api-error-notifier";
 import {
   createTemplatePreviewResumes,
   getTemplatePreviewResume,
@@ -32,14 +33,9 @@ import {
   showWorkspaceLoadError,
 } from "@/lib/workspace-load-error";
 import { useWorkspacePreferences } from "@/components/workspace/workspace-preferences-context";
-import {
-  createTemplateApi,
-  saveDefaultTemplateApi,
-} from "@/lib/workspace-api";
-import {
-  createTemplateDetailRouteHandoff,
-  getTemplatePath,
-} from "@/lib/workspace-route";
+import { createTemplateApi, saveDefaultTemplateApi } from "@/lib/workspace-api";
+import { getTemplatePath } from "@/lib/workspace-route";
+import { createTemplateDetailRouteHandoff } from "@/lib/workspace-detail-route-handoff";
 import type {
   DefaultTemplateIds,
   DocumentLocale,
@@ -75,11 +71,12 @@ export function useTemplateDetailWorkspace({
   templateId,
 }: TemplateDetailWorkspaceOptions) {
   const navigate = useNavigate();
-  const { changeTheme, persistence, resolvedTheme, theme } = useWorkspacePreferences();
+  const { changeTheme, persistence, resolvedTheme, theme } =
+    useWorkspacePreferences();
   const { beginNavigation } = useWorkspaceNavigationTransaction();
   const initialLocaleRef = useRef(locale);
-  const [initialDetail] = useState(
-    () => resolveInitialTemplateDetail(messages, routeState, templateId),
+  const [initialDetail] = useState(() =>
+    resolveInitialTemplateDetail(messages, routeState, templateId),
   );
   const requestIdRef = useRef(0);
   const createInFlightRef = useRef(false);
@@ -97,8 +94,7 @@ export function useTemplateDetailWorkspace({
   >(null);
   const [defaultTemplateIds, setDefaultTemplateIds] =
     useState<DefaultTemplateIds>(
-      () =>
-        initialDetail?.data.defaultTemplateIds ?? initialDefaultTemplateIds,
+      () => initialDetail?.data.defaultTemplateIds ?? initialDefaultTemplateIds,
     );
   const [customTemplates, setCustomTemplates] = useState<
     ResumeTemplateDefinition[]
@@ -164,8 +160,10 @@ export function useTemplateDetailWorkspace({
     hydratePersistedTemplate,
     lastSavedAt: saveLastSavedAt,
     save,
+    saveManually,
     saveState,
   } = useTemplateDetailSave({
+    initialCheckpoint: initialDetail?.data.checkpoint ?? null,
     isLoading,
     messages,
     onAdoptSavedTemplate: adoptSavedTemplate,
@@ -202,19 +200,17 @@ export function useTemplateDetailWorkspace({
 
         setDefaultTemplateIds(routeData.defaultTemplateIds);
         setCustomTemplates(routeData.customTemplates);
-        hydratePersistedTemplate(targetTemplate);
+        hydratePersistedTemplate(targetTemplate, routeData.checkpoint);
         setHasLoaded(true);
       } catch (error) {
         if (isAbortError(error) || requestIdRef.current !== requestId) {
           return;
         }
         console.error("Failed to load the template detail route.", error);
-        if (!isApiErrorToastShown(error)) {
-          showWorkspaceLoadError(
-            getMessagesSync(initialLocaleRef.current).apiMessages
-              .REQUEST_FAILED,
-          );
-        }
+        showWorkspaceLoadError(
+          error,
+          getMessagesSync(initialLocaleRef.current).apiMessages.REQUEST_FAILED,
+        );
         setHasLoadError(true);
       } finally {
         if (requestIdRef.current === requestId) {
@@ -222,11 +218,7 @@ export function useTemplateDetailWorkspace({
         }
       }
     },
-    [
-      persistence,
-      hydratePersistedTemplate,
-      templateId,
-    ],
+    [persistence, hydratePersistedTemplate, templateId],
   );
 
   useEffect(() => {
@@ -286,11 +278,16 @@ export function useTemplateDetailWorkspace({
         }
         intent.finish();
         navigate(getTemplatePath(result.template.id), {
-          state: createTemplateDetailRouteHandoff(result.template.id, {
-            customTemplates: nextCustomTemplates,
-            defaultTemplateIds,
-            theme,
-          }, templateLocale),
+          state: createTemplateDetailRouteHandoff(
+            result.template.id,
+            {
+              checkpoint: null,
+              customTemplates: nextCustomTemplates,
+              defaultTemplateIds,
+              theme,
+            },
+            templateLocale,
+          ),
         });
       });
       toast.success(messages.templateCreated, { closeButton: true });
@@ -299,9 +296,7 @@ export function useTemplateDetailWorkspace({
         intent.finish();
       }
       console.error("Failed to create template in backend.", error);
-      if (!isApiErrorToastShown(error)) {
-        toast.error(messages.loadError, { closeButton: true });
-      }
+      notifyApiError(error, messages.loadError);
     } finally {
       createInFlightRef.current = false;
       setIsCreating(false);
@@ -355,10 +350,7 @@ export function useTemplateDetailWorkspace({
   );
 
   const moveTemplateImage = useCallback(
-    (
-      imageId: string,
-      patch: Pick<ResumeTemplateImageElement, "x" | "y">,
-    ) => {
+    (imageId: string, patch: Pick<ResumeTemplateImageElement, "x" | "y">) => {
       if (!template || template.isBuiltIn) {
         return;
       }
@@ -393,9 +385,7 @@ export function useTemplateDetailWorkspace({
         toast.success(messages.defaultTemplateUpdated, { closeButton: true });
       } catch (error) {
         console.error("Failed to update the default template.", error);
-        if (!isApiErrorToastShown(error)) {
-          toast.error(messages.loadError, { closeButton: true });
-        }
+        notifyApiError(error, messages.loadError);
       } finally {
         setDefaultInFlightRef.current = false;
         setSettingDefaultTemplateId(null);
@@ -411,43 +401,32 @@ export function useTemplateDetailWorkspace({
     save,
   });
   const { requestLeave } = leave;
-  const {
-    preload: preloadWorkspaceView,
-    request: requestWorkspaceNavigation,
-  } = usePreparedWorkspaceNavigation({
-    persistence,
-    preparationErrorMessage: messages.loadError,
-    requestLeave,
-    requiresLeaveResolution: hasUnsavedChanges,
-  });
+  const { preload: preloadWorkspaceView, request: requestWorkspaceNavigation } =
+    usePreparedWorkspaceNavigation({
+      persistence,
+      preparationErrorMessage: messages.loadError,
+      requestLeave,
+      requiresLeaveResolution: hasUnsavedChanges,
+    });
   const changeView = useCallback(
     (view: WorkspaceView) => {
       void requestWorkspaceNavigation(view);
     },
     [requestWorkspaceNavigation],
   );
-  const goBack = useCallback(
-    () => {
-      void requestWorkspaceNavigation("templates");
-    },
-    [requestWorkspaceNavigation],
-  );
-  const logout = useCallback(
-    () => {
-      const intent = beginNavigation();
-      requestLeave(
-        () => {
-          if (!intent.isCurrent()) {
-            return;
-          }
-          intent.finish();
-          onLogout();
-        },
-        intent.cancel,
-      );
-    },
-    [beginNavigation, onLogout, requestLeave],
-  );
+  const goBack = useCallback(() => {
+    void requestWorkspaceNavigation("templates");
+  }, [requestWorkspaceNavigation]);
+  const logout = useCallback(() => {
+    const intent = beginNavigation();
+    requestLeave(() => {
+      if (!intent.isCurrent()) {
+        return;
+      }
+      intent.finish();
+      onLogout();
+    }, intent.cancel);
+  }, [beginNavigation, onLogout, requestLeave]);
 
   return {
     changeTheme,
@@ -465,7 +444,7 @@ export function useTemplateDetailWorkspace({
     preloadWorkspaceView,
     resolvedTheme,
     retryLoad: () => setRetryKey((current) => current + 1),
-    save,
+    save: saveManually,
     saveChangeCount,
     saveLastSavedAt,
     saveState,

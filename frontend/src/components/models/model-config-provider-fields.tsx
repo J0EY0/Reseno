@@ -14,10 +14,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import type { AppMessages } from "@/i18n";
 
-import {
-  providerDisplayLabel,
-  providerKindLabel,
-} from "./model-config-draft";
+import { providerDisplayLabel, providerKindLabel } from "./model-config-draft";
 import {
   ModelFormFieldLabel,
   ProviderKindBadge,

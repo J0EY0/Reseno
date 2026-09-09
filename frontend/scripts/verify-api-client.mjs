@@ -1,37 +1,37 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import axios from "axios";
 import { createServer } from "vite";
 
 import { createViteTestCacheDir } from "./vite-test-cache.mjs";
 
-const apiClientSource = await readFile(
-  new URL("../src/lib/api-client.ts", import.meta.url),
-  "utf8",
-);
-assert.doesNotMatch(apiClientSource, /^import[\s\S]*?from ["']axios["'];$/m);
-assert.match(apiClientSource, /await import\(["']axios["']\)/);
-
 const testState = {
+  apiBaseUrl: "",
   clearedAuthCount: 0,
   invalidatedTokens: new Set(),
   lockRequests: [],
   refreshPending: null,
-  redirects: [],
+  invalidations: [],
   token: "token-a",
   toasts: [],
 };
 globalThis.__RESENO_API_CLIENT_TEST_STATE__ = testState;
 globalThis.window = {
+  isSecureContext: true,
+  dispatchEvent(event) {
+    testState.invalidations.push(event.type);
+    return true;
+  },
   location: {
     pathname: "/resume",
-    assign(url) {
-      testState.redirects.push(url);
-      this.pathname = url;
+    assign() {
+      assert.fail("Authentication failures must not reload the document.");
     },
   },
 };
-const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+const originalNavigator = Object.getOwnPropertyDescriptor(
+  globalThis,
+  "navigator",
+);
 Object.defineProperty(globalThis, "navigator", {
   configurable: true,
   value: {
@@ -121,7 +121,10 @@ async function fetchAdapter(url, init = {}) {
   }
 
   return new Response(reply.body ?? "", {
-    headers: reply.contentType ? { "Content-Type": reply.contentType } : {},
+    headers: {
+      ...reply.headers,
+      ...(reply.contentType ? { "Content-Type": reply.contentType } : {}),
+    },
     status: reply.status,
   });
 }
@@ -203,6 +206,10 @@ const virtualPrefix = `\0${virtualImportPrefix}`;
 const server = await createServer({
   cacheDir: createViteTestCacheDir(),
   configFile: false,
+  define: {
+    "import.meta.env.VITE_API_BASE_URL":
+      "globalThis.__RESENO_API_CLIENT_TEST_STATE__.apiBaseUrl",
+  },
   optimizeDeps: { noDiscovery: true },
   root: process.cwd(),
   plugins: [
@@ -237,6 +244,7 @@ const server = await createServer({
 });
 
 function reset(api) {
+  testState.apiBaseUrl = "";
   api.clearApiCache();
   replies.length = 0;
   requests.length = 0;
@@ -244,22 +252,32 @@ function reset(api) {
   testState.invalidatedTokens.clear();
   testState.lockRequests.length = 0;
   testState.refreshPending = null;
-  testState.redirects.length = 0;
+  testState.invalidations.length = 0;
   testState.token = "token-a";
   testState.toasts.length = 0;
   window.location.pathname = "/resume";
 }
 
 function assertRequestFailure(error, api, options = {}) {
-  assert.equal(error.message, `localized:${options.messageKey ?? "REQUEST_FAILED"}`);
+  assert.equal(
+    error.message,
+    `localized:${options.messageKey ?? "REQUEST_FAILED"}`,
+  );
   assert.equal(api.getApiErrorStatus(error), options.status);
-  assert.equal(api.isApiErrorCode(error, options.apiCode ?? ""), Boolean(options.apiCode));
-  assert.equal(api.isApiErrorToastShown(error), options.notified ?? true);
+  assert.equal(
+    api.isApiErrorCode(error, options.apiCode ?? ""),
+    Boolean(options.apiCode),
+  );
+  assert.equal(testState.toasts.length > 0, options.notified ?? true);
   return true;
 }
 
 async function waitForRequestCount(expected) {
-  for (let attempt = 0; attempt < 20 && requests.length < expected; attempt += 1) {
+  for (
+    let attempt = 0;
+    attempt < 20 && requests.length < expected;
+    attempt += 1
+  ) {
     await new Promise((resolve) => setImmediate(resolve));
   }
   assert.equal(requests.length, expected);
@@ -300,6 +318,9 @@ try {
     { code: 40000, message: "BAD_REQUEST", status: 400 },
     { code: 40001, message: "UNAUTHORIZED_REQUEST", status: 401 },
     { code: 40004, message: "NOT_FOUND", status: 404 },
+    { code: 40000, message: "AGENT_RUN_CONFLICT", status: 409 },
+    { code: 40000, message: "BAD_REQUEST", status: 412 },
+    { code: 40000, message: "BAD_REQUEST", status: 428 },
     { code: 40002, message: "VALIDATION_ERROR", status: 422 },
     { code: 50000, message: "INTERNAL_SERVER_ERROR", status: 500 },
   ];
@@ -317,16 +338,17 @@ try {
           apiCode: expected.message,
           messageKey: expected.message,
           status: expected.status,
+          notified: expected.status !== 401,
         }),
     );
-    assert.deepEqual(testState.toasts, [`localized:${expected.message}`]);
-    assert.equal(
-      testState.clearedAuthCount,
-      expected.status === 401 ? 1 : 0,
-    );
     assert.deepEqual(
-      testState.redirects,
-      expected.status === 401 ? ["/login"] : [],
+      testState.toasts,
+      expected.status === 401 ? [] : [`localized:${expected.message}`],
+    );
+    assert.equal(testState.clearedAuthCount, expected.status === 401 ? 1 : 0);
+    assert.deepEqual(
+      testState.invalidations,
+      expected.status === 401 ? ["reseno:auth-session-invalidated"] : [],
     );
   }
 
@@ -354,14 +376,18 @@ try {
     await assert.rejects(pendingFailure, /localized:UNAUTHORIZED_REQUEST/);
     assert.equal(testState.token, "token-b");
     assert.equal(testState.clearedAuthCount, 0);
-    assert.deepEqual(testState.redirects, []);
+    assert.deepEqual(testState.invalidations, []);
+    assert.deepEqual(testState.toasts, ["localized:UNAUTHORIZED_REQUEST"]);
     assert.equal(requests.length, 1);
 
     reset(api);
     enqueueJson(unauthorizedPayload, status);
     await assert.rejects(run(), /localized:UNAUTHORIZED_REQUEST/);
+    assert.deepEqual(testState.toasts, []);
     assert.equal(testState.clearedAuthCount, 1);
-    assert.deepEqual(testState.redirects, ["/login"]);
+    assert.deepEqual(testState.invalidations, [
+      "reseno:auth-session-invalidated",
+    ]);
 
     reset(api);
     let finishRefresh;
@@ -372,7 +398,11 @@ try {
     const waitingFailure = run();
     await waitForRequestCount(1);
     refreshWindowFailure.resolveJson(unauthorizedPayload, status);
-    for (let attempt = 0; attempt < 20 && !testState.lockRequests.length; attempt += 1) {
+    for (
+      let attempt = 0;
+      attempt < 20 && !testState.lockRequests.length;
+      attempt += 1
+    ) {
       await new Promise((resolve) => setImmediate(resolve));
     }
     assert.deepEqual(testState.lockRequests, [
@@ -383,7 +413,8 @@ try {
     finishRefresh();
     await assert.rejects(waitingFailure, /localized:UNAUTHORIZED_REQUEST/);
     assert.equal(testState.token, "token-b");
-    assert.deepEqual(testState.redirects, []);
+    assert.deepEqual(testState.invalidations, []);
+    assert.deepEqual(testState.toasts, ["localized:UNAUTHORIZED_REQUEST"]);
   }
 
   for (const run of [
@@ -401,7 +432,7 @@ try {
     await assert.rejects(pendingFailure, /localized:UNAUTHORIZED_REQUEST/);
     assert.equal(testState.token, "token-b");
     assert.equal(testState.clearedAuthCount, 0);
-    assert.deepEqual(testState.redirects, []);
+    assert.deepEqual(testState.invalidations, []);
     assert.deepEqual(testState.lockRequests, []);
   }
 
@@ -416,10 +447,7 @@ try {
   assert.deepEqual(testState.lockRequests, []);
 
   reset(api);
-  enqueueJson(
-    { code: 40002, data: null, message: "VALIDATION_ERROR" },
-    422,
-  );
+  enqueueJson({ code: 40002, data: null, message: "VALIDATION_ERROR" }, 422);
   await assert.rejects(
     api.requestApi("/api/quiet-failure", { notifyOnError: false }),
     (error) =>
@@ -438,13 +466,16 @@ try {
     api.requestApi("/api/protected", { notifyOnError: false }),
     (error) =>
       assertRequestFailure(error, api, {
-        messageKey: "AUTHENTICATION_REQUIRED",
+        messageKey: "UNAUTHORIZED_REQUEST",
+        apiCode: "UNAUTHORIZED_REQUEST",
         notified: false,
       }),
   );
   assert.equal(requests.length, 0);
   assert.equal(testState.clearedAuthCount, 1);
-  assert.deepEqual(testState.redirects, ["/login"]);
+  assert.deepEqual(testState.invalidations, [
+    "reseno:auth-session-invalidated",
+  ]);
   assert.deepEqual(testState.toasts, []);
 
   for (const run of [
@@ -455,12 +486,72 @@ try {
     reset(api);
     testState.token = null;
     await assert.rejects(run(), (error) =>
-      assertRequestFailure(error, api, { messageKey: "AUTHENTICATION_REQUIRED" }),
+      assertRequestFailure(error, api, {
+        messageKey: "UNAUTHORIZED_REQUEST",
+        apiCode: "UNAUTHORIZED_REQUEST",
+        notified: false,
+      }),
     );
     assert.equal(requests.length, 0);
-    assert.deepEqual(testState.toasts, ["localized:AUTHENTICATION_REQUIRED"]);
-    assert.deepEqual(testState.redirects, ["/login"]);
+    assert.deepEqual(testState.toasts, []);
+    assert.deepEqual(testState.invalidations, [
+      "reseno:auth-session-invalidated",
+    ]);
   }
+
+  for (const run of [
+    () => api.requestApi("/api/protected"),
+    () => api.uploadApi("/api/upload", new FormData()),
+    () => api.fetchApiResource("/api/resource"),
+  ]) {
+    for (const replaced of [false, true]) {
+      reset(api);
+      const failure = enqueueDeferred();
+      const pending = run();
+      await waitForRequestCount(1);
+      testState.token = replaced ? "token-b" : null;
+      failure.resolveJson(
+        { code: 40001, message: "UNAUTHORIZED_REQUEST", data: null },
+        401,
+      );
+      await assert.rejects(pending, (error) =>
+        assertRequestFailure(error, api, {
+          messageKey: "UNAUTHORIZED_REQUEST",
+          apiCode: "UNAUTHORIZED_REQUEST",
+          status: 401,
+          notified: replaced,
+        }),
+      );
+      assert.deepEqual(
+        testState.invalidations,
+        replaced ? [] : ["reseno:auth-session-invalidated"],
+      );
+      assert.deepEqual(
+        testState.toasts,
+        replaced ? ["localized:UNAUTHORIZED_REQUEST"] : [],
+      );
+      assert.equal(testState.token, replaced ? "token-b" : null);
+    }
+  }
+
+  reset(api);
+  testState.token = null;
+  enqueueJson({ code: 40001, message: "INVALID_CREDENTIALS", data: null }, 401);
+  await assert.rejects(
+    api.requestApi(api.apiRoutes.authLogin, {
+      auth: false,
+      method: "POST",
+      body: {},
+    }),
+    (error) =>
+      assertRequestFailure(error, api, {
+        messageKey: "INVALID_CREDENTIALS",
+        apiCode: "INVALID_CREDENTIALS",
+        status: 401,
+      }),
+  );
+  assert.deepEqual(testState.toasts, ["localized:INVALID_CREDENTIALS"]);
+  assert.deepEqual(testState.invalidations, []);
 
   for (const run of [
     () => api.requestApi("/api/failure"),
@@ -468,8 +559,16 @@ try {
     () => api.fetchApiResource("/api/resource"),
   ]) {
     for (const reply of [
-      { body: '<html>Bad Gateway</html>', contentType: "text/html", status: 502 },
-      { body: '{"detail":"Not Found"}', contentType: "application/json", status: 404 },
+      {
+        body: "<html>Bad Gateway</html>",
+        contentType: "text/html",
+        status: 502,
+      },
+      {
+        body: '{"detail":"Not Found"}',
+        contentType: "application/json",
+        status: 404,
+      },
     ]) {
       reset(api);
       replies.push(reply);
@@ -487,7 +586,12 @@ try {
 
   reset(api);
   enqueueJson(
-    { detail: { code: "AGENT_SESSION_REVISION_CONFLICT", revision: 4 } },
+    {
+      code: 40000,
+      message: "AGENT_SESSION_REVISION_CONFLICT",
+      data: { revision: 4 },
+      requestId: null,
+    },
     409,
   );
   await assert.rejects(
@@ -501,18 +605,19 @@ try {
   );
 
   reset(api);
-  replies.push({ body: "not-json", contentType: "application/json", status: 200 });
-  await assert.rejects(
-    api.requestApi("/api/invalid"),
-    (error) =>
-      assertRequestFailure(error, api, { messageKey: "INVALID_API_RESPONSE" }),
+  replies.push({
+    body: "not-json",
+    contentType: "application/json",
+    status: 200,
+  });
+  await assert.rejects(api.requestApi("/api/invalid"), (error) =>
+    assertRequestFailure(error, api, { messageKey: "INVALID_API_RESPONSE" }),
   );
 
   reset(api);
   enqueueNetworkError();
-  await assert.rejects(
-    api.requestApi("/api/network"),
-    (error) => assertRequestFailure(error, api),
+  await assert.rejects(api.requestApi("/api/network"), (error) =>
+    assertRequestFailure(error, api),
   );
 
   reset(api);
@@ -522,7 +627,7 @@ try {
     api.requestApi("/api/cancelled", { signal: abortController.signal }),
     (error) => {
       assert.equal(api.isAbortError(error), true);
-      assert.equal(api.isApiErrorToastShown(error), false);
+      assert.deepEqual(testState.toasts, []);
       return true;
     },
   );
@@ -540,13 +645,258 @@ try {
   ]);
 
   enqueueEnvelope({ saved: true });
-  await api.requestApi("/api/mutation", { body: {}, method: "POST" });
+  await api.requestApi("/api/cached", { body: {}, method: "POST" });
   enqueueEnvelope({ version: 2 });
-  assert.deepEqual(
-    await api.requestApi("/api/cached", { cacheTtlMs: 1_000 }),
-    { version: 2 },
-  );
+  assert.deepEqual(await api.requestApi("/api/cached", { cacheTtlMs: 1_000 }), {
+    version: 2,
+  });
   assert.equal(requests.length, 3);
+
+  async function readCached(route, searchParams) {
+    const response = { route, revision: requests.length + 1 };
+    const previousRequestCount = requests.length;
+    enqueueEnvelope(response);
+    const result = await api.requestApi(route, {
+      cacheTtlMs: 60_000,
+      searchParams,
+    });
+    if (requests.length === previousRequestCount) replies.pop();
+    return result;
+  }
+
+  reset(api);
+  testState.token = "token-containing-/api/resumes/r1";
+  const prefixCases = [
+    ["/api/resumes/r1", undefined, true],
+    ["/api/resumes/r1/versions", undefined, true],
+    ["/api/resumes/r10", undefined, false],
+    ["/api/resumes-archive/r1", undefined, false],
+    ["/api/templates", { returnTo: "/api/resumes/r1" }, false],
+  ];
+  const prefixValues = await Promise.all(
+    prefixCases.map(([route, params]) => readCached(route, params)),
+  );
+  api.clearApiCache("/api/resumes/r1/");
+  for (const [
+    index,
+    [route, params, shouldInvalidate],
+  ] of prefixCases.entries()) {
+    const current = await readCached(route, params);
+    assert.equal(
+      current.revision !== prefixValues[index].revision,
+      shouldInvalidate,
+      `Prefix invalidation must respect path segments for ${route}.`,
+    );
+  }
+
+  const cacheRoutes = [
+    "/api/resumes/r1/versions",
+    "/api/templates/t1",
+    "/api/model-configs",
+    "/api/auth/setup",
+    "/api/workspace/pages/resumes",
+    "/api/workspace/pages/trash",
+    "/api/workspace/pages/templates",
+    "/api/workspace/pages/resume-editor",
+    "/api/workspace/pages/models",
+    "/api/workspace/pages/settings",
+  ];
+  const resumeDependencies = [0, 4, 5];
+  const templateDependencies = [0, 1, 4, 5, 6, 7];
+  for (const [route, method, affected] of [
+    ["/api/resumes/r1", "PUT", resumeDependencies],
+    ["/api/resumes/r1/trash", "POST", resumeDependencies],
+    ["/api/templates/t1/trash", "POST", templateDependencies],
+    ["/api/model-configs/config1", "DELETE", [2, 7, 8, 9]],
+    ["/api/workspace/user-settings", "PUT", [4, 5, 6, 7, 8, 9]],
+    ["/api/workspace/default-template", "PUT", [0, 4, 5, 6, 7]],
+    [
+      "/api/agent/resumes/r1/session/messages/m1/draft",
+      "PATCH",
+      resumeDependencies,
+    ],
+    ["/api/auth/oauth/complete", "POST", [3]],
+    ["/api/exports/resume-pdf", "POST", []],
+    ["/api/model-providers/discover-models", "POST", []],
+  ]) {
+    reset(api);
+    const previous = [];
+    for (const cachedRoute of cacheRoutes)
+      previous.push(await readCached(cachedRoute));
+    enqueueEnvelope({ saved: true });
+    await api.requestApi(route, { method, body: {} });
+    for (const [index, cachedRoute] of cacheRoutes.entries()) {
+      const current = await readCached(cachedRoute);
+      assert.equal(
+        current.revision !== previous[index].revision,
+        affected.includes(index),
+        `${method} ${route} must invalidate only dependent resources: ${cachedRoute}.`,
+      );
+    }
+  }
+
+  for (const route of ["/api/import/resume", "/api/import/templates"]) {
+    reset(api);
+    const previous = await readCached("/api/resumes/r1/versions");
+    enqueueEnvelope({ resumes: [], templates: [] });
+    await api.uploadApi(route, new FormData());
+    assert.deepEqual(await readCached("/api/resumes/r1/versions"), previous);
+  }
+
+  reset(api);
+  const cachedBeforeFailure = await readCached("/api/resumes/r1/versions");
+  enqueueJson({ code: 40000, data: null, message: "VERSION_CONFLICT" }, 409);
+  await assert.rejects(
+    api.requestApi("/api/resumes/r1", { method: "PUT", notifyOnError: false }),
+  );
+  assert.deepEqual(
+    await readCached("/api/resumes/r1/versions"),
+    cachedBeforeFailure,
+  );
+
+  reset(api);
+  const staleRead = enqueueDeferred();
+  const oldVersions = api.requestApi("/api/resumes/r1/versions", {
+    cacheTtlMs: 60_000,
+  });
+  await waitForRequestCount(1);
+  enqueueEnvelope({ saved: true });
+  await api.requestApi("/api/resumes/r1", { method: "PUT", body: {} });
+  const currentVersions = await readCached("/api/resumes/r1/versions");
+  staleRead.resolveEnvelope({ revision: "old" });
+  await oldVersions;
+  assert.deepEqual(
+    await readCached("/api/resumes/r1/versions"),
+    currentVersions,
+  );
+  assert.equal(
+    requests.length,
+    3,
+    "A late read must not restore an invalidated cache entry.",
+  );
+
+  reset(api);
+  const beforeResourceWrite = await readCached("/api/resumes/r1/versions");
+  const unrelatedTemplate = await readCached("/api/templates/t1");
+  enqueueEnvelope({ saved: true });
+  await api.fetchApiResource("https://api.example/api/resumes/r1", {
+    method: "PATCH",
+  });
+  assert.notDeepEqual(
+    await readCached("/api/resumes/r1/versions"),
+    beforeResourceWrite,
+  );
+  assert.deepEqual(await readCached("/api/templates/t1"), unrelatedTemplate);
+
+  for (const base of [
+    "https://api.example",
+    "https://api.example/proxy",
+    "https://api.example/api",
+  ]) {
+    reset(api);
+    testState.apiBaseUrl = base;
+    const routes = [
+      "/api/resumes/r1/versions",
+      "/api/workspace/pages/resumes",
+      "/api/templates/t1",
+    ];
+    let previous = await Promise.all(routes.map((route) => readCached(route)));
+    assert.deepEqual(
+      requests.map((request) => request.url),
+      routes.map((route) => `${base}${route}`),
+    );
+    for (const absolute of [false, true]) {
+      enqueueEnvelope({ saved: true });
+      if (absolute) {
+        await api.fetchApiResource(`${base}/api/resumes/r1`, {
+          method: "PATCH",
+        });
+      } else {
+        await api.requestApi("/api/resumes/r1", { method: "PUT", body: {} });
+      }
+      assert.equal(requests.at(-1).url, `${base}/api/resumes/r1`);
+      const current = await Promise.all(
+        routes.map((route) => readCached(route)),
+      );
+      for (const [index, route] of routes.entries()) {
+        assert.equal(
+          current[index].revision !== previous[index].revision,
+          index < 2,
+          `${absolute ? "Absolute" : "Canonical"} write under ${base}: ${route}`,
+        );
+      }
+      previous = current;
+    }
+    const beforePrefixClear = previous[0];
+    api.clearApiCache(`${base}/api/resumes/r1`);
+    assert.notDeepEqual(
+      await readCached(routes[0]),
+      beforePrefixClear,
+      `An absolute cache prefix must match canonical reads under ${base}.`,
+    );
+  }
+
+  const streamClient = await server.ssrLoadModule(
+    "/src/lib/agent-stream-client.ts",
+  );
+  const attachmentClient = await server.ssrLoadModule(
+    "/src/lib/agent-attachment-client.ts",
+  );
+  for (const base of [
+    "",
+    "https://api.example",
+    "https://api.example/proxy",
+    "https://api.example/api",
+    "/proxy",
+    "/api",
+  ]) {
+    reset(api);
+    testState.apiBaseUrl = base;
+    const streamReply = {
+      body: 'id: 1\nevent: run_done\ndata: {"status":"completed","executionState":"succeeded"}\n\n',
+      contentType: "text/event-stream",
+      headers: { "X-Agent-Run-Id": "run-base" },
+      status: 200,
+    };
+    replies.push(streamReply);
+    const started = await streamClient.sendAgentChatMessage({
+      resumeId: "resume-base",
+      resume: {},
+    });
+    assert.equal(started.status, "completed");
+    assert.equal(requests.at(-1).url, `${base}/api/agent/chat`);
+    assert.equal(requests.at(-1).method, "POST");
+    replies.push(streamReply);
+    const reconnected = await streamClient.connectAgentRun({
+      id: "run-base",
+      resumeId: "resume-base",
+      baseResume: null,
+      errorCode: null,
+      executionState: "running",
+      lastEventId: 0,
+      status: "active",
+    });
+    assert.equal(reconnected.status, "completed");
+    assert.equal(
+      requests.at(-1).url,
+      `${base}/api/agent/runs/run-base/events?after=0`,
+    );
+    assert.equal(requests.at(-1).method, "GET");
+    enqueueEnvelope({ attachment: true });
+    await attachmentClient.downloadAgentAttachment(
+      "resume-base",
+      "attachment-base",
+    );
+    assert.equal(
+      requests.at(-1).url,
+      `${base}/api/agent/resumes/resume-base/attachments/attachment-base`,
+    );
+    assert.ok(
+      requests.every(
+        (request) => request.headers.get("Authorization") === "Bearer token-a",
+      ),
+    );
+  }
 
   reset(api);
   enqueueNetworkError();
@@ -573,7 +923,11 @@ try {
     api.requestApi("/api/owned", { cacheTtlMs: 1_000, signal: ownerA.signal }),
     api.requestApi("/api/owned", { cacheTtlMs: 1_000, signal: ownerB.signal }),
   ]);
-  assert.equal(requests.length, 2, "Cancelable GETs must never share a promise.");
+  assert.equal(
+    requests.length,
+    2,
+    "Cancelable GETs must never share a promise.",
+  );
 
   reset(api);
   enqueueJson({ code: 40000, data: null, message: "BAD_REQUEST" });
@@ -641,22 +995,28 @@ try {
           apiCode: expected.message,
           messageKey: expected.message,
           status: expected.status,
+          notified: expected.status !== 401,
         }),
     );
-    assert.deepEqual(testState.toasts, [`localized:${expected.message}`]);
-    assert.equal(
-      testState.clearedAuthCount,
-      expected.status === 401 ? 1 : 0,
-    );
     assert.deepEqual(
-      testState.redirects,
-      expected.status === 401 ? ["/login"] : [],
+      testState.toasts,
+      expected.status === 401 ? [] : [`localized:${expected.message}`],
+    );
+    assert.equal(testState.clearedAuthCount, expected.status === 401 ? 1 : 0);
+    assert.deepEqual(
+      testState.invalidations,
+      expected.status === 401 ? ["reseno:auth-session-invalidated"] : [],
     );
   }
 
   reset(api);
   enqueueJson(
-    { detail: { code: "AGENT_SESSION_TURN_CONFLICT", runId: "run-1" } },
+    {
+      code: 40000,
+      message: "AGENT_SESSION_TURN_CONFLICT",
+      data: { runId: "run-1" },
+      requestId: null,
+    },
     409,
   );
   await assert.rejects(
@@ -668,13 +1028,16 @@ try {
         status: 409,
       }),
   );
-  assert.deepEqual(testState.toasts, [
-    "localized:AGENT_SESSION_TURN_CONFLICT",
-  ]);
+  assert.deepEqual(testState.toasts, ["localized:AGENT_SESSION_TURN_CONFLICT"]);
 
   reset(api);
   enqueueJson(
-    { detail: { code: "AGENT_SESSION_REVISION_CONFLICT", revision: 4 } },
+    {
+      code: 40000,
+      message: "AGENT_SESSION_REVISION_CONFLICT",
+      data: { revision: 4 },
+      requestId: null,
+    },
     409,
   );
   await assert.rejects(
@@ -686,6 +1049,173 @@ try {
         status: 409,
       }),
   );
+
+  for (const run of [
+    () => api.requestApi("/api/plain-401", { notifyOnError: false }),
+    () =>
+      api.uploadApi("/api/plain-401", new FormData(), { notifyOnError: false }),
+    () => api.fetchApiResource("/api/plain-401", { notifyOnError: false }),
+  ]) {
+    reset(api);
+    replies.push({
+      body: "Unauthorized",
+      contentType: "text/plain",
+      status: 401,
+    });
+    await assert.rejects(run(), (error) =>
+      assertRequestFailure(error, api, { status: 401, notified: false }),
+    );
+    assert.equal(testState.clearedAuthCount, 1);
+    assert.deepEqual(testState.invalidations, [
+      "reseno:auth-session-invalidated",
+    ]);
+  }
+
+  for (const run of [
+    (signal) => api.requestApi("/api/abort", { signal }),
+    (signal) => api.uploadApi("/api/abort", new FormData(), { signal }),
+    (signal) => api.fetchApiResource("/api/abort", { signal }),
+  ]) {
+    reset(api);
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(run(controller.signal), (error) =>
+      api.isAbortError(error),
+    );
+    assert.deepEqual(testState.toasts, []);
+    assert.equal(requests.length, 0);
+  }
+
+  for (const [contentType, body] of [
+    ["text/event-stream", "id: 1\nevent: run_done\ndata: {}\n\n"],
+    ["application/pdf", "%PDF-binary-content"],
+    [
+      "application/json",
+      JSON.stringify({ code: 0, message: "OK", data: { value: true } }),
+    ],
+  ]) {
+    reset(api);
+    replies.push({ body, contentType, status: 200 });
+    const resource = await api.fetchApiResource("/api/resource-body", {
+      notifyOnError: false,
+    });
+    assert.equal(await resource.text(), body);
+  }
+
+  const core = await server.ssrLoadModule("/src/lib/api-request-core.ts");
+  const { notifyApiError } = await server.ssrLoadModule(
+    "/src/lib/api-error-notifier.ts",
+  );
+
+  for (const run of [
+    () => api.requestApi("/api/quiet", { notifyOnError: false }),
+    () => api.uploadApi("/api/quiet", new FormData(), { notifyOnError: false }),
+    () => api.fetchApiResource("/api/quiet", { notifyOnError: false }),
+    () => core.requestApiEnvelope("/api/core"),
+    () => core.uploadApiEnvelope("/api/core", new FormData()),
+    () => core.fetchApiResponse("/api/core"),
+  ]) {
+    for (const reply of [
+      {
+        body: JSON.stringify({
+          code: 40002,
+          message: "VALIDATION_ERROR",
+          data: null,
+        }),
+        contentType: "application/json",
+        status: 422,
+      },
+      { kind: "network-error" },
+    ]) {
+      reset(api);
+      replies.push(reply);
+      let failure;
+      await assert.rejects(run(), (error) => {
+        failure = error;
+        return assertRequestFailure(error, api, {
+          messageKey: reply.status ? "VALIDATION_ERROR" : "REQUEST_FAILED",
+          apiCode: reply.status ? "VALIDATION_ERROR" : undefined,
+          status: reply.status,
+          notified: false,
+        });
+      });
+      assert.equal(notifyApiError(failure, "fallback"), true);
+      assert.equal(notifyApiError(failure, "duplicate"), false);
+      assert.equal(testState.toasts.length, 1);
+    }
+  }
+
+  for (const quietFirst of [true, false]) {
+    reset(api);
+    const delayed = enqueueDeferred();
+    const runs = Promise.allSettled([
+      api.requestApi("/api/shared-policy", {
+        cacheTtlMs: 1_000,
+        notifyOnError: !quietFirst,
+      }),
+      api.requestApi("/api/shared-policy", {
+        cacheTtlMs: 1_000,
+        notifyOnError: quietFirst,
+      }),
+    ]);
+    delayed.resolveJson(
+      { code: 40002, message: "VALIDATION_ERROR", data: null },
+      422,
+    );
+    await runs;
+    assert.equal(requests.length, 1);
+    assert.deepEqual(testState.toasts, ["localized:VALIDATION_ERROR"]);
+  }
+
+  reset(api);
+  const frozenFailure = Object.freeze(new Error("read-only error"));
+  assert.equal(notifyApiError(frozenFailure, "fallback"), true);
+  assert.equal(notifyApiError(frozenFailure, "duplicate"), false);
+  assert.deepEqual(testState.toasts, ["fallback"]);
+  assert.equal(
+    notifyApiError(new DOMException("cancelled", "AbortError")),
+    false,
+  );
+  assert.equal(testState.toasts.length, 1);
+
+  reset(api);
+  const originalNow = Date.now;
+  let now = originalNow();
+  Date.now = () => now;
+  try {
+    const previous = enqueueDeferred();
+    const previousFailure = assert.rejects(
+      api.requestApi("/api/cache-owner", {
+        cacheTtlMs: 5,
+        notifyOnError: false,
+      }),
+      /localized:VALIDATION_ERROR/,
+    );
+    await waitForRequestCount(1);
+    now += 10;
+    const current = enqueueDeferred();
+    const currentRequest = api.requestApi("/api/cache-owner", {
+      cacheTtlMs: 100,
+    });
+    await waitForRequestCount(2);
+    previous.resolveJson(
+      { code: 40002, message: "VALIDATION_ERROR", data: null },
+      422,
+    );
+    await previousFailure;
+    const joinedRequests = Promise.all([
+      currentRequest,
+      api.requestApi("/api/cache-owner", { cacheTtlMs: 100 }),
+    ]);
+    current.resolveEnvelope({ current: true });
+    assert.deepEqual(await joinedRequests, [
+      { current: true },
+      { current: true },
+    ]);
+    assert.equal(requests.length, 2);
+  } finally {
+    Date.now = originalNow;
+  }
 
   assert.equal(replies.length, 0, "Every queued response must be consumed.");
   console.log("API client behavior verified.");

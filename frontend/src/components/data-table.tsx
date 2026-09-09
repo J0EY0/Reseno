@@ -5,7 +5,7 @@ import {
   type ColumnDef,
   type OnChangeFn,
   type RowSelectionState,
-} from '@tanstack/react-table'
+} from "@tanstack/react-table";
 
 import {
   Table,
@@ -14,8 +14,8 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from '@/components/ui/table'
-import { cn } from '@/lib/utils'
+} from "@/components/ui/table";
+import { cn } from "@/lib/utils";
 
 export function DataTable<TData, TValue>({
   columns,
@@ -28,15 +28,15 @@ export function DataTable<TData, TValue>({
   rowSelection,
   onRowSelectionChange,
 }: {
-  columns: ColumnDef<TData, TValue>[]
-  data: TData[]
-  emptyMessage: string
-  tableClassName?: string
-  getRowId?: (originalRow: TData, index: number) => string
-  getRowClassName?: (originalRow: TData) => string | undefined
-  enableRowSelection?: boolean
-  rowSelection?: RowSelectionState
-  onRowSelectionChange?: OnChangeFn<RowSelectionState>
+  columns: ColumnDef<TData, TValue>[];
+  data: TData[];
+  emptyMessage: string;
+  tableClassName?: string;
+  getRowId?: (originalRow: TData, index: number) => string;
+  getRowClassName?: (originalRow: TData) => string | undefined;
+  enableRowSelection?: boolean;
+  rowSelection?: RowSelectionState;
+  onRowSelectionChange?: OnChangeFn<RowSelectionState>;
 }) {
   // eslint-disable-next-line react-hooks/incompatible-library
   const table = useReactTable({
@@ -47,7 +47,7 @@ export function DataTable<TData, TValue>({
     onRowSelectionChange,
     state: rowSelection === undefined ? undefined : { rowSelection },
     getCoreRowModel: getCoreRowModel(),
-  })
+  });
 
   return (
     <div
@@ -76,9 +76,9 @@ export function DataTable<TData, TValue>({
             table.getRowModel().rows.map((row) => (
               <TableRow
                 key={row.id}
-                data-state={row.getIsSelected() ? 'selected' : undefined}
+                data-state={row.getIsSelected() ? "selected" : undefined}
                 className={cn(
-                  'focus-within:bg-muted/50',
+                  "focus-within:bg-muted/50",
                   getRowClassName?.(row.original),
                 )}
               >
@@ -102,5 +102,5 @@ export function DataTable<TData, TValue>({
         </TableBody>
       </Table>
     </div>
-  )
+  );
 }

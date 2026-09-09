@@ -87,22 +87,12 @@ export function ModelProviderIcon({
 
   if (type === "avatar") {
     const AvatarIcon = ProviderIcon.Avatar;
-    return (
-      <AvatarIcon
-        className={cn("shrink-0", className)}
-        size={size}
-      />
-    );
+    return <AvatarIcon className={cn("shrink-0", className)} size={size} />;
   }
 
   if (type === "color" && "Color" in ProviderIcon) {
     const ColorIcon = ProviderIcon.Color;
-    return (
-      <ColorIcon
-        className={cn("shrink-0", className)}
-        size={size}
-      />
-    );
+    return <ColorIcon className={cn("shrink-0", className)} size={size} />;
   }
 
   return (

@@ -60,15 +60,8 @@ export const ResumePreview = memo(
     );
 
     useEffect(() => {
-      onPaginationReadyChange?.(
-        isPaginationReady,
-        pagination.pages.length,
-      );
-    }, [
-      isPaginationReady,
-      onPaginationReadyChange,
-      pagination.pages.length,
-    ]);
+      onPaginationReadyChange?.(isPaginationReady, pagination.pages.length);
+    }, [isPaginationReady, onPaginationReadyChange, pagination.pages.length]);
 
     return (
       <PaginatedResumePages
@@ -78,9 +71,7 @@ export const ResumePreview = memo(
         measureRef={measureRef}
         isPaginationReady={isPaginationReady}
         editableTemplateImages={editableTemplateImages}
-        showEmptyTemplateImagePlaceholders={
-          showEmptyTemplateImagePlaceholders
-        }
+        showEmptyTemplateImagePlaceholders={showEmptyTemplateImagePlaceholders}
         onMoveTemplateImage={onMoveTemplateImage}
       />
     );

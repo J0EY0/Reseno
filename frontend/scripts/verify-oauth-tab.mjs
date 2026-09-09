@@ -8,21 +8,38 @@ const [tabSource, oauthSource] = await Promise.all([
   readFile(new URL("src/lib/auth-oauth.ts", root), "utf8"),
 ]);
 const origin = "https://resume.example.test";
-const token = { username: "owner", accessToken: "server-only-jwt", expiresAt: "2099-01-01" };
+const token = {
+  username: "owner",
+  accessToken: "server-only-jwt",
+  expiresAt: "2099-01-01",
+};
 const t = {
-  oauthTabClosed: "closed", oauthTabTimeout: "timeout",
-  oauthStartFailed: "failed", apiMessages: { OAUTH_INVALID_STATE: "invalid", OAUTH_CANCELLED: "cancelled" },
+  oauthTabClosed: "closed",
+  oauthTabTimeout: "timeout",
+  oauthStartFailed: "failed",
+  apiMessages: { OAUTH_INVALID_STATE: "invalid", OAUTH_CANCELLED: "cancelled" },
 };
 const plain = (value) => JSON.parse(JSON.stringify(value));
-const tick = async () => { for (let i = 0; i < 8; i += 1) await Promise.resolve(); };
+const tick = async () => {
+  for (let i = 0; i < 8; i += 1) await Promise.resolve();
+};
 function deferred() {
   let resolve;
   let reject;
-  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  const promise = new Promise((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
   return { promise, resolve, reject };
 }
 
-function fixture({ completion = { provider: "github", intent: "bind", auth: null }, blocked = false, start, complete, setup } = {}) {
+function fixture({
+  completion = { provider: "github", intent: "bind", auth: null },
+  blocked = false,
+  start,
+  complete,
+  setup,
+} = {}) {
   const requests = [];
   const saves = [];
   const opened = [];
@@ -38,51 +55,142 @@ function fixture({ completion = { provider: "github", intent: "bind", auth: null
   let submits = 0;
   const tab = {
     closed: false,
-    close() { closes += 1; this.closed = true; },
-    focus() { focusHistory.push("tab"); },
+    close() {
+      closes += 1;
+      this.closed = true;
+    },
+    focus() {
+      focusHistory.push("tab");
+    },
     postMessage: (message, target) => messages.push({ message, target }),
   };
   const window = {
     location: { origin },
-    open(...args) { opened.push(args); return blocked ? null : tab; },
-    focus() { focusHistory.push("parent"); },
-    addEventListener(event, fn) { assert.equal(event, "message"); listeners.add(fn); },
-    removeEventListener(event, fn) { assert.equal(event, "message"); listeners.delete(fn); },
-    setInterval(fn) { const id = ++timerId; intervals.set(id, fn); return id; },
-    clearInterval(id) { intervals.delete(id); },
-    setTimeout(fn, delay) { const id = ++timerId; timeouts.set(id, { fn, delay }); return id; },
-    clearTimeout(id) { timeouts.delete(id); },
+    open(...args) {
+      opened.push(args);
+      return blocked ? null : tab;
+    },
+    focus() {
+      focusHistory.push("parent");
+    },
+    addEventListener(event, fn) {
+      assert.equal(event, "message");
+      listeners.add(fn);
+    },
+    removeEventListener(event, fn) {
+      assert.equal(event, "message");
+      listeners.delete(fn);
+    },
+    setInterval(fn) {
+      const id = ++timerId;
+      intervals.set(id, fn);
+      return id;
+    },
+    clearInterval(id) {
+      intervals.delete(id);
+    },
+    setTimeout(fn, delay) {
+      const id = ++timerId;
+      timeouts.set(id, { fn, delay });
+      return id;
+    },
+    clearTimeout(id) {
+      timeouts.delete(id);
+    },
   };
   const document = {
     body: { appendChild: (form) => forms.push(form) },
     createElement(name) {
       if (name === "input") return {};
       assert.equal(name, "form");
-      return { fields: [], appendChild(input) { this.fields.push(input); }, submit() { submits += 1; }, remove() { this.removed = true; } };
+      return {
+        fields: [],
+        appendChild(input) {
+          this.fields.push(input);
+        },
+        submit() {
+          submits += 1;
+        },
+        remove() {
+          this.removed = true;
+        },
+      };
     },
   };
   const requestApi = async (path, options) => {
     requests.push({ path, options });
-    if (path.endsWith("/complete")) return complete ? complete.promise : completion;
-    if (path.endsWith("/setup")) return setup ? setup.promise : { registrationUrl: "https://github.com/settings/apps/new", manifest: { public: false } };
-    return start ? start.promise : { authorizationUrl: "https://github.com/login/oauth/authorize?state=test" };
+    if (path.endsWith("/complete"))
+      return complete ? complete.promise : completion;
+    if (path.endsWith("/setup"))
+      return setup
+        ? setup.promise
+        : {
+            registrationUrl: "https://github.com/settings/apps/new",
+            manifest: { public: false },
+          };
+    return start
+      ? start.promise
+      : {
+          authorizationUrl:
+            "https://github.com/login/oauth/authorize?state=test",
+        };
   };
-  const globals = { window, document, AbortController, Error, crypto: { randomUUID: () => "unique-window" } };
+  const globals = {
+    window,
+    document,
+    AbortController,
+    Error,
+    crypto: { randomUUID: () => "unique-window" },
+  };
   const oauth = evaluateTypeScript(oauthSource, {
     globals,
-    imports: { "@/lib/api-client": { requestApi }, "@/lib/auth-session": { saveAuthSession: (...args) => saves.push(args) } },
-  });
-  const module = evaluateTypeScript(tabSource, { globals, imports: { "@/lib/auth-oauth": oauth } });
-  return {
-    module, requests, saves, opened, messages, progress, forms, tab, focusHistory,
-    authorize(options) { return module.authorizeGitHubBinding({ ...options, onProgress: (value) => progress.push(value) }); },
-    allowOpen() { blocked = false; },
-    get deadline() { return [...timeouts].find(([, timer]) => timer.delay === 10 * 60 * 1000)?.[0]; },
-    get closes() { return closes; }, get submits() { return submits; },
-    async send(payload, from = origin, source = tab) {
-      await Promise.all([...listeners].map((fn) => fn({ data: payload, origin: from, source })));
+    imports: {
+      "@/lib/api-client": { requestApi },
+      "@/lib/auth-session": { saveAuthSession: (...args) => saves.push(args) },
     },
-    pollClosed() { for (const fn of [...intervals.values()]) fn(); },
+  });
+  const module = evaluateTypeScript(tabSource, {
+    globals,
+    imports: { "@/lib/auth-oauth": oauth },
+  });
+  return {
+    module,
+    requests,
+    saves,
+    opened,
+    messages,
+    progress,
+    forms,
+    tab,
+    focusHistory,
+    authorize(options) {
+      return module.authorizeGitHubBinding({
+        ...options,
+        onProgress: (value) => progress.push(value),
+      });
+    },
+    allowOpen() {
+      blocked = false;
+    },
+    get deadline() {
+      return [...timeouts].find(
+        ([, timer]) => timer.delay === 10 * 60 * 1000,
+      )?.[0];
+    },
+    get closes() {
+      return closes;
+    },
+    get submits() {
+      return submits;
+    },
+    async send(payload, from = origin, source = tab) {
+      await Promise.all(
+        [...listeners].map((fn) => fn({ data: payload, origin: from, source })),
+      );
+    },
+    pollClosed() {
+      for (const fn of [...intervals.values()]) fn();
+    },
     showPreparing() {
       for (const [id, timer] of [...timeouts]) {
         if (timer.delay !== 150) continue;
@@ -97,7 +205,11 @@ function fixture({ completion = { provider: "github", intent: "bind", auth: null
         timer.fn();
       }
     },
-    assertClean() { assert.equal(listeners.size, 0); assert.equal(intervals.size, 0); assert.equal(timeouts.size, 0); },
+    assertClean() {
+      assert.equal(listeners.size, 0);
+      assert.equal(intervals.size, 0);
+      assert.equal(timeouts.size, 0);
+    },
   };
 }
 
@@ -112,23 +224,40 @@ for (const mode of ["bind", "setup"]) {
       ...(setup ? { setup: start } : { start }),
       completion: { provider: "github", intent, auth: null },
     });
-    const run = f.authorize({ setup, signal: new AbortController().signal, onComplete: async () => {}, t });
+    const run = f.authorize({
+      setup,
+      signal: new AbortController().signal,
+      onComplete: async () => {},
+      t,
+    });
     assert.equal(f.opened.length, 0);
     assert.deepEqual(f.focusHistory, []);
     assert.deepEqual(f.progress, []);
     await tick();
     f.pollClosed();
-    await f.send({ type: f.module.OAUTH_TAB_RESULT, code: "premature", intent }, origin, null);
+    await f.send(
+      { type: f.module.OAUTH_TAB_RESULT, code: "premature", intent },
+      origin,
+      null,
+    );
     assert.equal(f.requests.length, 1);
     f.showPreparing();
     assert.deepEqual(plain(f.progress), [{ stage: "preparing" }]);
-    start.resolve(setup
-      ? { registrationUrl: "https://github.com/settings/apps/new", manifest: {} }
-      : { authorizationUrl: "https://github.com/login/oauth/authorize" });
+    start.resolve(
+      setup
+        ? {
+            registrationUrl: "https://github.com/settings/apps/new",
+            manifest: {},
+          }
+        : { authorizationUrl: "https://github.com/login/oauth/authorize" },
+    );
     await tick();
     assert.equal(f.opened.length, 1);
     assert.equal(f.opened[0].length, 2);
-    assert.equal(f.opened[0][0], setup ? "" : "https://github.com/login/oauth/authorize");
+    assert.equal(
+      f.opened[0][0],
+      setup ? "" : "https://github.com/login/oauth/authorize",
+    );
     assert.match(f.opened[0][1], /^reseno-github-/);
     assert.equal(f.submits, setup ? 1 : 0);
     assert.deepEqual(f.focusHistory, ["tab"]);
@@ -147,18 +276,36 @@ test("wrong origin/source/intent and token-only messages cannot bind; duplicate 
   const f = fixture();
   const controller = new AbortController();
   const completed = [];
-  const run = f.authorize({ signal: controller.signal, onComplete: async (result) => completed.push(result), t });
+  const run = f.authorize({
+    signal: controller.signal,
+    onComplete: async (result) => completed.push(result),
+    t,
+  });
   await tick();
   f.showPreparing();
   assert.deepEqual(plain(f.progress), [{ stage: "waiting" }]);
-  const payload = { type: f.module.OAUTH_TAB_RESULT, code: "once", intent: "bind" };
+  const payload = {
+    type: f.module.OAUTH_TAB_RESULT,
+    code: "once",
+    intent: "bind",
+  };
   await f.send(payload, "https://attacker.example.test");
   await f.send(payload, origin, {});
   await f.send({ ...payload, intent: "login" });
-  await f.send({ type: f.module.OAUTH_TAB_RESULT, accessToken: "untrusted-jwt", intent: "bind" });
-  assert.equal(f.requests.filter((r) => r.path.endsWith("/complete")).length, 0);
+  await f.send({
+    type: f.module.OAUTH_TAB_RESULT,
+    accessToken: "untrusted-jwt",
+    intent: "bind",
+  });
+  assert.equal(
+    f.requests.filter((r) => r.path.endsWith("/complete")).length,
+    0,
+  );
   assert.equal(f.saves.length, 0);
-  await Promise.all([f.send({ ...payload, accessToken: "untrusted-jwt" }), f.send(payload)]);
+  await Promise.all([
+    f.send({ ...payload, accessToken: "untrusted-jwt" }),
+    f.send(payload),
+  ]);
   await run;
   assert.equal(f.tab.closed, true);
   assert.equal(f.closes, 1);
@@ -167,10 +314,15 @@ test("wrong origin/source/intent and token-only messages cannot bind; duplicate 
   controller.abort();
   await f.send({ ...payload, code: "late-message" });
   assert.equal(f.closes, 1);
-  assert.equal(f.requests.filter((r) => r.path.endsWith("/complete")).length, 1);
+  assert.equal(
+    f.requests.filter((r) => r.path.endsWith("/complete")).length,
+    1,
+  );
   assert.deepEqual(f.saves, []);
   assert.equal(completed.length, 1);
-  assert.deepEqual(plain(f.messages), [{ message: { type: f.module.OAUTH_TAB_RECEIVED }, target: origin }]);
+  assert.deepEqual(plain(f.messages), [
+    { message: { type: f.module.OAUTH_TAB_RECEIVED }, target: origin },
+  ]);
   f.assertClean();
 });
 
@@ -180,10 +332,18 @@ for (const completion of [
 ]) {
   test(`authoritative ${completion.intent}/${Boolean(completion.auth)} mismatch never saves a JWT`, async () => {
     const f = fixture({ completion });
-    const run = f.authorize({ signal: new AbortController().signal, onComplete: async () => assert.fail("Unexpected completion"), t });
+    const run = f.authorize({
+      signal: new AbortController().signal,
+      onComplete: async () => assert.fail("Unexpected completion"),
+      t,
+    });
     const rejected = assert.rejects(run, /invalid/);
     await tick();
-    await f.send({ type: f.module.OAUTH_TAB_RESULT, code: "invalid", intent: "bind" });
+    await f.send({
+      type: f.module.OAUTH_TAB_RESULT,
+      code: "invalid",
+      intent: "bind",
+    });
     await rejected;
     assert.equal(f.saves.length, 0);
     f.assertClean();
@@ -194,7 +354,10 @@ test("an already-aborted flow neither requests authorization nor opens a tab", a
   const f = fixture();
   const controller = new AbortController();
   controller.abort();
-  await assert.rejects(f.authorize({ signal: controller.signal, onComplete: async () => {}, t }), { name: "AbortError" });
+  await assert.rejects(
+    f.authorize({ signal: controller.signal, onComplete: async () => {}, t }),
+    { name: "AbortError" },
+  );
   assert.equal(f.opened.length, 0);
   assert.equal(f.requests.length, 0);
   assert.deepEqual(f.progress, []);
@@ -204,8 +367,16 @@ test("an already-aborted flow neither requests authorization nor opens a tab", a
 for (const setup of [false, true]) {
   test(`${setup ? "setup" : "binding"} resumes a blocked open without requesting a new authorization or deadline`, async () => {
     const intent = "bind";
-    const f = fixture({ blocked: true, completion: { provider: "github", intent, auth: null } });
-    const run = f.authorize({ setup, signal: new AbortController().signal, onComplete: async () => {}, t });
+    const f = fixture({
+      blocked: true,
+      completion: { provider: "github", intent, auth: null },
+    });
+    const run = f.authorize({
+      setup,
+      signal: new AbortController().signal,
+      onComplete: async () => {},
+      t,
+    });
     const deadline = f.deadline;
     assert.notEqual(deadline, undefined);
     await tick();
@@ -215,7 +386,11 @@ for (const setup of [false, true]) {
     assert.deepEqual(f.focusHistory, []);
     f.pollClosed();
     f.showPreparing();
-    await f.send({ type: f.module.OAUTH_TAB_RESULT, code: "unopened", intent }, origin, null);
+    await f.send(
+      { type: f.module.OAUTH_TAB_RESULT, code: "unopened", intent },
+      origin,
+      null,
+    );
     assert.equal(f.requests.length, 1);
     assert.equal(f.progress.at(-1).stage, "blocked");
     open();
@@ -247,8 +422,15 @@ for (const ending of ["abort", "timeout"]) {
   test(`${ending} invalidates a blocked open callback without opening or focusing any window`, async () => {
     const f = fixture({ blocked: true });
     const controller = new AbortController();
-    const run = f.authorize({ signal: controller.signal, onComplete: async () => assert.fail("Unexpected completion"), t });
-    const rejected = assert.rejects(run, ending === "abort" ? { name: "AbortError" } : /timeout/);
+    const run = f.authorize({
+      signal: controller.signal,
+      onComplete: async () => assert.fail("Unexpected completion"),
+      t,
+    });
+    const rejected = assert.rejects(
+      run,
+      ending === "abort" ? { name: "AbortError" } : /timeout/,
+    );
     await tick();
     const open = f.progress.at(-1).open;
     if (ending === "abort") controller.abort();
@@ -270,17 +452,41 @@ for (const ending of ["abort", "close", "timeout", "cancel"]) {
     const start = deferred();
     const f = fixture({ start });
     const controller = new AbortController();
-    const run = f.authorize({ signal: controller.signal, onComplete: async () => assert.fail("Unexpected completion"), t });
-    const rejected = assert.rejects(run, ending === "abort" ? { name: "AbortError" } : new RegExp(ending === "cancel" ? "cancelled" : ending === "close" ? "closed" : "timeout"));
+    const run = f.authorize({
+      signal: controller.signal,
+      onComplete: async () => assert.fail("Unexpected completion"),
+      t,
+    });
+    const rejected = assert.rejects(
+      run,
+      ending === "abort"
+        ? { name: "AbortError" }
+        : new RegExp(
+            ending === "cancel"
+              ? "cancelled"
+              : ending === "close"
+                ? "closed"
+                : "timeout",
+          ),
+    );
     const opened = ending === "close" || ending === "cancel";
     if (opened) {
-      start.resolve({ authorizationUrl: "https://github.com/login/oauth/authorize" });
+      start.resolve({
+        authorizationUrl: "https://github.com/login/oauth/authorize",
+      });
       await tick();
     }
     if (ending === "abort") controller.abort();
-    if (ending === "close") { f.tab.closed = true; f.pollClosed(); }
+    if (ending === "close") {
+      f.tab.closed = true;
+      f.pollClosed();
+    }
     if (ending === "timeout") f.expire();
-    if (ending === "cancel") await f.send({ type: f.module.OAUTH_TAB_RESULT, error: "OAUTH_CANCELLED" });
+    if (ending === "cancel")
+      await f.send({
+        type: f.module.OAUTH_TAB_RESULT,
+        error: "OAUTH_CANCELLED",
+      });
     await rejected;
     start.resolve({ authorizationUrl: "https://github.com/late-response" });
     await tick();
@@ -297,14 +503,31 @@ for (const ending of ["close", "timeout"]) {
   test(`${ending} during code exchange suppresses late binding completion`, async () => {
     const complete = deferred();
     const f = fixture({ complete });
-    const run = f.authorize({ signal: new AbortController().signal, onComplete: async () => assert.fail("Unexpected completion"), t });
-    const rejected = assert.rejects(run, ending === "close" ? /closed/ : /timeout/);
+    const run = f.authorize({
+      signal: new AbortController().signal,
+      onComplete: async () => assert.fail("Unexpected completion"),
+      t,
+    });
+    const rejected = assert.rejects(
+      run,
+      ending === "close" ? /closed/ : /timeout/,
+    );
     await tick();
-    const message = f.send({ type: f.module.OAUTH_TAB_RESULT, code: "late", intent: "bind" });
+    const message = f.send({
+      type: f.module.OAUTH_TAB_RESULT,
+      code: "late",
+      intent: "bind",
+    });
     await tick();
-    if (ending === "close") { f.tab.closed = true; f.pollClosed(); }
-    else f.expire();
-    assert.equal(f.requests.find((request) => request.path.endsWith("/complete")).options.signal.aborted, true);
+    if (ending === "close") {
+      f.tab.closed = true;
+      f.pollClosed();
+    } else f.expire();
+    assert.equal(
+      f.requests.find((request) => request.path.endsWith("/complete")).options
+        .signal.aborted,
+      true,
+    );
     await rejected;
     complete.resolve({ provider: "github", intent: "bind", auth: null });
     await message;
@@ -314,11 +537,14 @@ for (const ending of ["close", "timeout"]) {
 
   test(`${ending} cancels the parent completion work before it can update the page`, async () => {
     const prepared = deferred();
-    const f = fixture({ completion: { provider: "github", intent: "bind", auth: null } });
+    const f = fixture({
+      completion: { provider: "github", intent: "bind", auth: null },
+    });
     let completionSignal;
     let updates = 0;
     const run = f.authorize({
-      signal: new AbortController().signal, t,
+      signal: new AbortController().signal,
+      t,
       onComplete: async (_result, signal) => {
         completionSignal = signal;
         await prepared.promise;
@@ -326,13 +552,22 @@ for (const ending of ["close", "timeout"]) {
         updates += 1;
       },
     });
-    const rejected = assert.rejects(run, ending === "close" ? /closed/ : /timeout/);
+    const rejected = assert.rejects(
+      run,
+      ending === "close" ? /closed/ : /timeout/,
+    );
     await tick();
-    const message = f.send({ type: f.module.OAUTH_TAB_RESULT, code: "bound", intent: "bind" });
+    const message = f.send({
+      type: f.module.OAUTH_TAB_RESULT,
+      code: "bound",
+      intent: "bind",
+    });
     await tick();
     assert.equal(completionSignal.aborted, false);
-    if (ending === "close") { f.tab.closed = true; f.pollClosed(); }
-    else f.expire();
+    if (ending === "close") {
+      f.tab.closed = true;
+      f.pollClosed();
+    } else f.expire();
     assert.equal(completionSignal.aborted, true);
     await rejected;
     prepared.resolve();
@@ -343,14 +578,25 @@ for (const ending of ["close", "timeout"]) {
 }
 
 test("setup submits manifest into the exact named tab and removes its form", async () => {
-  const f = fixture({ completion: { provider: "github", intent: "bind", auth: null } });
-  const run = f.authorize({ setup: true, signal: new AbortController().signal, onComplete: async () => {}, t });
+  const f = fixture({
+    completion: { provider: "github", intent: "bind", auth: null },
+  });
+  const run = f.authorize({
+    setup: true,
+    signal: new AbortController().signal,
+    onComplete: async () => {},
+    t,
+  });
   await tick();
   assert.equal(f.forms[0].target, f.opened[0][1]);
   assert.notEqual(f.forms[0].target, "_self");
   assert.equal(f.forms[0].fields[0].name, "manifest");
   assert.equal(f.forms[0].removed, true);
-  await f.send({ type: f.module.OAUTH_TAB_RESULT, code: "setup", intent: "bind" });
+  await f.send({
+    type: f.module.OAUTH_TAB_RESULT,
+    code: "setup",
+    intent: "bind",
+  });
   await run;
   assert.equal(f.saves.length, 0);
   f.assertClean();
@@ -360,10 +606,18 @@ test("an aborted late setup response never submits a form", async () => {
   const setup = deferred();
   const f = fixture({ setup });
   const controller = new AbortController();
-  const run = f.authorize({ setup: true, signal: controller.signal, onComplete: async () => assert.fail("Unexpected completion"), t });
+  const run = f.authorize({
+    setup: true,
+    signal: controller.signal,
+    onComplete: async () => assert.fail("Unexpected completion"),
+    t,
+  });
   const rejected = assert.rejects(run, { name: "AbortError" });
   controller.abort();
-  setup.resolve({ registrationUrl: "https://github.com/settings/apps/new", manifest: {} });
+  setup.resolve({
+    registrationUrl: "https://github.com/settings/apps/new",
+    manifest: {},
+  });
   await rejected;
   await tick();
   assert.equal(f.submits, 0);
@@ -374,8 +628,13 @@ test("an aborted late setup response never submits a form", async () => {
 
 let failures = 0;
 for (const { name, run } of tests) {
-  try { await run(); process.stdout.write(`PASS ${name}\n`); }
-  catch (error) { failures += 1; process.stdout.write(`FAIL ${name}: ${error.message}\n`); }
+  try {
+    await run();
+    process.stdout.write(`PASS ${name}\n`);
+  } catch (error) {
+    failures += 1;
+    process.stdout.write(`FAIL ${name}: ${error.message}\n`);
+  }
 }
 process.stdout.write(`${tests.length - failures}/${tests.length} passed\n`);
 process.exitCode = failures ? 1 : 0;

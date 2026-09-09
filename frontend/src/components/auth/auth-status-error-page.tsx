@@ -8,25 +8,33 @@ import { Button } from "@/components/ui/button";
 export function AuthStatusErrorPage({
   onRetry,
   t,
+  title,
+  description,
 }: {
-  onRetry: () => void;
+  onRetry?: () => void;
   t: AppMessages;
+  title?: string;
+  description?: string;
 }) {
   return (
     <AuthPageShell
       brandTitle={t.brandTitle}
-      formTitle={t.authStatusErrorFormTitle}
-      description={t.authStatusErrorDescription}
+      formTitle={title ?? t.authStatusErrorFormTitle}
+      description={description ?? t.authStatusErrorDescription}
     >
-      <Button
-        type="button"
-        size="lg"
-        className="h-11 rounded-xl"
-        onClick={onRetry}
-      >
-        <RefreshCw data-icon="inline-start" />
-        {t.retry}
-      </Button>
+      {onRetry ? (
+        <div className="flex justify-center">
+          <Button
+            type="button"
+            size="lg"
+            className="h-11 rounded-xl"
+            onClick={onRetry}
+          >
+            <RefreshCw data-icon="inline-start" />
+            {t.retry}
+          </Button>
+        </div>
+      ) : null}
     </AuthPageShell>
   );
 }

@@ -159,7 +159,14 @@ def test_terminal_run_logs_one_privacy_safe_structured_usage_summary(
 
     asyncio.run(agent_runs.AgentRunManager()._execute(run, None))
 
-    assert run.replay_message["tools"][0]["type"] == "tool-web_search"
+    tool_frames = [
+        json.loads(line.removeprefix("data: "))
+        for event in run.events
+        if "event: tool_done\n" in event.frame
+        for line in event.frame.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert [frame["tool"]["type"] for frame in tool_frames] == ["tool-web_search"]
     summaries = [
         record.getMessage().removeprefix("Agent run summary ")
         for record in caplog.records

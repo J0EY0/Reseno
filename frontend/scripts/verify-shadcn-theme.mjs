@@ -29,113 +29,100 @@ const [
   resumeGallerySource,
   templateGallerySource,
   recycleBinPanelSource,
-] =
-  await Promise.all([
-    readFile(new URL("package.json", projectRoot), "utf8"),
-    readFile(new URL("src/index.css", projectRoot), "utf8"),
-    readFile(new URL("src/components/ui/dialog.tsx", projectRoot), "utf8"),
-    readFile(new URL("src/components/ui/alert-dialog.tsx", projectRoot), "utf8"),
-    readFile(new URL("src/components/ui/select.tsx", projectRoot), "utf8"),
-    readFile(new URL("src/components/app-toaster.tsx", projectRoot), "utf8"),
-    readFile(
-      new URL(
-        "src/components/workspace/use-resume-detail-commands.ts",
-        projectRoot,
-      ),
-      "utf8",
+] = await Promise.all([
+  readFile(new URL("package.json", projectRoot), "utf8"),
+  readFile(new URL("src/index.css", projectRoot), "utf8"),
+  readFile(new URL("src/components/ui/dialog.tsx", projectRoot), "utf8"),
+  readFile(new URL("src/components/ui/alert-dialog.tsx", projectRoot), "utf8"),
+  readFile(new URL("src/components/ui/select.tsx", projectRoot), "utf8"),
+  readFile(new URL("src/components/app-toaster.tsx", projectRoot), "utf8"),
+  readFile(
+    new URL(
+      "src/components/workspace/use-resume-detail-commands.ts",
+      projectRoot,
     ),
-    readFile(new URL("src/components/ui/card.tsx", projectRoot), "utf8"),
-    readFile(
-      new URL("src/components/auth/auth-page-shell.tsx", projectRoot),
-      "utf8",
+    "utf8",
+  ),
+  readFile(new URL("src/components/ui/card.tsx", projectRoot), "utf8"),
+  readFile(
+    new URL("src/components/auth/auth-page-shell.tsx", projectRoot),
+    "utf8",
+  ),
+  readFile(
+    new URL("src/components/templates/template-editor.tsx", projectRoot),
+    "utf8",
+  ),
+  readFile(
+    new URL("src/components/copilot/copilot-panel-shell.tsx", projectRoot),
+    "utf8",
+  ),
+  readFile(
+    new URL("src/components/copilot/copilot-change-summary.tsx", projectRoot),
+    "utf8",
+  ),
+  readFile(
+    new URL(
+      "src/components/preview/resume-draft-review-comparison.tsx",
+      projectRoot,
     ),
-    readFile(
-      new URL("src/components/templates/template-editor.tsx", projectRoot),
-      "utf8",
+    "utf8",
+  ),
+  readFile(
+    new URL("src/components/pdf-export-renderer.tsx", projectRoot),
+    "utf8",
+  ),
+  readFile(
+    new URL("src/components/model-config-panel.tsx", projectRoot),
+    "utf8",
+  ),
+  readFile(
+    new URL("src/components/workspace-skeletons.tsx", projectRoot),
+    "utf8",
+  ),
+  readFile(
+    new URL("src/components/gallery-skeletons.tsx", projectRoot),
+    "utf8",
+  ),
+  readFile(
+    new URL("src/components/preview/document-canvas.tsx", projectRoot),
+    "utf8",
+  ),
+  readFile(
+    new URL(
+      "src/components/workspace/settings-workspace-page.tsx",
+      projectRoot,
     ),
-    readFile(
-      new URL("src/components/copilot/copilot-panel-shell.tsx", projectRoot),
-      "utf8",
+    "utf8",
+  ),
+  readFile(
+    new URL("src/components/settings-panel-skeleton.tsx", projectRoot),
+    "utf8",
+  ),
+  readFile(
+    new URL(
+      "src/components/workspace/template-detail-workspace-view.tsx",
+      projectRoot,
     ),
-    readFile(
-      new URL(
-        "src/components/copilot/copilot-change-summary.tsx",
-        projectRoot,
-      ),
-      "utf8",
-    ),
-    readFile(
-      new URL(
-        "src/components/preview/resume-draft-review-comparison.tsx",
-        projectRoot,
-      ),
-      "utf8",
-    ),
-    readFile(
-      new URL("src/components/pdf-export-renderer.tsx", projectRoot),
-      "utf8",
-    ),
-    readFile(
-      new URL("src/components/model-config-panel.tsx", projectRoot),
-      "utf8",
-    ),
-    readFile(
-      new URL("src/components/workspace-skeletons.tsx", projectRoot),
-      "utf8",
-    ),
-    readFile(
-      new URL("src/components/gallery-skeletons.tsx", projectRoot),
-      "utf8",
-    ),
-    readFile(
-      new URL(
-        "src/components/preview/document-canvas.tsx",
-        projectRoot,
-      ),
-      "utf8",
-    ),
-    readFile(
-      new URL(
-        "src/components/workspace/settings-workspace-page.tsx",
-        projectRoot,
-      ),
-      "utf8",
-    ),
-    readFile(
-      new URL("src/components/settings-panel-skeleton.tsx", projectRoot),
-      "utf8",
-    ),
-    readFile(
-      new URL(
-        "src/components/workspace/template-detail-workspace-view.tsx",
-        projectRoot,
-      ),
-      "utf8",
-    ),
-    readFile(
-      new URL("src/components/resume-gallery-card.tsx", projectRoot),
-      "utf8",
-    ),
-    readFile(
-      new URL(
-        "src/components/templates/template-gallery-card.tsx",
-        projectRoot,
-      ),
-      "utf8",
-    ),
-    readFile(
-      new URL("src/components/resume-gallery.tsx", projectRoot),
-      "utf8",
-    ),
-    readFile(
-      new URL("src/components/templates/template-gallery.tsx", projectRoot),
-      "utf8",
-    ),
-    readFile(
-      new URL("src/components/recycle-bin-panel.tsx", projectRoot),
-      "utf8",
-    ),
-  ]);
+    "utf8",
+  ),
+  readFile(
+    new URL("src/components/resume-gallery-card.tsx", projectRoot),
+    "utf8",
+  ),
+  readFile(
+    new URL("src/components/templates/template-gallery-card.tsx", projectRoot),
+    "utf8",
+  ),
+  readFile(new URL("src/components/resume-gallery.tsx", projectRoot), "utf8"),
+  readFile(
+    new URL("src/components/templates/template-gallery.tsx", projectRoot),
+    "utf8",
+  ),
+  readFile(
+    new URL("src/components/recycle-bin-panel.tsx", projectRoot),
+    "utf8",
+  ),
+]);
 const packageJson = JSON.parse(packageSource);
 
 assert(
@@ -148,7 +135,8 @@ assert(
 );
 for (const motionClass of ["dialog-overlay-motion", "dialog-content-motion"]) {
   assert(
-    dialogSource.includes(motionClass) && alertDialogSource.includes(motionClass),
+    dialogSource.includes(motionClass) &&
+      alertDialogSource.includes(motionClass),
     `Dialog and AlertDialog must share ${motionClass}.`,
   );
 }
@@ -164,9 +152,9 @@ assert(
   "The input token must be mapped and defined for light and dark themes.",
 );
 assert(
-  themeSource.match(/\.dark\s*\{[\s\S]*?\}/)?.[0].includes(
-    "--input: oklch(1 0 0 / 15%);",
-  ),
+  themeSource
+    .match(/\.dark\s*\{[\s\S]*?\}/)?.[0]
+    .includes("--input: oklch(1 0 0 / 15%);"),
   "The dark input token must retain shadcn's translucent control border.",
 );
 for (const radiusToken of [
@@ -180,15 +168,13 @@ for (const radiusToken of [
     `The shadcn radius scale is missing ${radiusToken}`,
   );
 }
-const surfaceRadiusValues = ["card", "workspace", "preview"].map(
-  (surface) => {
-    const value = themeSource.match(
-      new RegExp(`--radius-${surface}:\\s*([\\d.]+)rem;`),
-    )?.[1];
-    assert(value, `The product surface scale is missing --radius-${surface}.`);
-    return Number(value);
-  },
-);
+const surfaceRadiusValues = ["card", "workspace", "preview"].map((surface) => {
+  const value = themeSource.match(
+    new RegExp(`--radius-${surface}:\\s*([\\d.]+)rem;`),
+  )?.[1];
+  assert(value, `The product surface scale is missing --radius-${surface}.`);
+  return Number(value);
+});
 assert(
   surfaceRadiusValues[0] < surfaceRadiusValues[1] &&
     surfaceRadiusValues[1] < surfaceRadiusValues[2],
@@ -213,9 +199,7 @@ const authShellCardClassName =
 assert(
   authShellCardClassName.includes("rounded-(--radius-workspace)") &&
     authShellCardClassName.includes("shadow-none") &&
-    !/rounded-\[(?:30|32)px\]|shadow-xl|shadow-\[/.test(
-      authShellCardClassName,
-    ),
+    !/rounded-\[(?:30|32)px\]|shadow-xl|shadow-\[/.test(authShellCardClassName),
   "The auth shell must use the shared flat workspace surface.",
 );
 assert(
@@ -251,20 +235,19 @@ assert(
     ),
   "The recycle-bin document preview and its skeleton must share the preview radius.",
 );
+const detailPreviewRule = themeSource.match(
+  /@media\s+screen\s*\{\s*\.app-shell--document \.resume-preview-card\s*\{([^}]+)\}/,
+)?.[1];
+assert(detailPreviewRule);
 assert(
-  themeSource.includes(`@media screen {
-  .app-shell--document .resume-preview-card {
-    border: 0;
-    border-radius: 0;
-    background-color: color-mix(
-      in oklab,
-      var(--muted) 35%,
-      transparent
-    );
-  }
-}`),
-  "Document detail previews must use the same muted background as the galleries without card chrome.",
+  /border:\s*0;/.test(detailPreviewRule) &&
+    /border-radius:\s*0;/.test(detailPreviewRule) &&
+    /background-color:\s*color-mix\(\s*in oklab,\s*var\(--muted\) 35%,\s*transparent\s*\);/.test(
+      detailPreviewRule,
+    ),
+  "Document previews must use the muted workspace background without card borders.",
 );
+
 assert(
   /\.resume-page \{[\s\S]{0,320}border-radius: var\(--radius-md\);[\s\S]{0,120}border: 1px solid var\(--border\);[\s\S]{0,320}box-shadow:\s*var\(--surface-shadow-card\),\s*0 16px 40px -24px rgb\(9 9 11 \/ 0\.28\);/.test(
     themeSource,
@@ -274,23 +257,29 @@ assert(
     ),
   "A4 previews and their skeleton must share restrained paper chrome.",
 );
+const desktopPreviewRule = [
+  ...themeSource.matchAll(
+    /\.app-shell--document \.resume-preview-card\s*\{([^}]+)\}/g,
+  ),
+]
+  .map((match) => match[1])
+  .find((body) => /top:\s*calc\(/.test(body));
+assert(desktopPreviewRule);
 assert(
-  themeSource.includes(`.app-shell--document {
-    --document-sticky-bottom-gap: 16px;
-    --document-sticky-top: 96px;
-    --document-workspace-gutter: 16px;`) &&
-    themeSource.includes(`.app-shell--document .resume-preview-card {
-    top: calc(
-      var(--document-sticky-top) - var(--document-workspace-gutter)
-    );
-    height: calc(
-      100svh - var(--document-sticky-top) +
-        var(--document-workspace-gutter)
-    );
-    margin-top: calc(var(--document-workspace-gutter) * -1);
-  }`),
+  /--document-sticky-top:\s*96px;/.test(themeSource) &&
+    /--document-workspace-gutter:\s*16px;/.test(themeSource) &&
+    /top:\s*calc\(\s*var\(--document-sticky-top\) - var\(--document-workspace-gutter\)\s*\);/.test(
+      desktopPreviewRule,
+    ) &&
+    /height:\s*calc\(\s*100svh - var\(--document-sticky-top\) \+\s*var\(--document-workspace-gutter\)\s*\);/.test(
+      desktopPreviewRule,
+    ) &&
+    /margin-top:\s*calc\(var\(--document-workspace-gutter\) \* -1\);/.test(
+      desktopPreviewRule,
+    ),
   "Desktop document canvases must meet the header and fill the available viewport height.",
 );
+
 assert(
   settingsWorkspacePageSource.includes("<SettingsPanelSkeleton />") &&
     settingsPanelSkeletonSource.includes("<SettingsSectionSkeleton") &&
@@ -326,22 +315,18 @@ for (const [name, source] of [
   ["template gallery", templateGallerySource],
   ["recycle bin", recycleBinPanelSource],
 ]) {
-  const workspaceClassName = source.match(
-    /<section[\s\S]{0,120}?className="([^"]*)"/,
-  )?.[1] ?? "";
+  const workspaceClassName =
+    source.match(/<section[\s\S]{0,120}?className="([^"]*)"/)?.[1] ?? "";
   assert(
     workspaceClassName.includes("rounded-(--radius-workspace)") &&
       workspaceClassName.includes("bg-muted/35") &&
-      !/shadow-(?:card|xs|sm|md|lg|xl|2xl)|shadow-\[/.test(
-        workspaceClassName,
-      ),
+      !/shadow-(?:card|xs|sm|md|lg|xl|2xl)|shadow-\[/.test(workspaceClassName),
     `The ${name} must use the shared flat workspace surface.`,
   );
 }
 assert(
-  gallerySkeletonsSource.includes(
-    "h-full gap-0 rounded-(--radius-card)",
-  ) && gallerySkeletonsSource.includes("bg-card py-0"),
+  gallerySkeletonsSource.includes("h-full gap-0 rounded-(--radius-card)") &&
+    gallerySkeletonsSource.includes("bg-card py-0"),
   "Gallery card skeletons must not inherit Card spacing around their content.",
 );
 
@@ -390,19 +375,14 @@ const selectContentPopperClasses = new Set(
   selectContentPopperClassName.split(/\s+/),
 );
 assert(
-  selectContentPopperClasses.has(
-    "w-[var(--radix-select-trigger-width)]",
-  ) &&
-    selectContentPopperClasses.has(
-      "min-w-[var(--radix-select-trigger-width)]",
-    ),
+  selectContentPopperClasses.has("w-[var(--radix-select-trigger-width)]") &&
+    selectContentPopperClasses.has("min-w-[var(--radix-select-trigger-width)]"),
   "Popper Select content must exactly match its trigger width.",
 );
 
 const toastStyleSource =
-  appToasterSource.match(
-    /style:\s*\{([\s\S]*?)\}\s*as CSSProperties/,
-  )?.[1] ?? "";
+  appToasterSource.match(/style:\s*\{([\s\S]*?)\}\s*as CSSProperties/)?.[1] ??
+  "";
 let lastSemanticVariableIndex = -1;
 for (const [toastType, token] of [
   ["success", "success"],
@@ -427,7 +407,7 @@ for (const [toastType, token] of [
 }
 assert(
   appToasterSource.includes("richColors") &&
-  toastStyleSource.indexOf("...toastOptions?.style") >
+    toastStyleSource.indexOf("...toastOptions?.style") >
       lastSemanticVariableIndex &&
     appToasterSource.includes("...toastOptions,") &&
     appToasterSource.includes("...toastOptions?.classNames,"),

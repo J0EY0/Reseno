@@ -53,8 +53,10 @@ def _unsupported_schema_error() -> UnsupportedDatabaseSchemaError:
     db_path = get_db_path()
     return UnsupportedDatabaseSchemaError(
         f"The database at {db_path} is not compatible with Reseno schema "
-        f"v{CURRENT_SCHEMA_VERSION}. Move or delete it to create a fresh "
-        f"schema v{CURRENT_SCHEMA_VERSION} database."
+        f"v{CURRENT_SCHEMA_VERSION}. The existing data was left unchanged. "
+        "Back up the databases and storage, then use an application version "
+        "that supports this schema. To start a separate workspace, configure "
+        "new APP_DATA_DIR, APP_DB_PATH and APP_STORAGE_DIR paths."
     )
 
 

@@ -5,10 +5,7 @@ const resumePreview = await readFile(
   "utf8",
 );
 const resumeFontLoader = await readFile(
-  new URL(
-    "../src/components/preview/resume-font-loader.ts",
-    import.meta.url,
-  ),
+  new URL("../src/components/preview/resume-font-loader.ts", import.meta.url),
   "utf8",
 );
 const resumePagination = await readFile(

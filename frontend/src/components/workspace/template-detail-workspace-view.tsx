@@ -22,9 +22,11 @@ import type { AppMessages, Locale } from "@/i18n";
 
 const DocumentCanvas = lazy(loadDocumentCanvas);
 const TemplateDetailLeaveDialog = lazy(() =>
-  import("@/components/workspace/template-detail-leave-dialog").then((module) => ({
-    default: module.TemplateDetailLeaveDialog,
-  })),
+  import("@/components/workspace/template-detail-leave-dialog").then(
+    (module) => ({
+      default: module.TemplateDetailLeaveDialog,
+    }),
+  ),
 );
 
 function TemplateDetailContent({
@@ -34,11 +36,8 @@ function TemplateDetailContent({
   controller: TemplateDetailWorkspaceController;
   messages: AppMessages;
 }) {
-  const {
-    template,
-    templatePreviewMessages,
-    templatePreviewResume,
-  } = controller;
+  const { template, templatePreviewMessages, templatePreviewResume } =
+    controller;
 
   return (
     <div className="workspace-document-enter template-workspace grid min-w-0 flex-1 gap-4 p-4 xl:grid-cols-[clamp(372px,calc(27vw+32px),432px)_minmax(0,1fr)]">
@@ -62,10 +61,7 @@ function TemplateDetailContent({
             onUpdateTemplate={controller.updateTemplate}
           />
         ) : (
-          <div
-            data-slot="template-editor-skeleton"
-            className="min-h-[520px]"
-          >
+          <div data-slot="template-editor-skeleton" className="min-h-[520px]">
             <WorkspacePanelSkeleton />
           </div>
         )}
@@ -185,10 +181,7 @@ export function TemplateDetailWorkspaceView({
             onRetry={controller.retryLoad}
           />
         ) : (
-          <TemplateDetailContent
-            controller={controller}
-            messages={messages}
-          />
+          <TemplateDetailContent controller={controller} messages={messages} />
         )}
       </SidebarInset>
     </SidebarProvider>

@@ -33,7 +33,9 @@ export function DeletedResumeTrashList({
   const previewTemplates = [...templates, ...deletedTemplates];
   const tableItems: RecycleBinTableItem[] = items.map((item) => {
     const title =
-      item.title || getRichTextPlainText(item.resume.basic.name) || t.untitledResume;
+      item.title ||
+      getRichTextPlainText(item.resume.basic.name) ||
+      t.untitledResume;
     const baseTemplate = getTemplateById(previewTemplates, item.template);
     const template: ResumeTemplateDefinition = {
       ...baseTemplate,
@@ -61,8 +63,7 @@ export function DeletedResumeTrashList({
         item.resume.basic.email ||
         item.resume.basic.phone,
       deletedAtText: formatTrashTimestamp(locale, item.deletedAt),
-      isRestoring:
-        controller.runningActionKey === `resume-restore:${item.id}`,
+      isRestoring: controller.runningActionKey === `resume-restore:${item.id}`,
       previewTarget: {
         variant: "resume",
         title,

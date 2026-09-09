@@ -457,8 +457,7 @@ def test_replacing_session_rejects_invalid_response_without_changing_history(
         original = load_agent_session(conn, resume_id)
 
     messages = [
-        message.model_dump(mode="json", by_alias=True)
-        for message in original.messages
+        message.model_dump(mode="json", by_alias=True) for message in original.messages
     ]
     if field is None:
         messages[-1]["text"] = ""
@@ -472,7 +471,10 @@ def test_replacing_session_rejects_invalid_response_without_changing_history(
 
     assert response.status_code == 422
     assert response.json() == {
-        "detail": {"code": "AGENT_SESSION_REPLACEMENT_INVALID"},
+        "code": 40000,
+        "message": "AGENT_SESSION_REPLACEMENT_INVALID",
+        "data": None,
+        "requestId": None,
     }
     with closing(connect()) as conn:
         assert load_agent_session(conn, resume_id) == original
@@ -1577,11 +1579,13 @@ def test_only_latest_committed_draft_can_be_resolved(
     assert latest_response.status_code == 200
     assert superseded_response.status_code == 409
     assert superseded_response.json() == {
-        "detail": {
-            "code": "AGENT_DRAFT_DECISION_CONFLICT",
+        "code": 40000,
+        "message": "AGENT_DRAFT_DECISION_CONFLICT",
+        "data": {
             "revision": latest_payload["session"]["revision"],
             "status": "superseded",
         },
+        "requestId": None,
     }
     persisted_resume = client.get(f"/api/resumes/{resume_id}").json()["data"]
     assert persisted_resume["versionId"] == latest_payload["resume"]["versionId"]
@@ -1683,7 +1687,7 @@ def test_apply_boundary_rejects_a_non_latest_pending_draft(
     )
 
     assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "AGENT_DRAFT_DECISION_CONFLICT"
+    assert response.json()["message"] == "AGENT_DRAFT_DECISION_CONFLICT"
     persisted_resume = client.get(f"/api/resumes/{resume_id}").json()["data"]
     assert persisted_resume["versionId"] == original_detail["versionId"]
     assert persisted_resume["resume"]["resume"]["basic"]["headline"] == "Engineer"
@@ -1769,10 +1773,10 @@ def test_agent_draft_apply_rejects_a_stale_formal_resume_version(
 
     assert response.status_code == 409
     assert response.json() == {
-        "detail": {
-            "code": "RESUME_VERSION_CONFLICT",
-            "versionId": current_detail["versionId"],
-        },
+        "code": 40000,
+        "message": "RESUME_VERSION_CONFLICT",
+        "data": {"versionId": current_detail["versionId"]},
+        "requestId": None,
     }
     persisted_session = client.get(
         f"/api/agent/resumes/{resume_id}/session",
@@ -1816,10 +1820,10 @@ def test_agent_draft_decision_route_reports_stale_revision(
 
     assert response.status_code == 409
     assert json.loads(response.body) == {
-        "detail": {
-            "code": "AGENT_SESSION_REVISION_CONFLICT",
-            "revision": current_revision,
-        },
+        "code": 40000,
+        "message": "AGENT_SESSION_REVISION_CONFLICT",
+        "data": {"revision": current_revision},
+        "requestId": None,
     }
 
 
@@ -1857,10 +1861,10 @@ def test_stale_draft_decision_after_session_replace_reports_revision_conflict(
 
     assert response.status_code == 409
     assert json.loads(response.body) == {
-        "detail": {
-            "code": "AGENT_SESSION_REVISION_CONFLICT",
-            "revision": replaced.revision,
-        },
+        "code": 40000,
+        "message": "AGENT_SESSION_REVISION_CONFLICT",
+        "data": {"revision": replaced.revision},
+        "requestId": None,
     }
 
 
@@ -1908,10 +1912,10 @@ def test_current_draft_decision_reports_unavailable_target_conflict(
 
     assert response.status_code == 409
     assert json.loads(response.body) == {
-        "detail": {
-            "code": "AGENT_DRAFT_DECISION_CONFLICT",
-            "revision": current_revision,
-        },
+        "code": 40000,
+        "message": "AGENT_DRAFT_DECISION_CONFLICT",
+        "data": {"revision": current_revision},
+        "requestId": None,
     }
 
 
@@ -1955,11 +1959,10 @@ def test_agent_draft_decision_route_reports_active_run(
 
     assert response.status_code == 409
     assert json.loads(response.body) == {
-        "detail": {
-            "code": "AGENT_RUN_CONFLICT",
-            "revision": current_revision,
-            "runId": run_id,
-        },
+        "code": 40000,
+        "message": "AGENT_RUN_CONFLICT",
+        "data": {"revision": current_revision, "runId": run_id},
+        "requestId": None,
     }
 
 
@@ -1998,11 +2001,10 @@ def test_agent_draft_decision_route_preserves_the_existing_terminal_decision(
 
     assert response.status_code == 409
     assert json.loads(response.body) == {
-        "detail": {
-            "code": "AGENT_DRAFT_DECISION_CONFLICT",
-            "revision": discarded.revision,
-            "status": "discarded",
-        },
+        "code": 40000,
+        "message": "AGENT_DRAFT_DECISION_CONFLICT",
+        "data": {"revision": discarded.revision, "status": "discarded"},
+        "requestId": None,
     }
 
 
@@ -2031,7 +2033,10 @@ def test_agent_session_route_hides_corrupt_message_details(
 
     assert response.status_code == 500
     assert json.loads(response.body) == {
-        "detail": {"code": "AGENT_SESSION_DATA_INVALID"},
+        "code": 50000,
+        "message": "AGENT_SESSION_DATA_INVALID",
+        "data": None,
+        "requestId": None,
     }
     assert resume_id not in response.body.decode()
     assert message_id not in response.body.decode()
@@ -2079,7 +2084,10 @@ def test_agent_session_mutation_routes_hide_corrupt_message_details(
     )
 
     expected_body = {
-        "detail": {"code": "AGENT_SESSION_DATA_INVALID"},
+        "code": 50000,
+        "message": "AGENT_SESSION_DATA_INVALID",
+        "data": None,
+        "requestId": None,
     }
     for response in (put_response, patch_response):
         assert response.status_code == 500
@@ -2188,10 +2196,10 @@ def test_replace_session_rolls_back_global_message_id_conflict(
 
     assert response.status_code == 409
     assert json.loads(response.body) == {
-        "detail": {
-            "code": "AGENT_SESSION_TURN_CONFLICT",
-            "revision": target_revision,
-        },
+        "code": 40000,
+        "message": "AGENT_SESSION_TURN_CONFLICT",
+        "data": {"revision": target_revision},
+        "requestId": None,
     }
     with closing(connect()) as conn:
         target_session = load_agent_session(conn, target_resume_id)
@@ -2550,11 +2558,10 @@ def test_session_replace_route_reports_running_execution_conflict(
 
     assert response.status_code == 409
     assert json.loads(response.body) == {
-        "detail": {
-            "code": "AGENT_RUN_CONFLICT",
-            "revision": active_revision,
-            "runId": "run-route-still-active",
-        },
+        "code": 40000,
+        "message": "AGENT_RUN_CONFLICT",
+        "data": {"revision": active_revision, "runId": "run-route-still-active"},
+        "requestId": None,
     }
     with closing(connect()) as conn:
         session = load_agent_session(conn, resume_id)
@@ -2575,7 +2582,6 @@ def _chat_route_response(
     error: Exception,
 ) -> tuple[int, dict[str, object]]:
     manager = _FailingRunManager(error)
-    monkeypatch.setattr(agent_router, "_run_manager", lambda request: manager)
     monkeypatch.setattr(
         agent_router,
         "prepare_agent_request",
@@ -2593,8 +2599,8 @@ def _chat_route_response(
     )
     response = asyncio.run(
         agent_router.post_agent_chat(
-            SimpleNamespace(),
             request,
+            manager,
         ),
     )
     return response.status_code, json.loads(response.body)
@@ -2606,7 +2612,12 @@ def test_active_run_conflict_has_stable_transport_code(
     status_code, body = _chat_route_response(monkeypatch, AgentRunConflictError())
 
     assert status_code == 409
-    assert body == {"detail": {"code": "AGENT_RUN_CONFLICT"}}
+    assert body == {
+        "code": 40000,
+        "message": "AGENT_RUN_CONFLICT",
+        "data": None,
+        "requestId": None,
+    }
 
 
 def test_run_capacity_conflict_has_stable_transport_code(
@@ -2615,7 +2626,12 @@ def test_run_capacity_conflict_has_stable_transport_code(
     status_code, body = _chat_route_response(monkeypatch, AgentRunCapacityError())
 
     assert status_code == 429
-    assert body == {"detail": {"code": "AGENT_RUN_CAPACITY_EXCEEDED"}}
+    assert body == {
+        "code": 40000,
+        "message": "AGENT_RUN_CAPACITY_EXCEEDED",
+        "data": None,
+        "requestId": None,
+    }
 
 
 def test_attachment_prevalidation_error_has_stable_transport_code(
@@ -2627,7 +2643,12 @@ def test_attachment_prevalidation_error_has_stable_transport_code(
     )
 
     assert status_code == 400
-    assert body == {"detail": {"code": "AGENT_ATTACHMENT_INVALID"}}
+    assert body == {
+        "code": 40000,
+        "message": "AGENT_ATTACHMENT_INVALID",
+        "data": None,
+        "requestId": None,
+    }
 
 
 def test_invalid_thinking_mode_has_stable_transport_code(
@@ -2642,7 +2663,10 @@ def test_invalid_thinking_mode_has_stable_transport_code(
 
     assert status_code == 400
     assert body == {
-        "detail": {"code": "MODEL_CONFIG_THINKING_MODE_UNSUPPORTED"},
+        "code": 40000,
+        "message": "MODEL_CONFIG_THINKING_MODE_UNSUPPORTED",
+        "data": None,
+        "requestId": None,
     }
 
 
@@ -2659,4 +2683,9 @@ def test_corrupt_chat_session_has_stable_private_transport_error(
     )
 
     assert status_code == 500
-    assert body == {"detail": {"code": "AGENT_SESSION_DATA_INVALID"}}
+    assert body == {
+        "code": 50000,
+        "message": "AGENT_SESSION_DATA_INVALID",
+        "data": None,
+        "requestId": None,
+    }

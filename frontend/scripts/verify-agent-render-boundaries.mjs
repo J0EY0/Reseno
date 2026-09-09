@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import ts from "typescript";
+import { findNodes, getMemberPath, parseSource } from "./source-analysis.mjs";
+import { evaluateTypeScript } from "./typescript-module.mjs";
 
 const sourceRoot = new URL("../src/", import.meta.url);
 const [
@@ -56,7 +59,10 @@ const [
     new URL("components/copilot/copilot-user-message-row.tsx", sourceRoot),
     "utf8",
   ),
-  readFile(new URL("components/ai-elements/prompt-input.tsx", sourceRoot), "utf8"),
+  readFile(
+    new URL("components/ai-elements/prompt-input.tsx", sourceRoot),
+    "utf8",
+  ),
   readFile(new URL("components/ai-elements/shimmer.tsx", sourceRoot), "utf8"),
   readFile(new URL("index.css", sourceRoot), "utf8"),
 ]);
@@ -77,16 +83,35 @@ assert(
     !messagePrimitives.includes("@streamdown/"),
   "Lightweight message primitives must not pull rich rendering into the Agent shell.",
 );
-assert(
-  /messages\.findLast\(\s*\(candidate\) => candidate\.role === 'user',?\s*\)\?\.id/.test(
-    conversationView,
-  ) &&
-    /retryable=\{message\.id === latestUserMessageId\}/.test(conversationView) &&
-    !/retryable=\{message\.id === messages\.at\(-1\)\?\.id\}/.test(
-      conversationView,
-    ),
-  "Retry must follow the latest user turn even when a cancelled run persists a partial assistant message after it.",
+const latestUserMessage = findNodes(
+  parseSource(conversationView),
+  ts.isVariableDeclaration,
+).find(
+  (node) => getMemberPath(node.name) === "latestUserMessageId",
+)?.initializer;
+assert.ok(latestUserMessage);
+const { selectLatestUser } = evaluateTypeScript(
+  `export const selectLatestUser = (messages) => ${latestUserMessage.getText()};`,
 );
+assert.equal(
+  selectLatestUser([
+    { id: "old-user", role: "user" },
+    { id: "assistant", role: "assistant" },
+    { id: "current-user", role: "user" },
+    { id: "partial", role: "assistant" },
+  ]),
+  "current-user",
+  "A partial assistant response must not take ownership of Retry.",
+);
+assert.equal(
+  selectLatestUser([{ id: "assistant", role: "assistant" }]),
+  undefined,
+);
+assert.match(
+  conversationView,
+  /retryable=\{message\.id === latestUserMessageId\}/,
+);
+
 assert(
   messageResponse.includes('from "streamdown"') &&
     messageResponse.includes('from "@streamdown/math"') &&
@@ -101,18 +126,14 @@ assert(
 );
 assert(
   appStyles.includes('@import "streamdown/styles.css";') &&
-    appStyles.includes(
-      "animation-delay: min(var(--sd-delay, 0ms), 240ms);",
-    ),
+    appStyles.includes("animation-delay: min(var(--sd-delay, 0ms), 240ms);"),
   "Streamdown animation styles must load with a bounded reveal delay.",
 );
 assert(
   assistantResponse.includes("isStreaming") &&
     /isStreaming\s*\|\|\s*!isPlainAgentText\(text\)/.test(assistantResponse) &&
     /AgentPlainResponse/.test(assistantResponse) &&
-    /AgentRichResponse[\s\S]{0,120}text=\{text\}/.test(
-      assistantResponse,
-    ),
+    /AgentRichResponse[\s\S]{0,120}text=\{text\}/.test(assistantResponse),
   "Settled plain responses must stay lightweight while active streaming text uses the optional animated renderer.",
 );
 assert(
@@ -205,8 +226,7 @@ assert(
 assert(
   !/components\/ui\/(?:command|dropdown-menu|hover-card|select)/.test(
     promptInput,
-  ) &&
-    promptInput.includes("usePromptInputForm"),
+  ) && promptInput.includes("usePromptInputForm"),
   "PromptInput must retain only its used form primitives behind the deep form hook.",
 );
 

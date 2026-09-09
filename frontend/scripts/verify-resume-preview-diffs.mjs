@@ -18,8 +18,7 @@ const server = await createServer({
 });
 
 try {
-  const { getRenderableFieldDiffs } =
-    await server.ssrLoadModule(
+  const { getRenderableFieldDiffs } = await server.ssrLoadModule(
     "/src/components/preview/resume-preview-diffs.ts",
   );
   const { createResumeDiffLookup } = await server.ssrLoadModule(
@@ -28,13 +27,9 @@ try {
   const { getRenderableItems } = await server.ssrLoadModule(
     "/src/components/preview/resume-preview-model.ts",
   );
-  const {
-    createInlineDiffParts,
-    createListDiff,
-  } =
-    await server.ssrLoadModule(
-      "/src/components/preview/resume-preview-diff-algorithms.ts",
-    );
+  const { createInlineDiffParts, createListDiff } = await server.ssrLoadModule(
+    "/src/components/preview/resume-preview-diff-algorithms.ts",
+  );
 
   const lookup = createResumeDiffLookup([
     {
@@ -206,10 +201,12 @@ try {
     "Publication diffs must highlight the matching citation slots.",
   );
   assert.deepEqual(
-    [...createListDiff(
-      ["第一条不变", "第二条旧文本"],
-      ["第一条不变", "第二条新文本"],
-    ).changedIndices],
+    [
+      ...createListDiff(
+        ["第一条不变", "第二条旧文本"],
+        ["第一条不变", "第二条新文本"],
+      ).changedIndices,
+    ],
     [1],
     "A one-bullet rewrite must not highlight unchanged bullets.",
   );
@@ -264,36 +261,43 @@ try {
       React.createElement(ResumeDiffText, {
         richText: true,
         value: after,
-        diffs: [{
-          id: "format-position",
-          operationId: "format-position",
-          path: "sections.experience.items.tencent.position",
-          kind: "modified",
-          label: "Format position",
-          before,
-          after,
-        }],
+        diffs: [
+          {
+            id: "format-position",
+            operationId: "format-position",
+            path: "sections.experience.items.tencent.position",
+            kind: "modified",
+            label: "Format position",
+            before,
+            after,
+          },
+        ],
       }),
     );
     await formatStream.allReady;
     const formatRendered = await new Response(formatStream).text();
     assert.match(formatRendered, /resume-diff-field--whole/);
-    assert.match(formatRendered, /data-resume-diff-path="sections\.experience\.items\.tencent\.position"/);
+    assert.match(
+      formatRendered,
+      /data-resume-diff-path="sections\.experience\.items\.tencent\.position"/,
+    );
     assert.doesNotMatch(formatRendered, /&lt;(?:p|strong)&gt;/);
   }
 
   const clearedFieldStream = await renderToReadableStream(
     React.createElement(ResumeDiffText, {
       value: "",
-      diffs: [{
-        id: "diff-clear-summary",
-        operationId: "edit-clear-summary",
-        path: "basic.summary",
-        kind: "modified",
-        label: "清空个人总结",
-        before: "原个人总结",
-        after: "",
-      }],
+      diffs: [
+        {
+          id: "diff-clear-summary",
+          operationId: "edit-clear-summary",
+          path: "basic.summary",
+          kind: "modified",
+          label: "清空个人总结",
+          before: "原个人总结",
+          after: "",
+        },
+      ],
     }),
   );
   await clearedFieldStream.allReady;
@@ -312,17 +316,19 @@ try {
   const deletionOnlyTextStream = await renderToReadableStream(
     React.createElement(ResumeDiffText, {
       value: "负责前端架构设计",
-      diffs: [{
-        id: "diff-remove-words",
-        operationId: "edit-remove-words",
-        path: "sections.experience.items.tencent.description",
-        kind: "modified",
-        label: "精简描述",
-        sectionId: "experience",
-        itemId: "tencent",
-        before: "负责复杂的前端架构设计",
-        after: "负责前端架构设计",
-      }],
+      diffs: [
+        {
+          id: "diff-remove-words",
+          operationId: "edit-remove-words",
+          path: "sections.experience.items.tencent.description",
+          kind: "modified",
+          label: "精简描述",
+          sectionId: "experience",
+          itemId: "tencent",
+          before: "负责复杂的前端架构设计",
+          after: "负责前端架构设计",
+        },
+      ],
     }),
   );
   await deletionOnlyTextStream.allReady;
@@ -413,17 +419,19 @@ try {
     "Only the rewritten bullet must be visually marked.",
   );
 
-  const clearedPositionLookup = createResumeDiffLookup([{
-    id: "diff-clear-position",
-    operationId: "edit-clear-position",
-    path: "sections.experience.items.tencent.position",
-    kind: "modified",
-    label: "清空职位",
-    sectionId: "experience",
-    itemId: "tencent",
-    before: "前端开发实习生",
-    after: "",
-  }]);
+  const clearedPositionLookup = createResumeDiffLookup([
+    {
+      id: "diff-clear-position",
+      operationId: "edit-clear-position",
+      path: "sections.experience.items.tencent.position",
+      kind: "modified",
+      label: "清空职位",
+      sectionId: "experience",
+      itemId: "tencent",
+      before: "前端开发实习生",
+      after: "",
+    },
+  ]);
   const clearedPositionStream = await renderToReadableStream(
     React.createElement(SectionItems, {
       itemDiffById: clearedPositionLookup.itemDiffById,
@@ -433,17 +441,19 @@ try {
         kind: "experience",
         layout: "timeline",
         title: "工作经历",
-        items: [{
-          id: "tencent",
-          title: "腾讯",
-          subtitle: "",
-          meta: "",
-          period: "",
-          description: "",
-          highlights: [],
-          content: "",
-          url: "",
-        }],
+        items: [
+          {
+            id: "tencent",
+            title: "腾讯",
+            subtitle: "",
+            meta: "",
+            period: "",
+            description: "",
+            highlights: [],
+            content: "",
+            url: "",
+          },
+        ],
       },
       settings: {
         bodyColor: "#334155",
@@ -462,7 +472,9 @@ try {
     }),
   );
   await clearedPositionStream.allReady;
-  const clearedPositionRendered = await new Response(clearedPositionStream).text();
+  const clearedPositionRendered = await new Response(
+    clearedPositionStream,
+  ).text();
   assert.match(
     clearedPositionRendered,
     /data-resume-diff-path="sections\.experience\.items\.tencent\.position"/,
@@ -476,29 +488,33 @@ try {
     id: "education",
     kind: "education",
     title: "教育经历",
-    items: [{
-      id: "zju",
-      school: "浙江大学",
-      degree: "工学学士",
-      major: "计算机科学与技术",
-      gpa: "3.85 / 4.0",
-      location: "杭州",
-      period: "2019.09 - 2023.06",
-      description: "",
-      highlights: [],
-    }],
+    items: [
+      {
+        id: "zju",
+        school: "浙江大学",
+        degree: "工学学士",
+        major: "计算机科学与技术",
+        gpa: "3.85 / 4.0",
+        location: "杭州",
+        period: "2019.09 - 2023.06",
+        description: "",
+        highlights: [],
+      },
+    ],
   });
-  const educationLookup = createResumeDiffLookup([{
-    id: "diff-degree",
-    operationId: "edit-degree",
-    path: "sections.education.items.zju.degree",
-    kind: "modified",
-    label: "修改学位",
-    sectionId: "education",
-    itemId: "zju",
-    before: "本科",
-    after: "工学学士",
-  }]);
+  const educationLookup = createResumeDiffLookup([
+    {
+      id: "diff-degree",
+      operationId: "edit-degree",
+      path: "sections.education.items.zju.degree",
+      kind: "modified",
+      label: "修改学位",
+      sectionId: "education",
+      itemId: "zju",
+      before: "本科",
+      after: "工学学士",
+    },
+  ]);
   const educationStream = await renderToReadableStream(
     React.createElement(SectionItems, {
       itemDiffById: educationLookup.itemDiffById,
@@ -596,16 +612,20 @@ try {
 
   const emptyHighlightStream = await renderToReadableStream(
     React.createElement(RichHighlights, {
-      diffs: [{
-        ...deletionDiff,
-        before: ["唯一一条"],
-        after: [],
-      }],
+      diffs: [
+        {
+          ...deletionDiff,
+          before: ["唯一一条"],
+          after: [],
+        },
+      ],
       highlights: [],
     }),
   );
   await emptyHighlightStream.allReady;
-  const emptyHighlightRendered = await new Response(emptyHighlightStream).text();
+  const emptyHighlightRendered = await new Response(
+    emptyHighlightStream,
+  ).text();
   assert.doesNotMatch(
     emptyHighlightRendered,
     /resume-diff-deletion-marker|data-resume-diff-deleted-text|tooltip-trigger|>−</,
@@ -642,17 +662,19 @@ try {
         kind: "simple_list",
         layout: "list",
         title: "技能",
-        items: [{
-          id: "skills",
-          title: "",
-          subtitle: "",
-          meta: "",
-          period: "",
-          description: "",
-          highlights: [],
-          content: "",
-          url: "",
-        }],
+        items: [
+          {
+            id: "skills",
+            title: "",
+            subtitle: "",
+            meta: "",
+            period: "",
+            description: "",
+            highlights: [],
+            content: "",
+            url: "",
+          },
+        ],
       },
       emptyListLookup.itemDiffById,
     ).length,

@@ -107,7 +107,7 @@ def test_completed_run_releases_history_without_changing_public_snapshot() -> No
     manager = AgentRunManager()
     manager._runs[run.id] = run
     asyncio.run(manager._release(run))
-    assert run.request.messages == []
+    assert run.turn is None
     assert request.messages
     assert run.response() == before
     assert manager._runs[run.id] is run
@@ -236,8 +236,7 @@ def test_run_response_preserves_the_pending_transaction_base() -> None:
     manager = AgentRunManager()
     manager._runs[run.id] = run
     asyncio.run(manager._release(run))
-    assert not run.request.messages
-    assert run.request.draft_state is None
+    assert run.turn is None
     snapshot = run.response()
     assert snapshot.base_resume == request_resume
     snapshot.base_resume["basic"]["headline"] = "Client-only mutation"
@@ -314,6 +313,10 @@ def test_model_config_is_frozen_for_one_run_and_refreshed_for_the_next(
                 ),
             ),
         )
+        assert first_run.turn is not None
+        assert first_run.turn.model_snapshot is not None
+        assert first_run.turn.model_snapshot.model == first_config.model
+        assert not hasattr(first_run.turn, "resolved_config")
         selected_config = second_config
         assert first_run.task is not None
         await asyncio.wait_for(first_run.task, timeout=1)
@@ -327,6 +330,9 @@ def test_model_config_is_frozen_for_one_run_and_refreshed_for_the_next(
                 ),
             ),
         )
+        assert second_run.turn is not None
+        assert second_run.turn.model_snapshot is not None
+        assert second_run.turn.model_snapshot.model == second_config.model
         assert second_run.task is not None
         await asyncio.wait_for(second_run.task, timeout=1)
         return first_run, second_run
@@ -335,12 +341,9 @@ def test_model_config_is_frozen_for_one_run_and_refreshed_for_the_next(
 
     assert resolved_configs == [first_config, second_config]
     assert executed_configs == [first_config, second_config]
-    assert first_run.turn.model_snapshot is not None
-    assert first_run.turn.model_snapshot.model == first_config.model
-    assert second_run.turn.model_snapshot is not None
-    assert second_run.turn.model_snapshot.model == second_config.model
+    assert first_run.turn is None
+    assert second_run.turn is None
     assert not hasattr(first_run, "resolved_config")
-    assert not hasattr(first_run.turn, "resolved_config")
 
 
 def test_model_resolution_failure_leaves_no_turn_or_run_reservation(
@@ -850,13 +853,8 @@ def test_cancelled_hard_delete_waits_for_completed_run_purge(
         await asyncio.wait_for(run.task, timeout=1)
         resumes.trash_resume(resume_id)
 
-        request = SimpleNamespace(
-            app=SimpleNamespace(
-                state=SimpleNamespace(agent_runs=manager),
-            ),
-        )
         delete_task = asyncio.create_task(
-            resumes_router.delete_resume(resume_id, request),
+            resumes_router.delete_resume(resume_id, manager),
         )
         committed = await asyncio.to_thread(delete_committed.wait, 1)
         assert committed
@@ -2196,14 +2194,9 @@ def test_terminal_persistence_retries_while_run_stays_active(
             await asyncio.gather(run.task, return_exceptions=True)
             pytest.fail("The run stopped retrying before the third failure.")
 
-        request = SimpleNamespace(
-            app=SimpleNamespace(
-                state=SimpleNamespace(agent_runs=manager),
-            ),
-        )
         recovery_response = await agent_router.get_agent_session_recovery(
-            request,
             resume_id,
+            manager,
         )
         assert recovery_response.data is not None
         recovered = recovery_response.data

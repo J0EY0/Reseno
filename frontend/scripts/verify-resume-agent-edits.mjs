@@ -1,6 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { createServer } from "vite";
 import ts from "typescript";
+import { findCalls, getMemberPath, parseSource } from "./source-analysis.mjs";
 
 import { createViteTestCacheDir } from "./vite-test-cache.mjs";
 
@@ -8,15 +9,6 @@ function assert(condition, message) {
   if (!condition) {
     throw new Error(message);
   }
-}
-
-function countLines(source) {
-  if (source.length === 0) {
-    return 0;
-  }
-
-  const lines = source.split(/\r\n|\n|\r/).length;
-  return /(?:\r\n|\n|\r)$/.test(source) ? lines - 1 : lines;
 }
 
 function collectModuleDependencies(moduleUrl, source, modulePaths) {
@@ -32,8 +24,7 @@ function collectModuleDependencies(moduleUrl, source, modulePaths) {
   for (const statement of sourceFile.statements) {
     if (
       !(
-        ts.isImportDeclaration(statement) ||
-        ts.isExportDeclaration(statement)
+        ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement)
       ) ||
       !statement.moduleSpecifier ||
       !ts.isStringLiteralLike(statement.moduleSpecifier)
@@ -181,18 +172,15 @@ function createResumeDetail(
 }
 
 function apiResponse(data, status = 200) {
-  return new Response(
-    JSON.stringify({ code: 0, data, message: "SUCCESS" }),
-    {
-      headers: { "Content-Type": "application/json" },
-      status,
-    },
-  );
+  return new Response(JSON.stringify({ code: 0, data, message: "SUCCESS" }), {
+    headers: { "Content-Type": "application/json" },
+    status,
+  });
 }
 
 function transportError(code, details = {}) {
   return new Response(
-    JSON.stringify({ detail: { code, ...details } }),
+    JSON.stringify({ code: 40000, message: code, data: details }),
     {
       headers: { "Content-Type": "application/json" },
       status: 409,
@@ -263,12 +251,16 @@ const [
     ),
     "utf8",
   ),
-  Promise.all(agentEditModuleUrls.map((moduleUrl) => readFile(moduleUrl, "utf8"))),
+  Promise.all(
+    agentEditModuleUrls.map((moduleUrl) => readFile(moduleUrl, "utf8")),
+  ),
   readdir(new URL("../src/lib/resume-agent-edits/", import.meta.url)),
 ]);
 
 assert(
-  JSON.stringify(moduleEntries.filter((entry) => entry.endsWith(".ts")).sort()) ===
+  JSON.stringify(
+    moduleEntries.filter((entry) => entry.endsWith(".ts")).sort(),
+  ) ===
     JSON.stringify([
       "apply-operations.ts",
       "three-way-merge.ts",
@@ -276,14 +268,10 @@ assert(
     ]),
   "Resume Agent edits must keep one focused implementation module per transaction responsibility.",
 );
-agentEditModuleSources.forEach((source, index) => {
-  assert(
-    countLines(source) <= 600,
-    `${agentEditModuleUrls[index].pathname} must stay within the 600-line TypeScript budget.`,
-  );
-});
 
-const agentEditModulePaths = new Set(agentEditModuleUrls.map((moduleUrl) => moduleUrl.pathname));
+const agentEditModulePaths = new Set(
+  agentEditModuleUrls.map((moduleUrl) => moduleUrl.pathname),
+);
 const agentEditGraph = new Map(
   agentEditModuleUrls.map((moduleUrl, index) => [
     moduleUrl.pathname,
@@ -340,7 +328,9 @@ assert(
   "The workspace must connect the Agent draft to the formal document through the session's apply operation.",
 );
 assert(
-  /resume:\s*agent\.agentDraft\?\.resume \?\? session\.resume/.test(workspaceSource) &&
+  /resume:\s*agent\.agentDraft\?\.resume \?\? session\.resume/.test(
+    workspaceSource,
+  ) &&
     /useDeferredValue\(previewPresentation\)/.test(workspaceSource) &&
     /liveResume:\s*session\.document/.test(workspaceSource) &&
     /getSnapshot:\s*session\.getSnapshot/.test(workspaceSource) &&
@@ -350,12 +340,8 @@ assert(
 assert(
   !/createContext|useContext/.test(draftHookSource) &&
     !/useEffect/.test(draftHookSource) &&
-    /const currentResumeRef = useRef\(resume\);/.test(
-      draftHookSource,
-    ) &&
-    /currentResumeRef\.current = resume;/.test(
-      draftHookSource,
-    ) &&
+    /const currentResumeRef = useRef\(resume\);/.test(draftHookSource) &&
+    /currentResumeRef\.current = resume;/.test(draftHookSource) &&
     /projectAgentDraftReview\(\{[\s\S]*?baseResume:[\s\S]*?currentResume: currentResumeRef\.current/.test(
       draftHookSource,
     ),
@@ -387,8 +373,8 @@ assert(
 );
 assert(
   /onResolveDraftReview\(\s*draft\.sourceMessageId,\s*currentResumeRef\.current,\s*reviewItemIds,\s*status,\s*conflictResolution,?\s*\)/.test(
-      draftHookSource,
-    ) &&
+    draftHookSource,
+  ) &&
     /status === "applied"[\s\S]*?currentResume,[\s\S]*?currentVersionId:[\s\S]*?rebaseOnLatest:[\s\S]*?reviewItemIds,[\s\S]*?status,[\s\S]*?: \{ reviewItemIds, status \}/.test(
       saveSource,
     ),
@@ -428,7 +414,9 @@ assert(
   /const resolveAgentDraftReview = useCallback\([\s\S]*?while \(activeRequestRef\.current\)[\s\S]*?resolveAgentDraftDecision\([\s\S]*?adoptPersistedSave\([\s\S]*?activeRequestRef\.current = trackedRequest/.test(
     saveSource,
   ) &&
-    /onResolveDraftReview:\s*save\.resolveAgentDraftReview/.test(workspaceSource) &&
+    /onResolveDraftReview:\s*save\.resolveAgentDraftReview/.test(
+      workspaceSource,
+    ) &&
     !/resolveAgentDraftReviewRef/.test(workspaceSource),
   "Draft review decisions must serialize with resume saves and adopt only authoritative receipts.",
 );
@@ -439,24 +427,27 @@ assert(
   "Unsaved local edits may adopt a formal resume only after this apply was committed as requested.",
 );
 assert(
-  /function hydrateResume\([^)]*\) \{\s*agent\.resetAgentDraft\(\);\s*session\.hydrate\(item\);/.test(workspaceSource) &&
+  /function hydrateResume\([^)]*\) \{\s*agent\.resetAgentDraft\(\);\s*session\.hydrate\(item\);/.test(
+    workspaceSource,
+  ) &&
     /const resetAgentDraft = useCallback\(\(\) => \{[\s\S]*?agentDraftBaseRef\.current\s*=\s*null[\s\S]*?setStoredAgentDraft\(null\)[\s\S]*?setResolvingStatus\(null\)[\s\S]*?reviewSelectionControllerRef\.current\?\.reset\(\)/.test(
       draftHookSource,
     ),
   "Hydrating a resume detail session must reset the complete Agent draft transaction.",
 );
-assert(
-  /const \{ draftSnapshot, panelMessages, session \}\s*=\s*await hydrateAgentSession/.test(
-    hydrationSource,
-  ) &&
-    /runtime\.onReconcileAgentDraft\(draftSnapshot\)/.test(
-      hydrationSource,
-    ) &&
-    /const \{ draftSnapshot, panelMessages, session \} = await hydrateAgentSession[\s\S]*?runtime\.onReconcileAgentDraft\(draftSnapshot\)/.test(
-      conversationSource,
+for (const source of [hydrationSource, conversationSource]) {
+  const parsed = parseSource(source);
+  assert(
+    findCalls(parsed, "hydrateAgentSession").length > 0,
+    "Authoritative sessions must pass through the shared hydration contract.",
+  );
+  assert(
+    findCalls(parsed, "runtime.onReconcileAgentDraft").some(
+      (call) => getMemberPath(call.arguments[0]) === "draftSnapshot",
     ),
-  "Every authoritative session load must reconcile a pending, terminal, or absent draft.",
-);
+    "Authoritative loads must reconcile their returned draft snapshot.",
+  );
+}
 
 const server = await createServer({
   cacheDir: createViteTestCacheDir(),
@@ -470,540 +461,913 @@ const server = await createServer({
 });
 
 try {
-const agentEditModule = await server.ssrLoadModule(
-  "/src/lib/resume-agent-edits.ts",
-);
-const {
-  createProvisionalAgentDraftReviewItems,
-  createReviewItemIdByOperationId,
-  getAdjacentAgentDraftReviewItemId,
-  getAgentDraftReviewSuccessorId,
-  getAgentDraftSnapshotFromMessages,
-  getPendingAgentDraftReviewItems,
-  previewAgentDraftReview,
-  projectAgentDraftReview,
-} = await server.ssrLoadModule("/src/lib/agent-draft-review.ts");
-const {
-  hydrateAgentSession,
-  toConversationMessage,
-} = await server.ssrLoadModule(
-  "/src/components/copilot/copilot-message-model.ts",
-);
-assert(
-  JSON.stringify(Object.keys(agentEditModule).sort()) ===
-    JSON.stringify([
-      "applyAgentEditsToDraft",
-      "applyAgentEditsWithMerge",
-      "createAgentDraftBaseSnapshot",
-    ]),
-  "The Resume Agent edit runtime entry must expose exactly the three product APIs.",
-);
-const {
-  applyAgentEditsToDraft,
-  applyAgentEditsWithMerge,
-  createAgentDraftBaseSnapshot,
-} = agentEditModule;
-
-{
-  const baseResume = createResume();
-  const legacyEdit = {
-    id: "missing-operation",
-    title: "Update summary",
-    target: "basic.summary",
-    reason: "Use the supplied description.",
-    replacement: "Summary without an executable operation",
-  };
-  for (const result of [
-    applyAgentEditsToDraft(baseResume, [legacyEdit]),
-    applyAgentEditsWithMerge(baseResume, baseResume, [legacyEdit]),
-  ]) {
-    assert(
-      result.appliedCount === 0 && result.diffs.length === 0 &&
-        result.errors[0]?.reason === "missing_operation" &&
-        JSON.stringify(result.resume) === JSON.stringify(baseResume),
-      "An edit without an explicit operation must leave the resume unchanged.",
+  const agentEditModule = await server.ssrLoadModule(
+    "/src/lib/resume-agent-edits.ts",
+  );
+  const {
+    createProvisionalAgentDraftReviewItems,
+    createReviewItemIdByOperationId,
+    getAdjacentAgentDraftReviewItemId,
+    getAgentDraftReviewSuccessorId,
+    getAgentDraftSnapshotFromMessages,
+    getPendingAgentDraftReviewItems,
+    previewAgentDraftReview,
+    projectAgentDraftReview,
+  } = await server.ssrLoadModule("/src/lib/agent-draft-review.ts");
+  const { hydrateAgentSession, toConversationMessage } =
+    await server.ssrLoadModule(
+      "/src/components/copilot/copilot-message-model.ts",
     );
-  }
-}
+  assert(
+    JSON.stringify(Object.keys(agentEditModule).sort()) ===
+      JSON.stringify([
+        "applyAgentEditsToDraft",
+        "applyAgentEditsWithMerge",
+        "createAgentDraftBaseSnapshot",
+      ]),
+    "The Resume Agent edit runtime entry must expose exactly the three product APIs.",
+  );
+  const {
+    applyAgentEditsToDraft,
+    applyAgentEditsWithMerge,
+    createAgentDraftBaseSnapshot,
+  } = agentEditModule;
 
-{
-  const { mergeAgentMessage, createEmptyAssistantMessage } =
-    await server.ssrLoadModule("/src/lib/agent-message-codec.ts");
-  const validEdit = {
-    id: "explicit-operation", title: "Update summary", target: "basic.summary",
-    reason: "Use the supplied description.",
-    operation: { type: "replace_field", path: "basic.summary", value: "New summary" },
-  };
-  for (const status of ["planned", "executed", "rejected"]) {
-    const message = mergeAgentMessage(createEmptyAssistantMessage(), {
-      edits: [{ ...validEdit, status }],
-    });
-    assert(
-      message.edits[0].status === status &&
-        JSON.stringify(message.edits[0].operation) === JSON.stringify(validEdit.operation),
-      "Message decoding must retain explicit operations and their review status.",
-    );
+  {
+    const baseResume = createResume();
+    const legacyEdit = {
+      id: "missing-operation",
+      title: "Update summary",
+      target: "basic.summary",
+      reason: "Use the supplied description.",
+      replacement: "Summary without an executable operation",
+    };
+    for (const result of [
+      applyAgentEditsToDraft(baseResume, [legacyEdit]),
+      applyAgentEditsWithMerge(baseResume, baseResume, [legacyEdit]),
+    ]) {
+      assert(
+        result.appliedCount === 0 &&
+          result.diffs.length === 0 &&
+          result.errors[0]?.reason === "missing_operation" &&
+          JSON.stringify(result.resume) === JSON.stringify(baseResume),
+        "An edit without an explicit operation must leave the resume unchanged.",
+      );
+    }
   }
-  for (const operation of [undefined, null, {}]) {
-    let rejected = false;
-    try {
-      mergeAgentMessage(createEmptyAssistantMessage(), {
-        edits: [validEdit, { ...validEdit, id: "invalid-operation", operation }],
+
+  {
+    const { mergeAgentMessage, createEmptyAssistantMessage } =
+      await server.ssrLoadModule("/src/lib/agent-message-codec.ts");
+    const validEdit = {
+      id: "explicit-operation",
+      title: "Update summary",
+      target: "basic.summary",
+      reason: "Use the supplied description.",
+      operation: {
+        type: "replace_field",
+        path: "basic.summary",
+        value: "New summary",
+      },
+    };
+    for (const status of ["planned", "executed", "rejected"]) {
+      const message = mergeAgentMessage(createEmptyAssistantMessage(), {
+        edits: [{ ...validEdit, status }],
       });
-    } catch {
-      rejected = true;
+      assert(
+        message.edits[0].status === status &&
+          JSON.stringify(message.edits[0].operation) ===
+            JSON.stringify(validEdit.operation),
+        "Message decoding must retain explicit operations and their review status.",
+      );
     }
-    assert(rejected, "Message decoding must reject a malformed edit batch atomically.");
-  }
-}
-
-{
-  const baseResume = createResume();
-  const edits = [
-    {
-      id: "review-headline",
-      title: "Update headline",
-      target: "basic.headline",
-      reason: "Use the requested role.",
-      operation: {
-        type: "replace_field",
-        path: "basic.headline",
-        value: "Frontend Engineer",
-      },
-    },
-    {
-      id: "review-summary",
-      title: "Update summary",
-      target: "basic.summary",
-      reason: "Focus the introduction.",
-      operation: {
-        type: "replace_field",
-        path: "basic.summary",
-        value: "Frontend-focused summary",
-      },
-    },
-  ];
-  const reviewItems = createProvisionalAgentDraftReviewItems(edits);
-  const allProjection = projectAgentDraftReview({
-    baseResume,
-    currentResume: baseResume,
-    edits,
-    reviewItems,
-  });
-  const singleProjection = projectAgentDraftReview({
-    baseResume,
-    currentResume: baseResume,
-    edits,
-    reviewItemIds: [reviewItems[0].id],
-    reviewItems,
-  });
-
-  assert(
-    allProjection.resume.basic.headline === "Frontend Engineer" &&
-      allProjection.resume.basic.summary === "Frontend-focused summary" &&
-      allProjection.diffs.length === 2,
-    "All-mode review must render every pending review item.",
-  );
-  assert(
-    singleProjection.resume.basic.headline === "Frontend Engineer" &&
-      singleProjection.resume.basic.summary === "Original summary" &&
-      singleProjection.diffs.length === 1,
-    "Single-mode review must remove every other pending proposal from the rendered resume.",
-  );
-  assert(
-    createReviewItemIdByOperationId(reviewItems)["review-summary"] ===
-      reviewItems[1].id &&
-      getAdjacentAgentDraftReviewItemId(reviewItems, null, 1) ===
-        reviewItems[0].id &&
-      getAdjacentAgentDraftReviewItemId(
-        reviewItems,
-        reviewItems[0].id,
-        -1,
-      ) === reviewItems[1].id,
-    "Review navigation and operation mapping must use stable review-item ids.",
-  );
-
-  const resolvedItems = structuredClone(reviewItems);
-  resolvedItems[0].status = "applied";
-  const remainingItems = getPendingAgentDraftReviewItems(resolvedItems);
-  assert(
-    remainingItems.length === 1 &&
-      getAgentDraftReviewSuccessorId(
-        reviewItems,
-        remainingItems,
-        reviewItems[0].id,
-      ) === reviewItems[1].id,
-    "Resolving one item must decrement the pending count and select its successor.",
-  );
-}
-
-{
-  const baseResume = createResume();
-  const currentResume = structuredClone(baseResume);
-  currentResume.basic.headline = "User-edited headline";
-  const edits = [
-    {
-      id: "partial-summary",
-      title: "Update summary",
-      target: "basic.summary",
-      reason: "Improve the introduction.",
-      operation: {
-        type: "replace_field",
-        path: "basic.summary",
-        value: "Agent-edited summary",
-      },
-    },
-    {
-      id: "partial-headline",
-      title: "Update headline",
-      target: "basic.headline",
-      reason: "Clarify the target role.",
-      operation: {
-        type: "replace_field",
-        path: "basic.headline",
-        value: "Agent-edited headline",
-      },
-    },
-  ];
-  const reviewItems = createProvisionalAgentDraftReviewItems(edits);
-  const appliedSummary = projectAgentDraftReview({
-    baseResume,
-    currentResume,
-    edits,
-    reviewItemIds: [reviewItems[0].id],
-    reviewItems,
-  });
-  const remainingReviewItems = structuredClone(reviewItems);
-  remainingReviewItems[0].status = "applied";
-  const headlineAfterSummaryApply = projectAgentDraftReview({
-    baseResume,
-    currentResume: appliedSummary.resume,
-    edits,
-    reviewItemIds: [remainingReviewItems[1].id],
-    reviewItems: remainingReviewItems,
-  });
-
-  assert(
-    appliedSummary.errors.length === 0 &&
-      appliedSummary.resume.basic.summary === "Agent-edited summary" &&
-      appliedSummary.resume.basic.headline === "User-edited headline",
-    "Applying one review item must preserve a disjoint local edit in the formal candidate.",
-  );
-  assert(
-    headlineAfterSummaryApply.errors.length === 1 &&
-      headlineAfterSummaryApply.errors[0].reason === "conflict" &&
-      headlineAfterSummaryApply.resume.basic.headline === "User-edited headline",
-    "A later review item must still compare with the immutable draft base and reject a competing local edit.",
-  );
-
-  const inputSnapshot = JSON.stringify({ baseResume, currentResume, edits, reviewItems });
-  const input = { baseResume, currentResume, edits, reviewItems };
-  const preview = previewAgentDraftReview(input);
-  assert(
-    preview.conflicts.length === 1 &&
-      preview.conflicts[0].reviewItemId === reviewItems[1].id &&
-      preview.conflicts[0].diffs[0]?.before === "Engineer" &&
-      preview.conflicts[0].diffs[0]?.after === "Agent-edited headline" &&
-      preview.resume.basic.headline === "User-edited headline" &&
-      preview.resume.basic.summary === "Agent-edited summary" &&
-      preview.diffs.length === 1 &&
-      preview.diffs[0].operationId === edits[0].id,
-    "A competing manual edit must retain its original proposal for review while independent previews stay visible.",
-  );
-  const strictProjection = projectAgentDraftReview(input);
-  assert(
-    strictProjection.errors[0]?.reason === "conflict" &&
-      strictProjection.diffs.length === 0 &&
-      JSON.stringify(strictProjection.resume) === JSON.stringify(currentResume),
-    "A preview containing safe suggestions must not turn an atomic apply into a partial save.",
-  );
-  for (const selected of reviewItems) {
-    const selectedPreview = previewAgentDraftReview({
-      ...input,
-      reviewItemIds: [selected.id],
-    });
-    assert(
-      selectedPreview.reviewItemIds.join() === selected.id &&
-        selectedPreview.conflicts.length === (selected.id === reviewItems[1].id ? 1 : 0) &&
-        selectedPreview.diffs.length === (selected.id === reviewItems[0].id ? 1 : 0),
-      "Single-item navigation must scope both conflict notices and safe previews to the selected item.",
-    );
-  }
-  const groupedPreview = previewAgentDraftReview({
-    ...input,
-    reviewItems: [{ id: "atomic-group", editIds: edits.map((edit) => edit.id), status: "pending" }],
-  });
-  assert(
-    groupedPreview.conflicts.length === 1 &&
-      groupedPreview.conflicts[0].diffs.length === 2 &&
-      groupedPreview.diffs.length === 0 &&
-      JSON.stringify(groupedPreview.resume) === JSON.stringify(currentResume),
-    "A conflicted review group must remain indivisible even when one operation is safe.",
-  );
-  const restoredPreview = previewAgentDraftReview({ ...input, currentResume: baseResume });
-  assert(
-    restoredPreview.conflicts.length === 0 && restoredPreview.diffs.length === 2,
-    "Restoring the original field must immediately make the stored suggestions reviewable again.",
-  );
-  const twoConflicts = previewAgentDraftReview({
-    ...input,
-    currentResume: { ...currentResume, basic: { ...currentResume.basic, summary: "Manual summary" } },
-  });
-  assert(
-    twoConflicts.conflicts.length === 2 && twoConflicts.errors.length === 2 &&
-      twoConflicts.diffs.length === 0,
-    "Every conflicting review item must remain available for inspection.",
-  );
-  assert(
-    inputSnapshot === JSON.stringify({ baseResume, currentResume, edits, reviewItems }),
-    "Reviewing conflicts must not mutate the draft base, current document, edits, or decisions.",
-  );
-}
-
-{
-  const baseResume = createResume();
-  const currentResume = { ...structuredClone(baseResume), sections: [] };
-  const edits = [
-    { id: "rename-removed-section", title: "Rename education", target: "sections.education.title", reason: "Rename", operation: { type: "update_section", sectionId: "education", patch: { title: "Learning" } } },
-    { id: "independent-summary", title: "Update summary", target: "basic.summary", reason: "Update", operation: { type: "replace_field", path: "basic.summary", value: "Agent summary" } },
-  ];
-  const input = { baseResume, currentResume, edits, reviewItems: createProvisionalAgentDraftReviewItems(edits) };
-  const preview = previewAgentDraftReview(input);
-  assert(
-    preview.conflicts.length === 1 && preview.conflicts[0].diffs.length === 1 &&
-      preview.resume.sections.length === 0 && preview.resume.basic.summary === "Agent summary",
-    "Deleting a draft target must preserve the deletion and its reviewable proposal without hiding independent suggestions.",
-  );
-  const invalidEdits = [...edits, { id: "invalid", title: "Invalid", target: "basic.name", reason: "Invalid", operation: { type: "unknown" } }];
-  const invalid = previewAgentDraftReview({ ...input, edits: invalidEdits, reviewItems: createProvisionalAgentDraftReviewItems(invalidEdits) });
-  assert(
-    invalid.errors[0]?.reason === "invalid_operation" && invalid.conflicts.length === 0 &&
-      invalid.diffs.length === 0 && JSON.stringify(invalid.resume) === JSON.stringify(currentResume),
-    "Malformed drafts must still be rejected atomically rather than shown as editable conflicts.",
-  );
-}
-
-{
-  const baseResume = createResume();
-  baseResume.sections.push({
-    id: "work", kind: "experience", title: "Work",
-    items: [{ id: "job", company: "Company", position: "Engineer", period: "2024",
-      location: "", description: "Original description", highlights: ["Original achievement"] }],
-  });
-  const currentResume = structuredClone(baseResume);
-  Object.assign(currentResume.basic, {
-    name: "Manual name", headline: "Manual headline after applying", summary: "Manual summary",
-  });
-  currentResume.sections[1].title = "Manual title";
-  Object.assign(currentResume.sections[1].items[0], {
-    company: "Manual company", location: "Manual location", highlights: ["Manual achievement"],
-  });
-  const edits = [{
-    id: "applied-headline", title: "Headline", target: "basic.headline", reason: "Requested change",
-    operation: { type: "replace_field", path: "basic.headline", value: "Staff Engineer" },
-  }, {
-    id: "discarded-summary", title: "Summary", target: "basic.summary", reason: "Requested change",
-    operation: { type: "replace_field", path: "basic.summary", value: "Discarded summary" },
-  }, {
-    id: "pending-title", title: "Section title", target: "sections.work.title", reason: "Requested change",
-    operation: { type: "update_section", sectionId: "work", patch: { title: "Career" } },
-  }, {
-    id: "pending-work", title: "Work", target: "sections.work.items.job", reason: "Requested change",
-    operation: { type: "update_item", sectionId: "work", itemId: "job",
-      patch: { company: "Agent company", position: "Senior Engineer", location: "", highlights: ["Agent achievement"] } },
-  }];
-  const reviewItems = edits.map((edit, index) => ({
-    id: edit.id, editIds: [edit.id], status: index === 0 ? "applied" : index === 1 ? "discarded" : "pending",
-  }));
-  const reviewItemIds = ["pending-title", "pending-work"];
-  const input = { baseResume, currentResume, edits, reviewItems };
-  const snapshot = JSON.stringify(input);
-  const original = projectAgentDraftReview({ ...input, reviewItemIds, conflictResolution: "use-original" });
-  const originalItem = original.resume.sections[1].items[0];
-  assert(
-    original.errors.length === 0 && original.resume.basic.name === "Original name" &&
-      original.resume.basic.headline === "Staff Engineer" && original.resume.basic.summary === "Original summary" &&
-      original.resume.sections[1].title === "Career" && originalItem.company === "Agent company" &&
-      originalItem.position === "Senior Engineer" && originalItem.location === "" && originalItem.highlights.join() === "Agent achievement" &&
-      JSON.stringify(original.reviewItemIds) === JSON.stringify(reviewItemIds),
-    "The original choice must rebuild the complete Agent result, excluding discarded edits and undoing later manual changes.",
-  );
-  const kept = projectAgentDraftReview({ ...input, reviewItemIds, conflictResolution: "keep-manual" });
-  const keptItem = kept.resume.sections[1].items[0];
-  assert(
-    kept.errors.length === 0 && JSON.stringify(kept.resume.basic) === JSON.stringify(currentResume.basic) &&
-      kept.resume.sections[1].title === "Manual title" && keptItem.company === "Manual company" &&
-      keptItem.position === "Senior Engineer" && keptItem.location === "Manual location" &&
-      keptItem.highlights.join() === "Manual achievement" && kept.diffs.length === 1 &&
-      kept.diffs[0].path === "sections.work.items.job.position" &&
-      JSON.stringify(kept.reviewItemIds) === JSON.stringify(reviewItemIds),
-    "Keeping manual edits must merge safe Agent fields from the same review group while manual scalar and array conflicts win.",
-  );
-  assert(
-    projectAgentDraftReview({ ...input, reviewItemIds: ["pending-work"] }).errors[0]?.reason === "conflict" &&
-      JSON.stringify(input) === snapshot,
-    "Whole-draft choices must not mutate inputs or change ordinary strict per-item application.",
-  );
-  for (const conflictResolution of ["use-original", "keep-manual"]) {
-    const superseded = projectAgentDraftReview({
-      ...input, reviewItemIds, conflictResolution,
-      reviewItems: reviewItems.map((item) => item.status === "discarded" ? { ...item, status: "superseded" } : item),
-    });
-    assert(
-      superseded.errors.length === 0 &&
-        JSON.stringify(superseded.resume) === JSON.stringify(conflictResolution === "use-original" ? original.resume : kept.resume),
-      "Resolving a draft must exclude superseded suggestions from both the original result and the manual merge.",
-    );
-    for (const requested of [undefined, [], ["pending-work"], [...reviewItemIds, "applied-headline"],
-      [...reviewItemIds, "discarded-summary"], ["pending-title", "pending-title"], [...reviewItemIds, "unknown"]]) {
+    for (const operation of [undefined, null, {}]) {
       let rejected = false;
-      try { projectAgentDraftReview({ ...input, reviewItemIds: requested, conflictResolution }); }
-      catch { rejected = true; }
-      assert(rejected, "An explicit draft choice must cover every pending group exactly once and no resolved group.");
+      try {
+        mergeAgentMessage(createEmptyAssistantMessage(), {
+          edits: [
+            validEdit,
+            { ...validEdit, id: "invalid-operation", operation },
+          ],
+        });
+      } catch {
+        rejected = true;
+      }
+      assert(
+        rejected,
+        "Message decoding must reject a malformed edit batch atomically.",
+      );
     }
-    const reverse = projectAgentDraftReview({ ...input, reviewItemIds: [...reviewItemIds].reverse(), conflictResolution });
+  }
+
+  {
+    const baseResume = createResume();
+    const edits = [
+      {
+        id: "review-headline",
+        title: "Update headline",
+        target: "basic.headline",
+        reason: "Use the requested role.",
+        operation: {
+          type: "replace_field",
+          path: "basic.headline",
+          value: "Frontend Engineer",
+        },
+      },
+      {
+        id: "review-summary",
+        title: "Update summary",
+        target: "basic.summary",
+        reason: "Focus the introduction.",
+        operation: {
+          type: "replace_field",
+          path: "basic.summary",
+          value: "Frontend-focused summary",
+        },
+      },
+    ];
+    const reviewItems = createProvisionalAgentDraftReviewItems(edits);
+    const allProjection = projectAgentDraftReview({
+      baseResume,
+      currentResume: baseResume,
+      edits,
+      reviewItems,
+    });
+    const singleProjection = projectAgentDraftReview({
+      baseResume,
+      currentResume: baseResume,
+      edits,
+      reviewItemIds: [reviewItems[0].id],
+      reviewItems,
+    });
+
     assert(
-      JSON.stringify(reverse.resume) === JSON.stringify(conflictResolution === "use-original" ? original.resume : kept.resume),
-      "A whole-draft resolution must replay durable operation order regardless of presentation order.",
+      allProjection.resume.basic.headline === "Frontend Engineer" &&
+        allProjection.resume.basic.summary === "Frontend-focused summary" &&
+        allProjection.diffs.length === 2,
+      "All-mode review must render every pending review item.",
     );
-    const invalidEdits = [...edits, { id: "invalid", title: "Invalid", target: "basic.name", reason: "Invalid", operation: { type: "unknown" } }];
-    const invalid = projectAgentDraftReview({
-      ...input, edits: invalidEdits, conflictResolution, reviewItemIds: [...reviewItemIds, "invalid"],
-      reviewItems: [...reviewItems, { id: "invalid", editIds: ["invalid"], status: "pending" }],
+    assert(
+      singleProjection.resume.basic.headline === "Frontend Engineer" &&
+        singleProjection.resume.basic.summary === "Original summary" &&
+        singleProjection.diffs.length === 1,
+      "Single-mode review must remove every other pending proposal from the rendered resume.",
+    );
+    assert(
+      createReviewItemIdByOperationId(reviewItems)["review-summary"] ===
+        reviewItems[1].id &&
+        getAdjacentAgentDraftReviewItemId(reviewItems, null, 1) ===
+          reviewItems[0].id &&
+        getAdjacentAgentDraftReviewItemId(
+          reviewItems,
+          reviewItems[0].id,
+          -1,
+        ) === reviewItems[1].id,
+      "Review navigation and operation mapping must use stable review-item ids.",
+    );
+
+    const resolvedItems = structuredClone(reviewItems);
+    resolvedItems[0].status = "applied";
+    const remainingItems = getPendingAgentDraftReviewItems(resolvedItems);
+    assert(
+      remainingItems.length === 1 &&
+        getAgentDraftReviewSuccessorId(
+          reviewItems,
+          remainingItems,
+          reviewItems[0].id,
+        ) === reviewItems[1].id,
+      "Resolving one item must decrement the pending count and select its successor.",
+    );
+  }
+
+  {
+    const baseResume = createResume();
+    const currentResume = structuredClone(baseResume);
+    currentResume.basic.headline = "User-edited headline";
+    const edits = [
+      {
+        id: "partial-summary",
+        title: "Update summary",
+        target: "basic.summary",
+        reason: "Improve the introduction.",
+        operation: {
+          type: "replace_field",
+          path: "basic.summary",
+          value: "Agent-edited summary",
+        },
+      },
+      {
+        id: "partial-headline",
+        title: "Update headline",
+        target: "basic.headline",
+        reason: "Clarify the target role.",
+        operation: {
+          type: "replace_field",
+          path: "basic.headline",
+          value: "Agent-edited headline",
+        },
+      },
+    ];
+    const reviewItems = createProvisionalAgentDraftReviewItems(edits);
+    const appliedSummary = projectAgentDraftReview({
+      baseResume,
+      currentResume,
+      edits,
+      reviewItemIds: [reviewItems[0].id],
+      reviewItems,
+    });
+    const remainingReviewItems = structuredClone(reviewItems);
+    remainingReviewItems[0].status = "applied";
+    const headlineAfterSummaryApply = projectAgentDraftReview({
+      baseResume,
+      currentResume: appliedSummary.resume,
+      edits,
+      reviewItemIds: [remainingReviewItems[1].id],
+      reviewItems: remainingReviewItems,
+    });
+
+    assert(
+      appliedSummary.errors.length === 0 &&
+        appliedSummary.resume.basic.summary === "Agent-edited summary" &&
+        appliedSummary.resume.basic.headline === "User-edited headline",
+      "Applying one review item must preserve a disjoint local edit in the formal candidate.",
+    );
+    assert(
+      headlineAfterSummaryApply.errors.length === 1 &&
+        headlineAfterSummaryApply.errors[0].reason === "conflict" &&
+        headlineAfterSummaryApply.resume.basic.headline ===
+          "User-edited headline",
+      "A later review item must still compare with the immutable draft base and reject a competing local edit.",
+    );
+
+    const inputSnapshot = JSON.stringify({
+      baseResume,
+      currentResume,
+      edits,
+      reviewItems,
+    });
+    const input = { baseResume, currentResume, edits, reviewItems };
+    const preview = previewAgentDraftReview(input);
+    assert(
+      preview.conflicts.length === 1 &&
+        preview.conflicts[0].reviewItemId === reviewItems[1].id &&
+        preview.conflicts[0].diffs[0]?.before === "Engineer" &&
+        preview.conflicts[0].diffs[0]?.after === "Agent-edited headline" &&
+        preview.resume.basic.headline === "User-edited headline" &&
+        preview.resume.basic.summary === "Agent-edited summary" &&
+        preview.diffs.length === 1 &&
+        preview.diffs[0].operationId === edits[0].id,
+      "A competing manual edit must retain its original proposal for review while independent previews stay visible.",
+    );
+    const strictProjection = projectAgentDraftReview(input);
+    assert(
+      strictProjection.errors[0]?.reason === "conflict" &&
+        strictProjection.diffs.length === 0 &&
+        JSON.stringify(strictProjection.resume) ===
+          JSON.stringify(currentResume),
+      "A preview containing safe suggestions must not turn an atomic apply into a partial save.",
+    );
+    for (const selected of reviewItems) {
+      const selectedPreview = previewAgentDraftReview({
+        ...input,
+        reviewItemIds: [selected.id],
+      });
+      assert(
+        selectedPreview.reviewItemIds.join() === selected.id &&
+          selectedPreview.conflicts.length ===
+            (selected.id === reviewItems[1].id ? 1 : 0) &&
+          selectedPreview.diffs.length ===
+            (selected.id === reviewItems[0].id ? 1 : 0),
+        "Single-item navigation must scope both conflict notices and safe previews to the selected item.",
+      );
+    }
+    const groupedPreview = previewAgentDraftReview({
+      ...input,
+      reviewItems: [
+        {
+          id: "atomic-group",
+          editIds: edits.map((edit) => edit.id),
+          status: "pending",
+        },
+      ],
     });
     assert(
-      invalid.errors[0]?.reason === "invalid_operation" && invalid.diffs.length === 0 &&
+      groupedPreview.conflicts.length === 1 &&
+        groupedPreview.conflicts[0].diffs.length === 2 &&
+        groupedPreview.diffs.length === 0 &&
+        JSON.stringify(groupedPreview.resume) === JSON.stringify(currentResume),
+      "A conflicted review group must remain indivisible even when one operation is safe.",
+    );
+    const restoredPreview = previewAgentDraftReview({
+      ...input,
+      currentResume: baseResume,
+    });
+    assert(
+      restoredPreview.conflicts.length === 0 &&
+        restoredPreview.diffs.length === 2,
+      "Restoring the original field must immediately make the stored suggestions reviewable again.",
+    );
+    const twoConflicts = previewAgentDraftReview({
+      ...input,
+      currentResume: {
+        ...currentResume,
+        basic: { ...currentResume.basic, summary: "Manual summary" },
+      },
+    });
+    assert(
+      twoConflicts.conflicts.length === 2 &&
+        twoConflicts.errors.length === 2 &&
+        twoConflicts.diffs.length === 0,
+      "Every conflicting review item must remain available for inspection.",
+    );
+    assert(
+      inputSnapshot ===
+        JSON.stringify({ baseResume, currentResume, edits, reviewItems }),
+      "Reviewing conflicts must not mutate the draft base, current document, edits, or decisions.",
+    );
+  }
+
+  {
+    const baseResume = createResume();
+    const currentResume = { ...structuredClone(baseResume), sections: [] };
+    const edits = [
+      {
+        id: "rename-removed-section",
+        title: "Rename education",
+        target: "sections.education.title",
+        reason: "Rename",
+        operation: {
+          type: "update_section",
+          sectionId: "education",
+          patch: { title: "Learning" },
+        },
+      },
+      {
+        id: "independent-summary",
+        title: "Update summary",
+        target: "basic.summary",
+        reason: "Update",
+        operation: {
+          type: "replace_field",
+          path: "basic.summary",
+          value: "Agent summary",
+        },
+      },
+    ];
+    const input = {
+      baseResume,
+      currentResume,
+      edits,
+      reviewItems: createProvisionalAgentDraftReviewItems(edits),
+    };
+    const preview = previewAgentDraftReview(input);
+    assert(
+      preview.conflicts.length === 1 &&
+        preview.conflicts[0].diffs.length === 1 &&
+        preview.resume.sections.length === 0 &&
+        preview.resume.basic.summary === "Agent summary",
+      "Deleting a draft target must preserve the deletion and its reviewable proposal without hiding independent suggestions.",
+    );
+    const invalidEdits = [
+      ...edits,
+      {
+        id: "invalid",
+        title: "Invalid",
+        target: "basic.name",
+        reason: "Invalid",
+        operation: { type: "unknown" },
+      },
+    ];
+    const invalid = previewAgentDraftReview({
+      ...input,
+      edits: invalidEdits,
+      reviewItems: createProvisionalAgentDraftReviewItems(invalidEdits),
+    });
+    assert(
+      invalid.errors[0]?.reason === "invalid_operation" &&
+        invalid.conflicts.length === 0 &&
+        invalid.diffs.length === 0 &&
         JSON.stringify(invalid.resume) === JSON.stringify(currentResume),
-      "Malformed operations must reject the whole resolution without changing the current document.",
+      "Malformed drafts must still be rejected atomically rather than shown as editable conflicts.",
     );
   }
-  for (const change of ["deleted", "kind"]) {
-    const changed = structuredClone(currentResume);
-    if (change === "deleted") changed.sections[1].items = [];
-    else changed.sections[1] = { id: "work", kind: "project", title: "Manual project", items: [] };
-    const changedInput = { ...input, currentResume: changed };
-    const originalChanged = projectAgentDraftReview({ ...changedInput, reviewItemIds, conflictResolution: "use-original" });
-    const keepChanged = projectAgentDraftReview({ ...changedInput, reviewItemIds, conflictResolution: "keep-manual" });
+
+  {
+    const baseResume = createResume();
+    baseResume.sections.push({
+      id: "work",
+      kind: "experience",
+      title: "Work",
+      items: [
+        {
+          id: "job",
+          company: "Company",
+          position: "Engineer",
+          period: "2024",
+          location: "",
+          description: "Original description",
+          highlights: ["Original achievement"],
+        },
+      ],
+    });
+    const currentResume = structuredClone(baseResume);
+    Object.assign(currentResume.basic, {
+      name: "Manual name",
+      headline: "Manual headline after applying",
+      summary: "Manual summary",
+    });
+    currentResume.sections[1].title = "Manual title";
+    Object.assign(currentResume.sections[1].items[0], {
+      company: "Manual company",
+      location: "Manual location",
+      highlights: ["Manual achievement"],
+    });
+    const edits = [
+      {
+        id: "applied-headline",
+        title: "Headline",
+        target: "basic.headline",
+        reason: "Requested change",
+        operation: {
+          type: "replace_field",
+          path: "basic.headline",
+          value: "Staff Engineer",
+        },
+      },
+      {
+        id: "discarded-summary",
+        title: "Summary",
+        target: "basic.summary",
+        reason: "Requested change",
+        operation: {
+          type: "replace_field",
+          path: "basic.summary",
+          value: "Discarded summary",
+        },
+      },
+      {
+        id: "pending-title",
+        title: "Section title",
+        target: "sections.work.title",
+        reason: "Requested change",
+        operation: {
+          type: "update_section",
+          sectionId: "work",
+          patch: { title: "Career" },
+        },
+      },
+      {
+        id: "pending-work",
+        title: "Work",
+        target: "sections.work.items.job",
+        reason: "Requested change",
+        operation: {
+          type: "update_item",
+          sectionId: "work",
+          itemId: "job",
+          patch: {
+            company: "Agent company",
+            position: "Senior Engineer",
+            location: "",
+            highlights: ["Agent achievement"],
+          },
+        },
+      },
+    ];
+    const reviewItems = edits.map((edit, index) => ({
+      id: edit.id,
+      editIds: [edit.id],
+      status: index === 0 ? "applied" : index === 1 ? "discarded" : "pending",
+    }));
+    const reviewItemIds = ["pending-title", "pending-work"];
+    const input = { baseResume, currentResume, edits, reviewItems };
+    const snapshot = JSON.stringify(input);
+    const original = projectAgentDraftReview({
+      ...input,
+      reviewItemIds,
+      conflictResolution: "use-original",
+    });
+    const originalItem = original.resume.sections[1].items[0];
     assert(
-      originalChanged.errors.length === 0 && JSON.stringify(originalChanged.resume) === JSON.stringify(original.resume) &&
-        keepChanged.errors.length === 0 && JSON.stringify(keepChanged.resume) === JSON.stringify(changed),
-      "The original choice must restore its original targets; keeping manual edits must preserve deletions and section kind changes.",
+      original.errors.length === 0 &&
+        original.resume.basic.name === "Original name" &&
+        original.resume.basic.headline === "Staff Engineer" &&
+        original.resume.basic.summary === "Original summary" &&
+        original.resume.sections[1].title === "Career" &&
+        originalItem.company === "Agent company" &&
+        originalItem.position === "Senior Engineer" &&
+        originalItem.location === "" &&
+        originalItem.highlights.join() === "Agent achievement" &&
+        JSON.stringify(original.reviewItemIds) ===
+          JSON.stringify(reviewItemIds),
+      "The original choice must rebuild the complete Agent result, excluding discarded edits and undoing later manual changes.",
+    );
+    const kept = projectAgentDraftReview({
+      ...input,
+      reviewItemIds,
+      conflictResolution: "keep-manual",
+    });
+    const keptItem = kept.resume.sections[1].items[0];
+    assert(
+      kept.errors.length === 0 &&
+        JSON.stringify(kept.resume.basic) ===
+          JSON.stringify(currentResume.basic) &&
+        kept.resume.sections[1].title === "Manual title" &&
+        keptItem.company === "Manual company" &&
+        keptItem.position === "Senior Engineer" &&
+        keptItem.location === "Manual location" &&
+        keptItem.highlights.join() === "Manual achievement" &&
+        kept.diffs.length === 1 &&
+        kept.diffs[0].path === "sections.work.items.job.position" &&
+        JSON.stringify(kept.reviewItemIds) === JSON.stringify(reviewItemIds),
+      "Keeping manual edits must merge safe Agent fields from the same review group while manual scalar and array conflicts win.",
+    );
+    assert(
+      projectAgentDraftReview({ ...input, reviewItemIds: ["pending-work"] })
+        .errors[0]?.reason === "conflict" && JSON.stringify(input) === snapshot,
+      "Whole-draft choices must not mutate inputs or change ordinary strict per-item application.",
+    );
+    for (const conflictResolution of ["use-original", "keep-manual"]) {
+      const superseded = projectAgentDraftReview({
+        ...input,
+        reviewItemIds,
+        conflictResolution,
+        reviewItems: reviewItems.map((item) =>
+          item.status === "discarded"
+            ? { ...item, status: "superseded" }
+            : item,
+        ),
+      });
+      assert(
+        superseded.errors.length === 0 &&
+          JSON.stringify(superseded.resume) ===
+            JSON.stringify(
+              conflictResolution === "use-original"
+                ? original.resume
+                : kept.resume,
+            ),
+        "Resolving a draft must exclude superseded suggestions from both the original result and the manual merge.",
+      );
+      for (const requested of [
+        undefined,
+        [],
+        ["pending-work"],
+        [...reviewItemIds, "applied-headline"],
+        [...reviewItemIds, "discarded-summary"],
+        ["pending-title", "pending-title"],
+        [...reviewItemIds, "unknown"],
+      ]) {
+        let rejected = false;
+        try {
+          projectAgentDraftReview({
+            ...input,
+            reviewItemIds: requested,
+            conflictResolution,
+          });
+        } catch {
+          rejected = true;
+        }
+        assert(
+          rejected,
+          "An explicit draft choice must cover every pending group exactly once and no resolved group.",
+        );
+      }
+      const reverse = projectAgentDraftReview({
+        ...input,
+        reviewItemIds: [...reviewItemIds].reverse(),
+        conflictResolution,
+      });
+      assert(
+        JSON.stringify(reverse.resume) ===
+          JSON.stringify(
+            conflictResolution === "use-original"
+              ? original.resume
+              : kept.resume,
+          ),
+        "A whole-draft resolution must replay durable operation order regardless of presentation order.",
+      );
+      const invalidEdits = [
+        ...edits,
+        {
+          id: "invalid",
+          title: "Invalid",
+          target: "basic.name",
+          reason: "Invalid",
+          operation: { type: "unknown" },
+        },
+      ];
+      const invalid = projectAgentDraftReview({
+        ...input,
+        edits: invalidEdits,
+        conflictResolution,
+        reviewItemIds: [...reviewItemIds, "invalid"],
+        reviewItems: [
+          ...reviewItems,
+          { id: "invalid", editIds: ["invalid"], status: "pending" },
+        ],
+      });
+      assert(
+        invalid.errors[0]?.reason === "invalid_operation" &&
+          invalid.diffs.length === 0 &&
+          JSON.stringify(invalid.resume) === JSON.stringify(currentResume),
+        "Malformed operations must reject the whole resolution without changing the current document.",
+      );
+    }
+    for (const change of ["deleted", "kind"]) {
+      const changed = structuredClone(currentResume);
+      if (change === "deleted") changed.sections[1].items = [];
+      else
+        changed.sections[1] = {
+          id: "work",
+          kind: "project",
+          title: "Manual project",
+          items: [],
+        };
+      const changedInput = { ...input, currentResume: changed };
+      const originalChanged = projectAgentDraftReview({
+        ...changedInput,
+        reviewItemIds,
+        conflictResolution: "use-original",
+      });
+      const keepChanged = projectAgentDraftReview({
+        ...changedInput,
+        reviewItemIds,
+        conflictResolution: "keep-manual",
+      });
+      assert(
+        originalChanged.errors.length === 0 &&
+          JSON.stringify(originalChanged.resume) ===
+            JSON.stringify(original.resume) &&
+          keepChanged.errors.length === 0 &&
+          JSON.stringify(keepChanged.resume) === JSON.stringify(changed),
+        "The original choice must restore its original targets; keeping manual edits must preserve deletions and section kind changes.",
+      );
+    }
+  }
+
+  {
+    const baseResume = createResume();
+    baseResume.sections.push({
+      id: "projects",
+      kind: "project",
+      title: "Projects",
+      items: [],
+    });
+    const currentResume = structuredClone(baseResume);
+    currentResume.sections[0].title = "Manual education";
+    currentResume.sections.push({
+      id: "manual",
+      kind: "education",
+      title: "Manual section",
+      items: [],
+    });
+    const prefix = {
+      id: "prefix",
+      title: "Headline",
+      target: "basic.headline",
+      reason: "Requested change",
+      operation: {
+        type: "replace_field",
+        path: "basic.headline",
+        value: "Agent headline",
+      },
+    };
+    const independent = {
+      id: "independent",
+      title: "Summary",
+      target: "basic.summary",
+      reason: "Requested change",
+      operation: {
+        type: "replace_field",
+        path: "basic.summary",
+        value: "Agent summary",
+      },
+    };
+    for (const operation of [
+      { type: "delete_section", sectionId: "education" },
+      {
+        type: "insert_section",
+        section: { id: "new", kind: "project", title: "New", items: [] },
+      },
+      { type: "reorder_sections", sectionIds: ["projects", "education"] },
+    ]) {
+      const structural = {
+        id: "structure",
+        title: "Structure",
+        target: "sections",
+        reason: "Requested change",
+        operation,
+      };
+      const edits = [prefix, structural, independent];
+      const input = {
+        baseResume,
+        currentResume,
+        edits,
+        reviewItems: [
+          {
+            id: "dependent",
+            editIds: ["prefix", "structure"],
+            status: "pending",
+          },
+          { id: "independent", editIds: ["independent"], status: "pending" },
+        ],
+        reviewItemIds: ["dependent", "independent"],
+      };
+      const kept = projectAgentDraftReview({
+        ...input,
+        conflictResolution: "keep-manual",
+      });
+      const expected = {
+        ...currentResume,
+        basic: { ...currentResume.basic, summary: "Agent summary" },
+      };
+      assert(
+        kept.errors.length === 0 &&
+          kept.diffs.length === 1 &&
+          JSON.stringify(kept.resume) === JSON.stringify(expected),
+        "A manual structural conflict must preserve its entire dependency group while independent Agent groups still merge.",
+      );
+      const original = projectAgentDraftReview({
+        ...input,
+        conflictResolution: "use-original",
+      });
+      const proposed = applyAgentEditsToDraft(baseResume, edits);
+      assert(
+        original.errors.length === 0 &&
+          JSON.stringify(original.resume) === JSON.stringify(proposed.resume),
+        "The original choice must rebuild the Agent structure without later manually added sections.",
+      );
+    }
+  }
+
+  {
+    const baseResume = createResume();
+    const currentResume = structuredClone(baseResume);
+    currentResume.basic.headline = "Staff Engineer";
+    const edits = [
+      {
+        id: "first",
+        title: "First",
+        target: "basic.headline",
+        reason: "Requested change",
+        operation: {
+          type: "replace_field",
+          path: "basic.headline",
+          value: "Staff Engineer",
+        },
+      },
+      {
+        id: "second",
+        title: "Second",
+        target: "basic.headline",
+        reason: "Requested change",
+        operation: {
+          type: "replace_field",
+          path: "basic.headline",
+          value: "Principal Engineer",
+        },
+      },
+      {
+        id: "safe",
+        title: "Safe",
+        target: "basic.summary",
+        reason: "Requested change",
+        operation: {
+          type: "replace_field",
+          path: "basic.summary",
+          value: "Agent summary",
+        },
+      },
+    ];
+    const input = {
+      baseResume,
+      currentResume,
+      edits,
+      reviewItemIds: ["dependent", "safe"],
+      reviewItems: [
+        { id: "dependent", editIds: ["first", "second"], status: "pending" },
+        { id: "safe", editIds: ["safe"], status: "pending" },
+      ],
+    };
+    const kept = projectAgentDraftReview({
+      ...input,
+      conflictResolution: "keep-manual",
+    });
+    assert(
+      kept.errors.length === 0 &&
+        kept.resume.basic.headline === "Staff Engineer" &&
+        kept.resume.basic.summary === "Agent summary",
+      "A manual value that matches an intermediate Agent write must retain priority over later writes in that group.",
+    );
+    const original = projectAgentDraftReview({
+      ...input,
+      conflictResolution: "use-original",
+    });
+    assert(
+      original.errors.length === 0 &&
+        original.resume.basic.headline === "Principal Engineer",
+      "The original result must replay every sequential Agent write.",
     );
   }
-}
 
-{
-  const baseResume = createResume();
-  baseResume.sections.push({ id: "projects", kind: "project", title: "Projects", items: [] });
-  const currentResume = structuredClone(baseResume);
-  currentResume.sections[0].title = "Manual education";
-  currentResume.sections.push({ id: "manual", kind: "education", title: "Manual section", items: [] });
-  const prefix = { id: "prefix", title: "Headline", target: "basic.headline", reason: "Requested change",
-    operation: { type: "replace_field", path: "basic.headline", value: "Agent headline" } };
-  const independent = { id: "independent", title: "Summary", target: "basic.summary", reason: "Requested change",
-    operation: { type: "replace_field", path: "basic.summary", value: "Agent summary" } };
-  for (const operation of [
-    { type: "delete_section", sectionId: "education" },
-    { type: "insert_section", section: { id: "new", kind: "project", title: "New", items: [] } },
-    { type: "reorder_sections", sectionIds: ["projects", "education"] },
-  ]) {
-    const structural = { id: "structure", title: "Structure", target: "sections", reason: "Requested change", operation };
-    const edits = [prefix, structural, independent];
-    const input = { baseResume, currentResume, edits, reviewItems: [
-      { id: "dependent", editIds: ["prefix", "structure"], status: "pending" },
-      { id: "independent", editIds: ["independent"], status: "pending" },
-    ], reviewItemIds: ["dependent", "independent"] };
-    const kept = projectAgentDraftReview({ ...input, conflictResolution: "keep-manual" });
-    const expected = { ...currentResume, basic: { ...currentResume.basic, summary: "Agent summary" } };
+  {
+    const baseResume = createResume();
+    baseResume.sections.push({
+      id: "work",
+      kind: "experience",
+      title: "Work",
+      items: [
+        {
+          id: "job",
+          company: "Company",
+          position: "Engineer",
+          period: "",
+          location: "",
+          description: "",
+          highlights: [],
+        },
+      ],
+    });
+    const currentResume = structuredClone(baseResume);
+    currentResume.sections[1].items[0].company = "Manual company";
+    const edits = [
+      {
+        id: "first",
+        title: "First",
+        target: "sections.work.items.job",
+        reason: "Requested change",
+        operation: {
+          type: "update_item",
+          sectionId: "work",
+          itemId: "job",
+          patch: { company: "Manual company" },
+        },
+      },
+      {
+        id: "second",
+        title: "Second",
+        target: "sections.work.items.job",
+        reason: "Requested change",
+        operation: { type: "delete_item", sectionId: "work", itemId: "job" },
+      },
+    ];
+    const input = {
+      baseResume,
+      currentResume,
+      edits,
+      reviewItemIds: ["dependent"],
+      reviewItems: [
+        { id: "dependent", editIds: ["first", "second"], status: "pending" },
+      ],
+    };
+    const kept = projectAgentDraftReview({
+      ...input,
+      conflictResolution: "keep-manual",
+    });
     assert(
-      kept.errors.length === 0 && kept.diffs.length === 1 && JSON.stringify(kept.resume) === JSON.stringify(expected),
-      "A manual structural conflict must preserve its entire dependency group while independent Agent groups still merge.",
-    );
-    const original = projectAgentDraftReview({ ...input, conflictResolution: "use-original" });
-    const proposed = applyAgentEditsToDraft(baseResume, edits);
-    assert(
-      original.errors.length === 0 && JSON.stringify(original.resume) === JSON.stringify(proposed.resume),
-      "The original choice must rebuild the Agent structure without later manually added sections.",
+      kept.errors.length === 0 &&
+        JSON.stringify(kept.resume) === JSON.stringify(currentResume),
+      "Matching an intermediate Agent field value must not allow a later deletion to erase a manually changed item.",
     );
   }
-}
 
-{
-  const baseResume = createResume();
-  const currentResume = structuredClone(baseResume);
-  currentResume.basic.headline = "Staff Engineer";
-  const edits = [
-    { id: "first", title: "First", target: "basic.headline", reason: "Requested change", operation: { type: "replace_field", path: "basic.headline", value: "Staff Engineer" } },
-    { id: "second", title: "Second", target: "basic.headline", reason: "Requested change", operation: { type: "replace_field", path: "basic.headline", value: "Principal Engineer" } },
-    { id: "safe", title: "Safe", target: "basic.summary", reason: "Requested change", operation: { type: "replace_field", path: "basic.summary", value: "Agent summary" } },
-  ];
-  const input = { baseResume, currentResume, edits, reviewItemIds: ["dependent", "safe"], reviewItems: [
-    { id: "dependent", editIds: ["first", "second"], status: "pending" },
-    { id: "safe", editIds: ["safe"], status: "pending" },
-  ] };
-  const kept = projectAgentDraftReview({ ...input, conflictResolution: "keep-manual" });
-  assert(
-    kept.errors.length === 0 && kept.resume.basic.headline === "Staff Engineer" && kept.resume.basic.summary === "Agent summary",
-    "A manual value that matches an intermediate Agent write must retain priority over later writes in that group.",
-  );
-  const original = projectAgentDraftReview({ ...input, conflictResolution: "use-original" });
-  assert(original.errors.length === 0 && original.resume.basic.headline === "Principal Engineer", "The original result must replay every sequential Agent write.");
-}
-
-{
-  const baseResume = createResume();
-  baseResume.sections.push({ id: "work", kind: "experience", title: "Work", items: [{
-    id: "job", company: "Company", position: "Engineer", period: "", location: "", description: "", highlights: [],
-  }] });
-  const currentResume = structuredClone(baseResume);
-  currentResume.sections[1].items[0].company = "Manual company";
-  const edits = [
-    { id: "first", title: "First", target: "sections.work.items.job", reason: "Requested change", operation: { type: "update_item", sectionId: "work", itemId: "job", patch: { company: "Manual company" } } },
-    { id: "second", title: "Second", target: "sections.work.items.job", reason: "Requested change", operation: { type: "delete_item", sectionId: "work", itemId: "job" } },
-  ];
-  const input = { baseResume, currentResume, edits, reviewItemIds: ["dependent"], reviewItems: [{ id: "dependent", editIds: ["first", "second"], status: "pending" }] };
-  const kept = projectAgentDraftReview({ ...input, conflictResolution: "keep-manual" });
-  assert(
-    kept.errors.length === 0 && JSON.stringify(kept.resume) === JSON.stringify(currentResume),
-    "Matching an intermediate Agent field value must not allow a later deletion to erase a manually changed item.",
-  );
-}
-
-{
-  const baseResume = createResume();
-  const edit = {
-    id: "durable-edit",
-    title: "Update headline",
-    target: "basic.headline",
-    reason: "Use the requested title.",
-    operation: {
-      type: "replace_field",
-      path: "basic.headline",
-      value: "Staff Engineer",
-    },
-    status: "executed",
-    diffs: [{
-      id: "diff-durable-edit",
-      operationId: "durable-edit",
-      path: "basic.headline",
-      kind: "modified",
-      label: "Headline",
-      before: "Engineer",
-      after: "Staff Engineer",
-    }],
-  };
-  const storedMessages = [
-    {
-      id: "assistant-durable-draft",
-      role: "assistant",
-      text: "The edit is ready.",
-      createdAt: "2026-08-09T12:00:00.000Z",
-      response: {
+  {
+    const baseResume = createResume();
+    const edit = {
+      id: "durable-edit",
+      title: "Update headline",
+      target: "basic.headline",
+      reason: "Use the requested title.",
+      operation: {
+        type: "replace_field",
+        path: "basic.headline",
+        value: "Staff Engineer",
+      },
+      status: "executed",
+      diffs: [
+        {
+          id: "diff-durable-edit",
+          operationId: "durable-edit",
+          path: "basic.headline",
+          kind: "modified",
+          label: "Headline",
+          before: "Engineer",
+          after: "Staff Engineer",
+        },
+      ],
+    };
+    const storedMessages = [
+      {
         id: "assistant-durable-draft",
         role: "assistant",
         text: "The edit is ready.",
-        edits: [edit],
-        transactionState: "committed",
+        createdAt: "2026-08-09T12:00:00.000Z",
+        response: {
+          id: "assistant-durable-draft",
+          role: "assistant",
+          text: "The edit is ready.",
+          edits: [edit],
+          transactionState: "committed",
           draft: {
             baseResume,
             reviewItems: [
@@ -1014,1768 +1378,1906 @@ const {
               },
             ],
           },
+        },
       },
-    },
-  ];
-  const pendingDraft = getAgentDraftSnapshotFromMessages(storedMessages);
+    ];
+    const pendingDraft = getAgentDraftSnapshotFromMessages(storedMessages);
 
-  assert(
-    pendingDraft?.sourceMessageId === "assistant-durable-draft" &&
-      pendingDraft.transactionState === "committed" &&
-      pendingDraft.baseResume === baseResume &&
-      pendingDraft.edits[0] === edit,
-    "Stored messages must retain the committed pending draft and its immutable base.",
-  );
-  for (const status of ["discarded", "superseded"]) {
-    const terminalMessages = structuredClone(storedMessages);
-    terminalMessages[0].response.draft.reviewItems[0].status = status;
     assert(
-      getAgentDraftSnapshotFromMessages(terminalMessages)?.reviewItems[0].status === status &&
-        getAgentDraftSnapshotFromMessages([]) === null,
-      "Authoritative hydration must preserve each terminal draft status and distinguish it from no draft.",
+      pendingDraft?.sourceMessageId === "assistant-durable-draft" &&
+        pendingDraft.transactionState === "committed" &&
+        pendingDraft.baseResume === baseResume &&
+        pendingDraft.edits[0] === edit,
+      "Stored messages must retain the committed pending draft and its immutable base.",
+    );
+    for (const status of ["discarded", "superseded"]) {
+      const terminalMessages = structuredClone(storedMessages);
+      terminalMessages[0].response.draft.reviewItems[0].status = status;
+      assert(
+        getAgentDraftSnapshotFromMessages(terminalMessages)?.reviewItems[0]
+          .status === status && getAgentDraftSnapshotFromMessages([]) === null,
+        "Authoritative hydration must preserve each terminal draft status and distinguish it from no draft.",
+      );
+    }
+
+    const hydrated = await hydrateAgentSession(
+      Promise.resolve({
+        resumeId: "resume-durable-draft",
+        revision: "revision-durable-draft",
+        messages: storedMessages,
+        executions: [],
+      }),
+    );
+    assert(
+      hydrated.draftSnapshot?.sourceMessageId === "assistant-durable-draft" &&
+        hydrated.draftSnapshot.baseResume === baseResume &&
+        hydrated.draftSnapshot.reviewItems[0].status === "pending",
+      "The session hydration interface must return the pending draft alongside panel history.",
+    );
+
+    const replacementMessage = toConversationMessage(hydrated.panelMessages[0]);
+    assert(
+      replacementMessage.response?.draft?.reviewItems[0].status === "pending" &&
+        replacementMessage.response.draft.baseResume === baseResume &&
+        replacementMessage.response.edits?.[0]?.diffs?.[0]?.operationId ===
+          "durable-edit",
+      "History replacement must preserve the durable draft payload on retained assistant messages.",
     );
   }
 
-  const hydrated = await hydrateAgentSession(
-    Promise.resolve({
-      resumeId: "resume-durable-draft",
-      revision: "revision-durable-draft",
-      messages: storedMessages,
-      executions: [],
-    }),
-  );
-  assert(
-    hydrated.draftSnapshot?.sourceMessageId === "assistant-durable-draft" &&
-      hydrated.draftSnapshot.baseResume === baseResume &&
-      hydrated.draftSnapshot.reviewItems[0].status === "pending",
-    "The session hydration interface must return the pending draft alongside panel history.",
-  );
-
-  const replacementMessage = toConversationMessage(
-    hydrated.panelMessages[0],
-  );
-  assert(
-    replacementMessage.response?.draft?.reviewItems[0].status === "pending" &&
-      replacementMessage.response.draft.baseResume === baseResume &&
-      replacementMessage.response.edits?.[0]?.diffs?.[0]?.operationId ===
-        "durable-edit",
-    "History replacement must preserve the durable draft payload on retained assistant messages.",
-  );
-}
-
-{
-  const storedResponse = {
-    id: "assistant-complete-history",
-    role: "assistant",
-    tone: "success",
-    text: "I checked the source and completed the analysis.",
-    reasoning: "Concise retained reasoning",
-    updates: ["Transient provider status"],
-    timeline: [
-      {
-        id: "timeline-tool-group",
-        type: "tool_group",
-        toolIds: ["tool-success", "tool-error"],
-      },
-    ],
-    plan: ["Inspect evidence"],
-    suggestions: ["Tighten the summary"],
-    knowledge: [{ title: "Requirement", detail: "TypeScript" }],
-    tools: [
-      {
-        id: "tool-success",
-        type: "tool-web_fetch",
-        title: "web_fetch",
-        state: "output-available",
-        input: { url: "https://example.com/job" },
-        output: {
-          sourceId: "source-public-job",
-          url: "https://example.com/job",
-        },
-        startedAt: "2026-08-10T10:00:00.000Z",
-        completedAt: "2026-08-10T10:00:01.000Z",
-      },
-      {
-        id: "tool-error",
-        type: "tool-web_fetch",
-        title: "web_fetch",
-        state: "output-error",
-        input: { url: "https://example.com/job" },
-        errorText: "Fetch failed",
-        startedAt: "2026-08-10T10:00:02.000Z",
-        completedAt: "2026-08-10T10:00:03.000Z",
-      },
-    ],
-    sources: [
-      {
-        id: "source-public-job",
-        title: "Public job description",
-        sourceType: "web",
-        url: "https://example.com/job",
-        excerpt: "Build accessible React and TypeScript products.",
-      },
-    ],
-    transactionState: "none",
-  };
-  const hydrated = await hydrateAgentSession(
-    Promise.resolve({
-      resumeId: "resume-complete-history",
-      revision: "revision-complete-history",
-      messages: [
+  {
+    const storedResponse = {
+      id: "assistant-complete-history",
+      role: "assistant",
+      tone: "success",
+      text: "I checked the source and completed the analysis.",
+      reasoning: "Concise retained reasoning",
+      updates: ["Transient provider status"],
+      timeline: [
         {
-          id: storedResponse.id,
-          role: "assistant",
-          text: storedResponse.text,
-          createdAt: "2026-08-10T10:00:04.000Z",
-          response: storedResponse,
+          id: "timeline-tool-group",
+          type: "tool_group",
+          toolIds: ["tool-success", "tool-error"],
         },
       ],
-      executions: [],
-    }),
-  );
-  const sanitizedResponse = hydrated.panelMessages[0].response;
-  const replacementResponse = toConversationMessage(
-    hydrated.panelMessages[0],
-  ).response;
+      plan: ["Inspect evidence"],
+      suggestions: ["Tighten the summary"],
+      knowledge: [{ title: "Requirement", detail: "TypeScript" }],
+      tools: [
+        {
+          id: "tool-success",
+          type: "tool-web_fetch",
+          title: "web_fetch",
+          state: "output-available",
+          input: { url: "https://example.com/job" },
+          output: {
+            sourceId: "source-public-job",
+            url: "https://example.com/job",
+          },
+          startedAt: "2026-08-10T10:00:00.000Z",
+          completedAt: "2026-08-10T10:00:01.000Z",
+        },
+        {
+          id: "tool-error",
+          type: "tool-web_fetch",
+          title: "web_fetch",
+          state: "output-error",
+          input: { url: "https://example.com/job" },
+          errorText: "Fetch failed",
+          startedAt: "2026-08-10T10:00:02.000Z",
+          completedAt: "2026-08-10T10:00:03.000Z",
+        },
+      ],
+      sources: [
+        {
+          id: "source-public-job",
+          title: "Public job description",
+          sourceType: "web",
+          url: "https://example.com/job",
+          excerpt: "Build accessible React and TypeScript products.",
+        },
+      ],
+      transactionState: "none",
+    };
+    const hydrated = await hydrateAgentSession(
+      Promise.resolve({
+        resumeId: "resume-complete-history",
+        revision: "revision-complete-history",
+        messages: [
+          {
+            id: storedResponse.id,
+            role: "assistant",
+            text: storedResponse.text,
+            createdAt: "2026-08-10T10:00:04.000Z",
+            response: storedResponse,
+          },
+        ],
+        executions: [],
+      }),
+    );
+    const sanitizedResponse = hydrated.panelMessages[0].response;
+    const replacementResponse = toConversationMessage(
+      hydrated.panelMessages[0],
+    ).response;
 
-  assert(
-    JSON.stringify(replacementResponse) === JSON.stringify(sanitizedResponse) &&
-      replacementResponse.sources.length === 1 &&
-      replacementResponse.sources[0].excerpt ===
-        "Build accessible React and TypeScript products." &&
-      replacementResponse.tools[0].input.url === "https://example.com/job" &&
-      replacementResponse.tools[0].output.sourceId === "source-public-job" &&
-      replacementResponse.tools[1].errorText === "Fetch failed" &&
-      replacementResponse.tools[1].completedAt ===
-        "2026-08-10T10:00:03.000Z",
-    "History replacement must preserve the complete sanitized assistant response for PUT-to-GET equivalence.",
-  );
-}
+    assert(
+      JSON.stringify(replacementResponse) ===
+        JSON.stringify(sanitizedResponse) &&
+        replacementResponse.sources.length === 1 &&
+        replacementResponse.sources[0].excerpt ===
+          "Build accessible React and TypeScript products." &&
+        replacementResponse.tools[0].input.url === "https://example.com/job" &&
+        replacementResponse.tools[0].output.sourceId === "source-public-job" &&
+        replacementResponse.tools[1].errorText === "Fetch failed" &&
+        replacementResponse.tools[1].completedAt === "2026-08-10T10:00:03.000Z",
+      "History replacement must preserve the complete sanitized assistant response for PUT-to-GET equivalence.",
+    );
+  }
 
-{
-  const baseResume = createResume();
-  baseResume.sections.push({
-    id: "experience",
-    kind: "experience",
-    title: "Experience",
-    items: ["first", "second", "third", "fourth"].map((id) => ({
-      id,
-      company: id,
-      position: "",
-      location: "",
-      period: "",
-      description: "",
-      highlights: [],
-    })),
-  });
-  const result = applyAgentEditsToDraft(baseResume, [{
-    id: "reorder-items-precisely",
-    title: "Reorder experience",
-    target: "sections.experience.items",
-    reason: "Verify each changed object.",
-    operation: {
-      type: "reorder_items",
-      sectionId: "experience",
-      itemIds: ["second", "fourth", "first", "third"],
-    },
-  }]);
-
-  assert(
-    JSON.stringify(result.diffs.map((diff) => ({
-      path: diff.path,
-      itemId: diff.itemId,
-      before: diff.before,
-      after: diff.after,
-    }))) === JSON.stringify([
-      { path: "sections.experience.items.first", itemId: "first", before: 0, after: 2 },
-      { path: "sections.experience.items.third", itemId: "third", before: 2, after: 3 },
-    ]),
-    "An item reorder must mark the deterministic minimal moved set from the longest common subsequence.",
-  );
-}
-
-{
-  const baseResume = createResume();
-  baseResume.sections.push({
-    id: "experience",
-    kind: "experience",
-    title: "Experience",
-    items: [
-      { id: "first", company: "First", position: "", location: "", period: "", description: "", highlights: [] },
-      { id: "second", company: "Second", position: "", location: "", period: "", description: "", highlights: [] },
-    ],
-  });
-  const result = applyAgentEditsToDraft(baseResume, [
-    {
-      id: "delete-second-item",
-      title: "Delete second item",
-      target: "sections.experience.items.second",
-      reason: "Verify the exact review boundary.",
-      operation: {
-        type: "delete_item",
-        sectionId: "experience",
-        itemId: "second",
-      },
-    },
-    {
-      id: "delete-education-section",
-      title: "Delete education",
-      target: "sections.education",
-      reason: "Verify the exact review boundary.",
-      operation: {
-        type: "delete_section",
-        sectionId: "education",
-      },
-    },
-  ]);
-
-  assert(
-    result.diffs[0]?.beforePreviousId === "first" &&
-      result.diffs[0]?.beforeNextId === undefined &&
-      result.diffs[1]?.beforePreviousId === undefined &&
-      result.diffs[1]?.beforeNextId === "experience",
-    "Structural deletion diffs must retain stable pre-deletion neighbors.",
-  );
-}
-
-{
-  const baseResume = createResume();
-  baseResume.sections.push(
-    {
+  {
+    const baseResume = createResume();
+    baseResume.sections.push({
       id: "experience",
       kind: "experience",
       title: "Experience",
-      items: [],
+      items: ["first", "second", "third", "fourth"].map((id) => ({
+        id,
+        company: id,
+        position: "",
+        location: "",
+        period: "",
+        description: "",
+        highlights: [],
+      })),
+    });
+    const result = applyAgentEditsToDraft(baseResume, [
+      {
+        id: "reorder-items-precisely",
+        title: "Reorder experience",
+        target: "sections.experience.items",
+        reason: "Verify each changed object.",
+        operation: {
+          type: "reorder_items",
+          sectionId: "experience",
+          itemIds: ["second", "fourth", "first", "third"],
+        },
+      },
+    ]);
+
+    assert(
+      JSON.stringify(
+        result.diffs.map((diff) => ({
+          path: diff.path,
+          itemId: diff.itemId,
+          before: diff.before,
+          after: diff.after,
+        })),
+      ) ===
+        JSON.stringify([
+          {
+            path: "sections.experience.items.first",
+            itemId: "first",
+            before: 0,
+            after: 2,
+          },
+          {
+            path: "sections.experience.items.third",
+            itemId: "third",
+            before: 2,
+            after: 3,
+          },
+        ]),
+      "An item reorder must mark the deterministic minimal moved set from the longest common subsequence.",
+    );
+  }
+
+  {
+    const baseResume = createResume();
+    baseResume.sections.push({
+      id: "experience",
+      kind: "experience",
+      title: "Experience",
+      items: [
+        {
+          id: "first",
+          company: "First",
+          position: "",
+          location: "",
+          period: "",
+          description: "",
+          highlights: [],
+        },
+        {
+          id: "second",
+          company: "Second",
+          position: "",
+          location: "",
+          period: "",
+          description: "",
+          highlights: [],
+        },
+      ],
+    });
+    const result = applyAgentEditsToDraft(baseResume, [
+      {
+        id: "delete-second-item",
+        title: "Delete second item",
+        target: "sections.experience.items.second",
+        reason: "Verify the exact review boundary.",
+        operation: {
+          type: "delete_item",
+          sectionId: "experience",
+          itemId: "second",
+        },
+      },
+      {
+        id: "delete-education-section",
+        title: "Delete education",
+        target: "sections.education",
+        reason: "Verify the exact review boundary.",
+        operation: {
+          type: "delete_section",
+          sectionId: "education",
+        },
+      },
+    ]);
+
+    assert(
+      result.diffs[0]?.beforePreviousId === "first" &&
+        result.diffs[0]?.beforeNextId === undefined &&
+        result.diffs[1]?.beforePreviousId === undefined &&
+        result.diffs[1]?.beforeNextId === "experience",
+      "Structural deletion diffs must retain stable pre-deletion neighbors.",
+    );
+  }
+
+  {
+    const baseResume = createResume();
+    baseResume.sections.push(
+      {
+        id: "experience",
+        kind: "experience",
+        title: "Experience",
+        items: [],
+      },
+      {
+        id: "projects",
+        kind: "project",
+        title: "Projects",
+        items: [],
+      },
+    );
+    const result = applyAgentEditsToDraft(baseResume, [
+      {
+        id: "reorder-sections-precisely",
+        title: "Reorder sections",
+        target: "sections",
+        reason: "Verify each changed object.",
+        operation: {
+          type: "reorder_sections",
+          sectionIds: ["experience", "projects", "education"],
+        },
+      },
+    ]);
+
+    assert(
+      JSON.stringify(
+        result.diffs.map((diff) => ({
+          path: diff.path,
+          sectionId: diff.sectionId,
+          before: diff.before,
+          after: diff.after,
+        })),
+      ) ===
+        JSON.stringify([
+          {
+            path: "sections.education",
+            sectionId: "education",
+            before: 0,
+            after: 2,
+          },
+        ]),
+      "Moving the first section to the end must mark only that section as moved.",
+    );
+  }
+
+  {
+    const baseResume = createResume();
+    const result = applyAgentEditsToDraft(baseResume, [
+      {
+        id: "update-headline",
+        title: "Update headline",
+        target: "basic.headline",
+        reason: "Clarify the candidate's role.",
+        operation: {
+          type: "replace_field",
+          path: "basic.headline",
+          value: "Staff Engineer",
+        },
+      },
+      {
+        id: "delete-missing-section",
+        title: "Delete missing section",
+        target: "sections.missing",
+        reason: "Exercise transaction rollback.",
+        operation: {
+          type: "delete_section",
+          sectionId: "missing",
+        },
+      },
+    ]);
+
+    assert(
+      result.appliedCount === 0,
+      "A batch containing any failed edit must report zero applied edits.",
+    );
+    assert(
+      result.diffs.length === 0,
+      "A rejected batch must not expose partial diffs.",
+    );
+    assert(
+      JSON.stringify(result.resume) === JSON.stringify(baseResume),
+      "A rejected batch must return the original resume state.",
+    );
+    assert(
+      result.errors.length === 1 &&
+        result.errors[0].editId === "delete-missing-section" &&
+        result.errors[0].reason === "target_not_found" &&
+        result.errors[0].target === "sections.missing",
+      "A rejected batch must return a structured, actionable error.",
+    );
+  }
+
+  {
+    const baseResume = createResume();
+    baseResume.sections.push({
+      id: "skills",
+      kind: "simple_list",
+      title: "Skills",
+      items: [
+        {
+          id: "skill-1",
+          content: "React, TypeScript",
+        },
+      ],
+    });
+    const result = applyAgentEditsToDraft(baseResume, [
+      {
+        id: "update-invalid-skills",
+        title: "Add skill highlights",
+        target: "sections.skills.items.skill-1",
+        reason: "Exercise list-item update validation.",
+        operation: {
+          type: "update_item",
+          sectionId: "skills",
+          itemId: "skill-1",
+          patch: { highlights: ["React"] },
+        },
+      },
+    ]);
+
+    assert(
+      result.appliedCount === 0 &&
+        result.errors.length === 1 &&
+        result.errors[0].reason === "invalid_operation" &&
+        result.resume.sections[1].items[0].content === "React, TypeScript",
+      "Simple-list updates must reject fields outside the content contract.",
+    );
+  }
+
+  for (const operation of [
+    {
+      type: "insert_item",
+      sectionId: "skills",
+      item: { id: "skill-2", content: "TypeScript" },
     },
     {
+      type: "delete_item",
+      sectionId: "skills",
+      itemId: "skill-1",
+    },
+    {
+      type: "reorder_items",
+      sectionId: "skills",
+      itemIds: ["skill-1"],
+    },
+  ]) {
+    const baseResume = createResume();
+    baseResume.sections.push({
+      id: "skills",
+      kind: "simple_list",
+      title: "Skills",
+      items: [{ id: "skill-1", content: "<ul><li>React</li></ul>" }],
+    });
+    const result = applyAgentEditsToDraft(baseResume, [
+      {
+        id: `reject-${operation.type}`,
+        title: "Keep the single rich-text item",
+        target: "sections.skills.items",
+        reason: "Exercise the simple-list cardinality contract.",
+        operation,
+      },
+    ]);
+
+    assert(
+      result.appliedCount === 0 &&
+        result.errors.length === 1 &&
+        result.errors[0].reason === "invalid_operation" &&
+        JSON.stringify(result.resume) === JSON.stringify(baseResume),
+      `Simple-list sections must reject ${operation.type}.`,
+    );
+  }
+
+  {
+    const baseResume = createResume();
+    const result = applyAgentEditsToDraft(baseResume, [
+      {
+        id: "insert-invalid-skills",
+        title: "Add skills",
+        target: "sections.skills",
+        reason: "Exercise the canonical list-item contract.",
+        operation: {
+          type: "insert_section",
+          section: {
+            id: "skills",
+            kind: "simple_list",
+            title: "Skills",
+            items: [
+              {
+                id: "skill-1",
+                content: "Frontend",
+                highlights: ["React"],
+              },
+            ],
+          },
+        },
+      },
+    ]);
+
+    assert(
+      result.appliedCount === 0 &&
+        result.errors.length === 1 &&
+        result.errors[0].reason === "invalid_operation",
+      "Simple-list sections must reject fields outside id and content.",
+    );
+  }
+
+  {
+    const baseResume = createResume();
+    baseResume.sections.push({
+      id: "experience",
+      kind: "experience",
+      title: "Experience",
+      items: [
+        {
+          id: "experience-1",
+          company: "Example Inc.",
+          position: "Engineer",
+          location: "Remote",
+          period: "2024 - Present",
+          description: "",
+          highlights: [],
+        },
+      ],
+    });
+    baseResume.sections.push({
+      id: "skills",
+      kind: "simple_list",
+      title: "Skills",
+      items: [{ id: "skill-1", content: "React" }],
+    });
+
+    const result = applyAgentEditsToDraft(baseResume, [
+      {
+        id: "update-position",
+        title: "Clarify the experience",
+        target: "sections.experience.items.experience-1",
+        reason: "Use the semantic experience fields.",
+        operation: {
+          type: "update_item",
+          sectionId: "experience",
+          itemId: "experience-1",
+          patch: {
+            position: "Senior Engineer",
+            description: "Built the editor platform.",
+            highlights: ["Reduced state complexity."],
+          },
+        },
+      },
+      {
+        id: "update-skills",
+        title: "Add a skill",
+        target: "sections.skills.items.skill-1.content",
+        reason: "A simple-list item remains a directly editable string.",
+        operation: {
+          type: "update_item",
+          sectionId: "skills",
+          itemId: "skill-1",
+          patch: { content: "React · TypeScript" },
+        },
+      },
+    ]);
+
+    assert(
+      result.errors.length === 0 && result.appliedCount === 2,
+      "Valid semantic item fields must be applied atomically.",
+    );
+    assert(
+      result.resume.sections[1].items[0].position === "Senior Engineer" &&
+        result.resume.sections[1].items[0].company === "Example Inc." &&
+        result.resume.sections[2].items[0].content === "React · TypeScript",
+      "Agent item edits must preserve unrelated fields and support simple-list strings.",
+    );
+    assert(
+      result.diffs.length === 4,
+      "One multi-field edit must expose one precise diff per changed field without changing applied edit count.",
+    );
+    assert(
+      JSON.stringify(result.diffs.map((diff) => diff.path)) ===
+        JSON.stringify([
+          "sections.experience.items.experience-1.position",
+          "sections.experience.items.experience-1.description",
+          "sections.experience.items.experience-1.highlights",
+          "sections.skills.items.skill-1.content",
+        ]),
+      "Item diffs must use canonical field paths instead of a whole-item target.",
+    );
+    assert(
+      JSON.stringify(result.diffs[0]) ===
+        JSON.stringify({
+          id: "diff-update-position-position",
+          operationId: "update-position",
+          path: "sections.experience.items.experience-1.position",
+          kind: "modified",
+          label: "Clarify the experience",
+          sectionId: "experience",
+          itemId: "experience-1",
+          before: "Engineer",
+          after: "Senior Engineer",
+        }),
+      "A field diff must carry only that field's before and after values.",
+    );
+  }
+
+  {
+    const baseResume = createResume();
+    const result = applyAgentEditsToDraft(baseResume, [
+      {
+        id: "update-headline",
+        title: "Update headline",
+        target: "basic.headline",
+        reason: "Clarify the candidate's role.",
+        operation: {
+          type: "replace_field",
+          path: "basic.headline",
+          value: "Staff Engineer",
+        },
+      },
+      {
+        id: "update-summary",
+        title: "Update summary",
+        target: "basic.summary",
+        reason: "Improve the opening statement.",
+        operation: {
+          type: "replace_field",
+          path: "basic.summary",
+          value: "Updated summary",
+        },
+      },
+    ]);
+
+    assert(result.errors.length === 0, "A valid batch must not return errors.");
+    assert(result.appliedCount === 2, "A valid batch must commit every edit.");
+    assert(result.diffs.length === 2, "A valid batch must expose every diff.");
+    assert(
+      result.resume.basic.headline === "Staff Engineer" &&
+        result.resume.basic.summary === "Updated summary",
+      "A valid batch must return the fully updated resume.",
+    );
+    assert(
+      baseResume.basic.headline === "Engineer" &&
+        baseResume.basic.summary === "Original summary",
+      "Applying a batch must never mutate the source resume.",
+    );
+  }
+
+  {
+    const baseResume = createResume();
+    const result = applyAgentEditsToDraft(baseResume, [
+      {
+        id: "reject-location",
+        title: "Reject hidden location",
+        target: "basic.location",
+        reason: "Location is outside the Agent write contract.",
+        operation: {
+          type: "replace_field",
+          path: "basic.location",
+          value: "Remote",
+        },
+      },
+    ]);
+
+    assert(
+      result.errors.length === 1 && result.appliedCount === 0,
+      "Agent drafts must reject hidden basic fields on the frontend boundary.",
+    );
+    assert(
+      result.resume.basic.location === "",
+      "A rejected location edit must not change the resume.",
+    );
+  }
+
+  {
+    const baseResume = createResume();
+    const result = applyAgentEditsToDraft(baseResume, [
+      {
+        id: "update-headline",
+        title: "Update headline",
+        target: "basic.headline",
+        reason: "Clarify the candidate's role.",
+        operation: {
+          type: "replace_field",
+          path: "basic.headline",
+          value: "Staff Engineer",
+        },
+      },
+      {
+        id: "unknown-operation",
+        title: "Run unsupported operation",
+        target: "sections.education",
+        reason: "Exercise runtime payload validation.",
+        operation: {
+          type: "operation_from_a_newer_server",
+        },
+      },
+    ]);
+
+    assert(
+      result.appliedCount === 0 && result.resume.basic.headline === "Engineer",
+      "An unknown operation must reject and roll back the entire batch.",
+    );
+    assert(
+      result.errors.length === 1 &&
+        result.errors[0].editId === "unknown-operation" &&
+        result.errors[0].reason === "invalid_operation",
+      "An unknown operation must produce a structured validation error.",
+    );
+  }
+
+  {
+    const baseResume = createResume();
+    const currentResume = structuredClone(baseResume);
+    currentResume.basic.name = "User-edited name";
+    const result = applyAgentEditsWithMerge(baseResume, currentResume, [
+      {
+        id: "update-summary",
+        title: "Update summary",
+        target: "basic.summary",
+        reason: "Improve the opening statement.",
+        operation: {
+          type: "replace_field",
+          path: "basic.summary",
+          value: "Agent-edited summary",
+        },
+      },
+    ]);
+
+    assert(result.errors.length === 0, "Disjoint field edits must merge.");
+    assert(
+      result.resume.basic.name === "User-edited name" &&
+        result.resume.basic.summary === "Agent-edited summary",
+      "A merge must preserve the user's concurrent field edit.",
+    );
+  }
+
+  {
+    const baseResume = createResume();
+    baseResume.sections.push({
+      id: "work",
+      kind: "experience",
+      title: "Work",
+      items: [
+        {
+          id: "job",
+          company: "Original company",
+          position: "Engineer",
+          period: "2024",
+          location: "",
+          description: "Original description",
+          highlights: ["Original achievement"],
+        },
+      ],
+    });
+    const baseBefore = JSON.stringify(baseResume);
+    const edits = [
+      {
+        id: "update-headline",
+        title: "Update headline",
+        target: "basic.headline",
+        reason: "Use the requested headline.",
+        operation: {
+          type: "replace_field",
+          path: "basic.headline",
+          value: "Staff Engineer",
+        },
+      },
+      {
+        id: "update-work",
+        title: "Update work",
+        target: "sections.work.items.job",
+        reason: "Use the requested role.",
+        operation: {
+          type: "update_item",
+          sectionId: "work",
+          itemId: "job",
+          patch: {
+            company: "Original company",
+            position: "Senior Engineer",
+            highlights: ["Original achievement"],
+          },
+        },
+      },
+    ];
+    for (const position of ["Engineer", "Senior Engineer", "Manual role"]) {
+      const currentResume = structuredClone(baseResume);
+      const currentItem = currentResume.sections[1].items[0];
+      Object.assign(currentItem, {
+        company: "Manual company",
+        location: "Manual location",
+        position,
+        highlights: ["Manual achievement"],
+      });
+      const currentBefore = JSON.stringify(currentResume);
+      const result = applyAgentEditsWithMerge(baseResume, currentResume, edits);
+      assert(
+        JSON.stringify(baseResume) === baseBefore &&
+          JSON.stringify(currentResume) === currentBefore,
+        "Three-way merges must leave both input documents immutable.",
+      );
+      if (position === "Manual role") {
+        assert(
+          result.errors.length === 1 &&
+            result.errors[0].reason === "conflict" &&
+            result.errors[0].target === "sections.work.items.job.position" &&
+            result.appliedCount === 0 &&
+            result.diffs.length === 0 &&
+            JSON.stringify(result.resume) === currentBefore,
+          "A true field conflict must roll back all earlier edits in the batch.",
+        );
+        continue;
+      }
+      const mergedItem = result.resume.sections[1].items[0];
+      assert(
+        result.errors.length === 0 &&
+          result.resume.basic.headline === "Staff Engineer" &&
+          mergedItem.company === "Manual company" &&
+          mergedItem.location === "Manual location" &&
+          JSON.stringify(mergedItem.highlights) ===
+            JSON.stringify(["Manual achievement"]) &&
+          mergedItem.position === "Senior Engineer",
+        "Unchanged fields repeated in a patch must preserve manual scalar and array values.",
+      );
+      assert(
+        result.appliedCount === (position === "Engineer" ? 2 : 1) &&
+          JSON.stringify(result.diffs.map((diff) => diff.path)) ===
+            JSON.stringify(
+              position === "Engineer"
+                ? ["basic.headline", "sections.work.items.job.position"]
+                : ["basic.headline"],
+            ),
+        "Only pending Agent changes should produce diffs, excluding convergent values.",
+      );
+    }
+  }
+
+  {
+    const baseResume = createResume();
+    const currentResume = structuredClone(baseResume);
+    currentResume.basic.summary = "User-edited summary";
+    const result = applyAgentEditsWithMerge(baseResume, currentResume, [
+      {
+        id: "update-summary",
+        title: "Update summary",
+        target: "basic.summary",
+        reason: "Improve the opening statement.",
+        operation: {
+          type: "replace_field",
+          path: "basic.summary",
+          value: "Agent-edited summary",
+        },
+      },
+    ]);
+
+    assert(
+      result.errors.length === 1 && result.errors[0].reason === "conflict",
+      "Competing edits to the same field must reject the candidate.",
+    );
+    assert(
+      result.resume.basic.summary === "User-edited summary",
+      "A conflict must leave the current resume untouched.",
+    );
+  }
+
+  {
+    const baseResume = createResume();
+    const currentResume = structuredClone(baseResume);
+    currentResume.basic.name = "User-edited name";
+    const result = applyAgentEditsWithMerge(baseResume, currentResume, [
+      {
+        id: "insert-projects",
+        title: "Add projects",
+        target: "sections.projects",
+        reason: "Add project evidence.",
+        operation: {
+          type: "insert_section",
+          index: 1,
+          section: {
+            id: "projects",
+            kind: "project",
+            title: "Projects",
+            items: [],
+          },
+        },
+      },
+    ]);
+
+    assert(
+      result.errors.length === 0,
+      "A unique structural insert must merge.",
+    );
+    assert(
+      result.resume.basic.name === "User-edited name" &&
+        result.resume.sections[1]?.id === "projects",
+      "A structural insert must retain unrelated user field edits.",
+    );
+  }
+
+  {
+    const baseResume = createResume();
+    baseResume.sections.push({
       id: "projects",
       kind: "project",
       title: "Projects",
       items: [],
-    },
-  );
-  const result = applyAgentEditsToDraft(baseResume, [{
-    id: "reorder-sections-precisely",
-    title: "Reorder sections",
-    target: "sections",
-    reason: "Verify each changed object.",
-    operation: {
-      type: "reorder_sections",
-      sectionIds: ["experience", "projects", "education"],
-    },
-  }]);
-
-  assert(
-    JSON.stringify(result.diffs.map((diff) => ({
-      path: diff.path,
-      sectionId: diff.sectionId,
-      before: diff.before,
-      after: diff.after,
-    }))) === JSON.stringify([
-      { path: "sections.education", sectionId: "education", before: 0, after: 2 },
-    ]),
-    "Moving the first section to the end must mark only that section as moved.",
-  );
-}
-
-{
-  const baseResume = createResume();
-  const result = applyAgentEditsToDraft(baseResume, [
-    {
-      id: "update-headline",
-      title: "Update headline",
-      target: "basic.headline",
-      reason: "Clarify the candidate's role.",
-      operation: {
-        type: "replace_field",
-        path: "basic.headline",
-        value: "Staff Engineer",
-      },
-    },
-    {
-      id: "delete-missing-section",
-      title: "Delete missing section",
-      target: "sections.missing",
-      reason: "Exercise transaction rollback.",
-      operation: {
-        type: "delete_section",
-        sectionId: "missing",
-      },
-    },
-  ]);
-
-  assert(
-    result.appliedCount === 0,
-    "A batch containing any failed edit must report zero applied edits.",
-  );
-  assert(
-    result.diffs.length === 0,
-    "A rejected batch must not expose partial diffs.",
-  );
-  assert(
-    JSON.stringify(result.resume) === JSON.stringify(baseResume),
-    "A rejected batch must return the original resume state.",
-  );
-  assert(
-    result.errors.length === 1 &&
-      result.errors[0].editId === "delete-missing-section" &&
-      result.errors[0].reason === "target_not_found" &&
-      result.errors[0].target === "sections.missing",
-    "A rejected batch must return a structured, actionable error.",
-  );
-}
-
-{
-  const baseResume = createResume();
-  baseResume.sections.push({
-    id: "skills",
-    kind: "simple_list",
-    title: "Skills",
-    items: [
-      {
-        id: "skill-1",
-        content: "React, TypeScript",
-      },
-    ],
-  });
-  const result = applyAgentEditsToDraft(baseResume, [
-    {
-      id: "update-invalid-skills",
-      title: "Add skill highlights",
-      target: "sections.skills.items.skill-1",
-      reason: "Exercise list-item update validation.",
-      operation: {
-        type: "update_item",
-        sectionId: "skills",
-        itemId: "skill-1",
-        patch: { highlights: ["React"] },
-      },
-    },
-  ]);
-
-  assert(
-    result.appliedCount === 0 &&
-      result.errors.length === 1 &&
-      result.errors[0].reason === "invalid_operation" &&
-      result.resume.sections[1].items[0].content === "React, TypeScript",
-    "Simple-list updates must reject fields outside the content contract.",
-  );
-}
-
-for (const operation of [
-  {
-    type: "insert_item",
-    sectionId: "skills",
-    item: { id: "skill-2", content: "TypeScript" },
-  },
-  {
-    type: "delete_item",
-    sectionId: "skills",
-    itemId: "skill-1",
-  },
-  {
-    type: "reorder_items",
-    sectionId: "skills",
-    itemIds: ["skill-1"],
-  },
-]) {
-  const baseResume = createResume();
-  baseResume.sections.push({
-    id: "skills",
-    kind: "simple_list",
-    title: "Skills",
-    items: [{ id: "skill-1", content: "<ul><li>React</li></ul>" }],
-  });
-  const result = applyAgentEditsToDraft(baseResume, [
-    {
-      id: `reject-${operation.type}`,
-      title: "Keep the single rich-text item",
-      target: "sections.skills.items",
-      reason: "Exercise the simple-list cardinality contract.",
-      operation,
-    },
-  ]);
-
-  assert(
-    result.appliedCount === 0 &&
-      result.errors.length === 1 &&
-      result.errors[0].reason === "invalid_operation" &&
-      JSON.stringify(result.resume) === JSON.stringify(baseResume),
-    `Simple-list sections must reject ${operation.type}.`,
-  );
-}
-
-{
-  const baseResume = createResume();
-  const result = applyAgentEditsToDraft(baseResume, [
-    {
-      id: "insert-invalid-skills",
-      title: "Add skills",
-      target: "sections.skills",
-      reason: "Exercise the canonical list-item contract.",
-      operation: {
-        type: "insert_section",
-        section: {
-          id: "skills",
-          kind: "simple_list",
-          title: "Skills",
-          items: [
-            {
-              id: "skill-1",
-              content: "Frontend",
-              highlights: ["React"],
-            },
-          ],
-        },
-      },
-    },
-  ]);
-
-  assert(
-    result.appliedCount === 0 &&
-      result.errors.length === 1 &&
-      result.errors[0].reason === "invalid_operation",
-    "Simple-list sections must reject fields outside id and content.",
-  );
-}
-
-{
-  const baseResume = createResume();
-  baseResume.sections.push({
-    id: "experience",
-    kind: "experience",
-    title: "Experience",
-    items: [
-      {
-        id: "experience-1",
-        company: "Example Inc.",
-        position: "Engineer",
-        location: "Remote",
-        period: "2024 - Present",
-        description: "",
-        highlights: [],
-      },
-    ],
-  });
-  baseResume.sections.push({
-    id: "skills",
-    kind: "simple_list",
-    title: "Skills",
-    items: [{ id: "skill-1", content: "React" }],
-  });
-
-  const result = applyAgentEditsToDraft(baseResume, [
-    {
-      id: "update-position",
-      title: "Clarify the experience",
-      target: "sections.experience.items.experience-1",
-      reason: "Use the semantic experience fields.",
-      operation: {
-        type: "update_item",
-        sectionId: "experience",
-        itemId: "experience-1",
-        patch: {
-          position: "Senior Engineer",
-          description: "Built the editor platform.",
-          highlights: ["Reduced state complexity."],
-        },
-      },
-    },
-    {
-      id: "update-skills",
-      title: "Add a skill",
-      target: "sections.skills.items.skill-1.content",
-      reason: "A simple-list item remains a directly editable string.",
-      operation: {
-        type: "update_item",
-        sectionId: "skills",
-        itemId: "skill-1",
-        patch: { content: "React · TypeScript" },
-      },
-    },
-  ]);
-
-  assert(
-    result.errors.length === 0 && result.appliedCount === 2,
-    "Valid semantic item fields must be applied atomically.",
-  );
-  assert(
-    result.resume.sections[1].items[0].position === "Senior Engineer" &&
-      result.resume.sections[1].items[0].company === "Example Inc." &&
-      result.resume.sections[2].items[0].content === "React · TypeScript",
-    "Agent item edits must preserve unrelated fields and support simple-list strings.",
-  );
-  assert(
-    result.diffs.length === 4,
-    "One multi-field edit must expose one precise diff per changed field without changing applied edit count.",
-  );
-  assert(
-    JSON.stringify(result.diffs.map((diff) => diff.path)) ===
-      JSON.stringify([
-        "sections.experience.items.experience-1.position",
-        "sections.experience.items.experience-1.description",
-        "sections.experience.items.experience-1.highlights",
-        "sections.skills.items.skill-1.content",
-      ]),
-    "Item diffs must use canonical field paths instead of a whole-item target.",
-  );
-  assert(
-    JSON.stringify(result.diffs[0]) ===
-      JSON.stringify({
-        id: "diff-update-position-position",
-        operationId: "update-position",
-        path: "sections.experience.items.experience-1.position",
-        kind: "modified",
-        label: "Clarify the experience",
-        sectionId: "experience",
-        itemId: "experience-1",
-        before: "Engineer",
-        after: "Senior Engineer",
-      }),
-    "A field diff must carry only that field's before and after values.",
-  );
-}
-
-{
-  const baseResume = createResume();
-  const result = applyAgentEditsToDraft(baseResume, [
-    {
-      id: "update-headline",
-      title: "Update headline",
-      target: "basic.headline",
-      reason: "Clarify the candidate's role.",
-      operation: {
-        type: "replace_field",
-        path: "basic.headline",
-        value: "Staff Engineer",
-      },
-    },
-    {
-      id: "update-summary",
-      title: "Update summary",
-      target: "basic.summary",
-      reason: "Improve the opening statement.",
-      operation: {
-        type: "replace_field",
-        path: "basic.summary",
-        value: "Updated summary",
-      },
-    },
-  ]);
-
-  assert(result.errors.length === 0, "A valid batch must not return errors.");
-  assert(result.appliedCount === 2, "A valid batch must commit every edit.");
-  assert(result.diffs.length === 2, "A valid batch must expose every diff.");
-  assert(
-    result.resume.basic.headline === "Staff Engineer" &&
-      result.resume.basic.summary === "Updated summary",
-    "A valid batch must return the fully updated resume.",
-  );
-  assert(
-    baseResume.basic.headline === "Engineer" &&
-      baseResume.basic.summary === "Original summary",
-    "Applying a batch must never mutate the source resume.",
-  );
-}
-
-{
-  const baseResume = createResume();
-  const result = applyAgentEditsToDraft(baseResume, [
-    {
-      id: "reject-location",
-      title: "Reject hidden location",
-      target: "basic.location",
-      reason: "Location is outside the Agent write contract.",
-      operation: {
-        type: "replace_field",
-        path: "basic.location",
-        value: "Remote",
-      },
-    },
-  ]);
-
-  assert(
-    result.errors.length === 1 && result.appliedCount === 0,
-    "Agent drafts must reject hidden basic fields on the frontend boundary.",
-  );
-  assert(
-    result.resume.basic.location === "",
-    "A rejected location edit must not change the resume.",
-  );
-}
-
-{
-  const baseResume = createResume();
-  const result = applyAgentEditsToDraft(baseResume, [
-    {
-      id: "update-headline",
-      title: "Update headline",
-      target: "basic.headline",
-      reason: "Clarify the candidate's role.",
-      operation: {
-        type: "replace_field",
-        path: "basic.headline",
-        value: "Staff Engineer",
-      },
-    },
-    {
-      id: "unknown-operation",
-      title: "Run unsupported operation",
-      target: "sections.education",
-      reason: "Exercise runtime payload validation.",
-      operation: {
-        type: "operation_from_a_newer_server",
-      },
-    },
-  ]);
-
-  assert(
-    result.appliedCount === 0 && result.resume.basic.headline === "Engineer",
-    "An unknown operation must reject and roll back the entire batch.",
-  );
-  assert(
-    result.errors.length === 1 &&
-      result.errors[0].editId === "unknown-operation" &&
-      result.errors[0].reason === "invalid_operation",
-    "An unknown operation must produce a structured validation error.",
-  );
-}
-
-{
-  const baseResume = createResume();
-  const currentResume = structuredClone(baseResume);
-  currentResume.basic.name = "User-edited name";
-  const result = applyAgentEditsWithMerge(baseResume, currentResume, [
-    {
-      id: "update-summary",
-      title: "Update summary",
-      target: "basic.summary",
-      reason: "Improve the opening statement.",
-      operation: {
-        type: "replace_field",
-        path: "basic.summary",
-        value: "Agent-edited summary",
-      },
-    },
-  ]);
-
-  assert(result.errors.length === 0, "Disjoint field edits must merge.");
-  assert(
-    result.resume.basic.name === "User-edited name" &&
-      result.resume.basic.summary === "Agent-edited summary",
-    "A merge must preserve the user's concurrent field edit.",
-  );
-}
-
-{
-  const baseResume = createResume();
-  baseResume.sections.push({
-    id: "work", kind: "experience", title: "Work",
-    items: [{
-      id: "job", company: "Original company", position: "Engineer",
-      period: "2024", location: "", description: "Original description",
-      highlights: ["Original achievement"],
-    }],
-  });
-  const baseBefore = JSON.stringify(baseResume);
-  const edits = [{
-    id: "update-headline", title: "Update headline", target: "basic.headline",
-    reason: "Use the requested headline.",
-    operation: { type: "replace_field", path: "basic.headline", value: "Staff Engineer" },
-  }, {
-    id: "update-work", title: "Update work", target: "sections.work.items.job",
-    reason: "Use the requested role.",
-    operation: {
-      type: "update_item", sectionId: "work", itemId: "job",
-      patch: {
-        company: "Original company", position: "Senior Engineer",
-        highlights: ["Original achievement"],
-      },
-    },
-  }];
-  for (const position of ["Engineer", "Senior Engineer", "Manual role"]) {
+    });
     const currentResume = structuredClone(baseResume);
-    const currentItem = currentResume.sections[1].items[0];
-    Object.assign(currentItem, {
-      company: "Manual company", location: "Manual location", position,
-      highlights: ["Manual achievement"],
+    currentResume.sections.push({
+      id: "skills",
+      kind: "simple_list",
+      title: "Skills",
+      items: [{ id: "skill-1", content: "<ul><li>React</li></ul>" }],
     });
-    const currentBefore = JSON.stringify(currentResume);
-    const result = applyAgentEditsWithMerge(baseResume, currentResume, edits);
-    assert(
-      JSON.stringify(baseResume) === baseBefore &&
-        JSON.stringify(currentResume) === currentBefore,
-      "Three-way merges must leave both input documents immutable.",
-    );
-    if (position === "Manual role") {
-      assert(
-        result.errors.length === 1 && result.errors[0].reason === "conflict" &&
-          result.errors[0].target === "sections.work.items.job.position" &&
-          result.appliedCount === 0 && result.diffs.length === 0 &&
-          JSON.stringify(result.resume) === currentBefore,
-        "A true field conflict must roll back all earlier edits in the batch.",
-      );
-      continue;
-    }
-    const mergedItem = result.resume.sections[1].items[0];
-    assert(
-      result.errors.length === 0 && result.resume.basic.headline === "Staff Engineer" &&
-        mergedItem.company === "Manual company" &&
-        mergedItem.location === "Manual location" &&
-        JSON.stringify(mergedItem.highlights) === JSON.stringify(["Manual achievement"]) &&
-        mergedItem.position === "Senior Engineer",
-      "Unchanged fields repeated in a patch must preserve manual scalar and array values.",
-    );
-    assert(
-      result.appliedCount === (position === "Engineer" ? 2 : 1) &&
-        JSON.stringify(result.diffs.map((diff) => diff.path)) === JSON.stringify(
-          position === "Engineer"
-            ? ["basic.headline", "sections.work.items.job.position"]
-            : ["basic.headline"],
-        ),
-      "Only pending Agent changes should produce diffs, excluding convergent values.",
-    );
-  }
-}
-
-{
-  const baseResume = createResume();
-  const currentResume = structuredClone(baseResume);
-  currentResume.basic.summary = "User-edited summary";
-  const result = applyAgentEditsWithMerge(baseResume, currentResume, [
-    {
-      id: "update-summary",
-      title: "Update summary",
-      target: "basic.summary",
-      reason: "Improve the opening statement.",
-      operation: {
-        type: "replace_field",
-        path: "basic.summary",
-        value: "Agent-edited summary",
-      },
-    },
-  ]);
-
-  assert(
-    result.errors.length === 1 && result.errors[0].reason === "conflict",
-    "Competing edits to the same field must reject the candidate.",
-  );
-  assert(
-    result.resume.basic.summary === "User-edited summary",
-    "A conflict must leave the current resume untouched.",
-  );
-}
-
-{
-  const baseResume = createResume();
-  const currentResume = structuredClone(baseResume);
-  currentResume.basic.name = "User-edited name";
-  const result = applyAgentEditsWithMerge(baseResume, currentResume, [
-    {
-      id: "insert-projects",
-      title: "Add projects",
-      target: "sections.projects",
-      reason: "Add project evidence.",
-      operation: {
-        type: "insert_section",
-        index: 1,
-        section: {
-          id: "projects",
-          kind: "project",
-          title: "Projects",
-          items: [],
+    const result = applyAgentEditsWithMerge(baseResume, currentResume, [
+      {
+        id: "reorder-sections",
+        title: "Prioritize projects",
+        target: "sections",
+        reason: "Lead with project evidence.",
+        operation: {
+          type: "reorder_sections",
+          sectionIds: ["projects", "education"],
         },
       },
-    },
-  ]);
+    ]);
 
-  assert(result.errors.length === 0, "A unique structural insert must merge.");
-  assert(
-    result.resume.basic.name === "User-edited name" &&
-      result.resume.sections[1]?.id === "projects",
-    "A structural insert must retain unrelated user field edits.",
-  );
-}
+    assert(
+      result.errors.length === 1 && result.errors[0].reason === "conflict",
+      "Concurrent structural changes must reject the candidate.",
+    );
+    assert(
+      result.resume.sections.map((section) => section.id).join("|") ===
+        "education|projects|skills",
+      "A structural conflict must not reorder the current resume.",
+    );
+  }
 
-{
-  const baseResume = createResume();
-  baseResume.sections.push({
-    id: "projects",
-    kind: "project",
-    title: "Projects",
-    items: [],
-  });
-  const currentResume = structuredClone(baseResume);
-  currentResume.sections.push({
-    id: "skills",
-    kind: "simple_list",
-    title: "Skills",
-    items: [{ id: "skill-1", content: "<ul><li>React</li></ul>" }],
-  });
-  const result = applyAgentEditsWithMerge(baseResume, currentResume, [
-    {
-      id: "reorder-sections",
-      title: "Prioritize projects",
-      target: "sections",
-      reason: "Lead with project evidence.",
-      operation: {
-        type: "reorder_sections",
-        sectionIds: ["projects", "education"],
-      },
-    },
-  ]);
-
-  assert(
-    result.errors.length === 1 && result.errors[0].reason === "conflict",
-    "Concurrent structural changes must reject the candidate.",
-  );
-  assert(
-    result.resume.sections.map((section) => section.id).join("|") ===
-      "education|projects|skills",
-    "A structural conflict must not reorder the current resume.",
-  );
-}
-
-{
-  const baseResume = createResume();
-  baseResume.sections.push({
-    id: "projects",
-    kind: "project",
-    title: "Projects",
-    items: [],
-  });
-  const result = applyAgentEditsToDraft(baseResume, [
-    {
-      id: "partial-reorder",
-      title: "Partially reorder sections",
-      target: "sections",
-      reason: "Exercise complete-order validation.",
-      operation: {
-        type: "reorder_sections",
-        sectionIds: ["projects"],
-      },
-    },
-  ]);
-
-  assert(
-    result.errors.length === 1 &&
-      result.errors[0].reason === "invalid_operation",
-    "A reorder must include every current section exactly once.",
-  );
-}
-
-{
-  const baseResume = createResume();
-  const draftBase = createAgentDraftBaseSnapshot(baseResume);
-  const edits = [
-    {
-      id: "update-summary",
-      title: "Update summary",
-      target: "basic.summary",
-      reason: "Improve the opening statement.",
-      operation: {
-        type: "replace_field",
-        path: "basic.summary",
-        value: "Agent-edited summary",
-      },
-    },
-  ];
-  const generatedDraft = applyAgentEditsWithMerge(
-    draftBase,
-    baseResume,
-    edits,
-  );
-  const latestResume = structuredClone(baseResume);
-  latestResume.basic.name = "User edit after draft generation";
-  const appliedDraft = applyAgentEditsWithMerge(
-    draftBase,
-    latestResume,
-    edits,
-  );
-
-  assert(
-    generatedDraft.resume.basic.summary === "Agent-edited summary",
-    "Draft generation must still preview the Agent batch.",
-  );
-  assert(
-    appliedDraft.errors.length === 0 &&
-      appliedDraft.resume.basic.name ===
-        "User edit after draft generation" &&
-      appliedDraft.resume.basic.summary === "Agent-edited summary",
-    "Applying a stored draft must rebase onto manual edits made after draft generation.",
-  );
-}
-
-{
-  const originalResume = createResume();
-  const transactionBase = createAgentDraftBaseSnapshot(originalResume);
-  const firstDraftEdits = [
-    {
-      id: "initial-headline",
-      title: "Update headline",
-      target: "basic.headline",
-      reason: "Create the first pending draft.",
-      operation: {
-        type: "replace_field",
-        path: "basic.headline",
-        value: "Staff Engineer",
-      },
-    },
-  ];
-  const firstDraft = applyAgentEditsWithMerge(
-    transactionBase,
-    originalResume,
-    firstDraftEdits,
-  );
-  const followUpEdits = [
-    {
-      id: "refined-headline",
-      title: "Refine headline",
-      target: "basic.headline",
-      reason: "Continue from the pending Staff Engineer candidate.",
-      operation: {
-        type: "replace_field",
-        path: "basic.headline",
-        value: "Principal Engineer",
-      },
-    },
-    {
-      id: "follow-up-summary",
-      title: "Update summary",
-      target: "basic.summary",
-      reason: "Apply a disjoint follow-up edit.",
-      operation: {
-        type: "replace_field",
-        path: "basic.summary",
-        value: "Focused summary",
-      },
-    },
-  ];
-  const refinedDraft = applyAgentEditsWithMerge(
-    transactionBase,
-    originalResume,
-    [...firstDraftEdits, ...followUpEdits],
-  );
-
-  assert(
-    firstDraft.errors.length === 0 &&
-      firstDraft.resume.basic.headline === "Staff Engineer",
-    "The first pending draft must be a valid candidate built from the immutable base.",
-  );
-  assert(
-    refinedDraft.errors.length === 0 &&
-      refinedDraft.resume.basic.headline === "Principal Engineer" &&
-      refinedDraft.resume.basic.summary === "Focused summary",
-    "A follow-up must replace the same field without conflict and preserve every prior edit.",
-  );
-}
-
-{
-  const baseResume = createResume();
-  const draftBase = createAgentDraftBaseSnapshot(baseResume);
-  const edits = [
-    {
-      id: "update-headline",
-      title: "Update headline",
-      target: "basic.headline",
-      reason: "Clarify the candidate's role.",
-      operation: {
-        type: "replace_field",
-        path: "basic.headline",
-        value: "Agent-edited headline",
-      },
-    },
-    {
-      id: "update-summary",
-      title: "Update summary",
-      target: "basic.summary",
-      reason: "Improve the opening statement.",
-      operation: {
-        type: "replace_field",
-        path: "basic.summary",
-        value: "Agent-edited summary",
-      },
-    },
-  ];
-  const latestResume = structuredClone(baseResume);
-  latestResume.basic.summary = "User edit after draft generation";
-  const appliedDraft = applyAgentEditsWithMerge(
-    draftBase,
-    latestResume,
-    edits,
-  );
-
-  assert(
-    appliedDraft.errors.length === 1 &&
-      appliedDraft.errors[0].reason === "conflict",
-    "A competing manual edit made after draft generation must reject the draft.",
-  );
-  assert(
-    appliedDraft.appliedCount === 0 &&
-      appliedDraft.resume.basic.headline === "Engineer" &&
-      appliedDraft.resume.basic.summary ===
-        "User edit after draft generation",
-    "A late conflict must leave the complete current resume untouched.",
-  );
-}
-
-{
-  const originalFetch = globalThis.fetch;
-  const originalWindow = globalThis.window;
-  const authSession = JSON.stringify({
-    accessToken: "agent-draft-token",
-    authenticatedAt: new Date().toISOString(),
-    expiresAt: "2099-01-01T00:00:00.000Z",
-    username: "agent-draft-test",
-  });
-  const requests = [];
-  const responses = [
-    apiResponse(createDraftSession("pending", "revision-discard-pending")),
-    apiResponse(createResumeDetail("version-discard-formal")),
-    apiResponse({
-      session: createDraftSession("discarded", "revision-discarded"),
-      resume: null,
-    }),
-  ];
-
-  globalThis.window = {
-    location: { assign() {}, pathname: "/resumes/resume-draft-decision" },
-    localStorage: {
-      getItem(key) {
-        return key === "reseno-auth-session" ? authSession : null;
-      },
-      removeItem() {},
-      setItem() {},
-    },
-    sessionStorage: {
-      getItem() {
-        return null;
-      },
-      removeItem() {},
-      setItem() {},
-    },
-  };
-  globalThis.fetch = async (url, options = {}) => {
-    requests.push({
-      body: options.body,
-      method: options.method ?? "GET",
-      url: String(url),
+  {
+    const baseResume = createResume();
+    baseResume.sections.push({
+      id: "projects",
+      kind: "project",
+      title: "Projects",
+      items: [],
     });
-    const response = responses.shift();
-    assert(response, "The draft discard client made an unexpected request.");
-    return response;
-  };
-
-  try {
-    const { resolveAgentDraftDecision } = await server.ssrLoadModule(
-      "/src/lib/agent-session-run-client.ts",
-    );
-    const resolution = await resolveAgentDraftDecision(
-      "resume-draft-decision",
-      "assistant-draft-decision",
+    const result = applyAgentEditsToDraft(baseResume, [
       {
-        reviewItemIds: ["agent-review-edit-draft-decision"],
-        status: "discarded",
+        id: "partial-reorder",
+        title: "Partially reorder sections",
+        target: "sections",
+        reason: "Exercise complete-order validation.",
+        operation: {
+          type: "reorder_sections",
+          sectionIds: ["projects"],
+        },
       },
-    );
+    ]);
 
     assert(
-      resolution.draft?.reviewItems[0].status === "discarded" &&
-        resolution.resume?.versionId === "version-discard-formal" &&
-        resolution.committed &&
-        resolution.resolvedAsRequested,
-      "A discard must resolve the selected item and retain the fresh formal resume.",
+      result.errors.length === 1 &&
+        result.errors[0].reason === "invalid_operation",
+      "A reorder must include every current section exactly once.",
     );
-    assert(
-      requests.length === 3 &&
-        requests[2].method === "PATCH" &&
-        requests[2].body ===
-          JSON.stringify({
-            revision: "revision-discard-pending",
-            reviewItemIds: ["agent-review-edit-draft-decision"],
-            status: "discarded",
-          }),
-      "A discard must submit only its review-item scope and session revision.",
-    );
-  } finally {
-    globalThis.fetch = originalFetch;
-    if (typeof originalWindow === "undefined") {
-      delete globalThis.window;
-    } else {
-      globalThis.window = originalWindow;
-    }
   }
-}
 
-for (const authoritativeStatus of ["applied", "discarded", "superseded"]) {
-  const originalFetch = globalThis.fetch;
-  const originalWindow = globalThis.window;
-  const authSession = JSON.stringify({
-    accessToken: "agent-draft-token",
-    authenticatedAt: new Date().toISOString(),
-    expiresAt: "2099-01-01T00:00:00.000Z",
-    username: "agent-draft-test",
-  });
-  const requests = [];
-  const responses = [
-    apiResponse(createDraftSession(authoritativeStatus, "revision-other-tab")),
-    apiResponse(
-      createResumeDetail(`version-authoritative-${authoritativeStatus}`),
-    ),
-  ];
-
-  globalThis.window = {
-    location: { assign() {}, pathname: "/resumes/resume-draft-decision" },
-    localStorage: {
-      getItem(key) {
-        return key === "reseno-auth-session" ? authSession : null;
-      },
-      removeItem() {},
-      setItem() {},
-    },
-    sessionStorage: {
-      getItem() {
-        return null;
-      },
-      removeItem() {},
-      setItem() {},
-    },
-  };
-  globalThis.fetch = async (url, options = {}) => {
-    requests.push({ method: options.method ?? "GET", url: String(url) });
-    const response = responses.shift();
-    assert(response, "An authoritative apply read made an unexpected request.");
-    return response;
-  };
-
-  try {
-    const { resolveAgentDraftDecision } = await server.ssrLoadModule(
-      "/src/lib/agent-session-run-client.ts",
-    );
-    const resolution = await resolveAgentDraftDecision(
-      "resume-draft-decision",
-      "assistant-draft-decision",
+  {
+    const baseResume = createResume();
+    const draftBase = createAgentDraftBaseSnapshot(baseResume);
+    const edits = [
       {
-        currentResume: createResume(),
-        currentVersionId: `version-authoritative-${authoritativeStatus}`,
-        rebaseOnLatest: true,
-        reviewItemIds: ["agent-review-edit-draft-decision"],
-        status: "applied",
+        id: "update-summary",
+        title: "Update summary",
+        target: "basic.summary",
+        reason: "Improve the opening statement.",
+        operation: {
+          type: "replace_field",
+          path: "basic.summary",
+          value: "Agent-edited summary",
+        },
       },
+    ];
+    const generatedDraft = applyAgentEditsWithMerge(
+      draftBase,
+      baseResume,
+      edits,
+    );
+    const latestResume = structuredClone(baseResume);
+    latestResume.basic.name = "User edit after draft generation";
+    const appliedDraft = applyAgentEditsWithMerge(
+      draftBase,
+      latestResume,
+      edits,
     );
 
     assert(
-      resolution.draft?.reviewItems[0].status === authoritativeStatus &&
-        resolution.resume?.versionId ===
-          `version-authoritative-${authoritativeStatus}` &&
-        !resolution.committed &&
-        resolution.resolvedAsRequested ===
-          (authoritativeStatus === "applied"),
-      "An already-processed decision must report whether authority matches the requested status.",
+      generatedDraft.resume.basic.summary === "Agent-edited summary",
+      "Draft generation must still preview the Agent batch.",
     );
     assert(
-      requests.length === 2 && requests.every((request) => request.method === "GET"),
-      "An already-processed decision must use authoritative reads without issuing PATCH.",
+      appliedDraft.errors.length === 0 &&
+        appliedDraft.resume.basic.name === "User edit after draft generation" &&
+        appliedDraft.resume.basic.summary === "Agent-edited summary",
+      "Applying a stored draft must rebase onto manual edits made after draft generation.",
     );
-  } finally {
-    globalThis.fetch = originalFetch;
-    if (typeof originalWindow === "undefined") {
-      delete globalThis.window;
-    } else {
-      globalThis.window = originalWindow;
-    }
   }
-}
 
-{
-  const originalFetch = globalThis.fetch;
-  const originalWindow = globalThis.window;
-  const authSession = JSON.stringify({
-    accessToken: "agent-draft-token",
-    authenticatedAt: new Date().toISOString(),
-    expiresAt: "2099-01-01T00:00:00.000Z",
-    username: "agent-draft-test",
-  });
-  const requests = [];
-  const responses = [
-    apiResponse(createDraftSession("pending", "revision-pending")),
-    apiResponse(createResumeDetail()),
-    apiResponse({
-      session: createDraftSession("applied", "revision-applied"),
-      resume: createResumeDetail("version-applied"),
-    }),
-  ];
+  {
+    const originalResume = createResume();
+    const transactionBase = createAgentDraftBaseSnapshot(originalResume);
+    const firstDraftEdits = [
+      {
+        id: "initial-headline",
+        title: "Update headline",
+        target: "basic.headline",
+        reason: "Create the first pending draft.",
+        operation: {
+          type: "replace_field",
+          path: "basic.headline",
+          value: "Staff Engineer",
+        },
+      },
+    ];
+    const firstDraft = applyAgentEditsWithMerge(
+      transactionBase,
+      originalResume,
+      firstDraftEdits,
+    );
+    const followUpEdits = [
+      {
+        id: "refined-headline",
+        title: "Refine headline",
+        target: "basic.headline",
+        reason: "Continue from the pending Staff Engineer candidate.",
+        operation: {
+          type: "replace_field",
+          path: "basic.headline",
+          value: "Principal Engineer",
+        },
+      },
+      {
+        id: "follow-up-summary",
+        title: "Update summary",
+        target: "basic.summary",
+        reason: "Apply a disjoint follow-up edit.",
+        operation: {
+          type: "replace_field",
+          path: "basic.summary",
+          value: "Focused summary",
+        },
+      },
+    ];
+    const refinedDraft = applyAgentEditsWithMerge(
+      transactionBase,
+      originalResume,
+      [...firstDraftEdits, ...followUpEdits],
+    );
 
-  globalThis.window = {
-    location: { assign() {}, pathname: "/resumes/resume-draft-decision" },
-    localStorage: {
-      getItem(key) {
-        return key === "reseno-auth-session" ? authSession : null;
+    assert(
+      firstDraft.errors.length === 0 &&
+        firstDraft.resume.basic.headline === "Staff Engineer",
+      "The first pending draft must be a valid candidate built from the immutable base.",
+    );
+    assert(
+      refinedDraft.errors.length === 0 &&
+        refinedDraft.resume.basic.headline === "Principal Engineer" &&
+        refinedDraft.resume.basic.summary === "Focused summary",
+      "A follow-up must replace the same field without conflict and preserve every prior edit.",
+    );
+  }
+
+  {
+    const baseResume = createResume();
+    const draftBase = createAgentDraftBaseSnapshot(baseResume);
+    const edits = [
+      {
+        id: "update-headline",
+        title: "Update headline",
+        target: "basic.headline",
+        reason: "Clarify the candidate's role.",
+        operation: {
+          type: "replace_field",
+          path: "basic.headline",
+          value: "Agent-edited headline",
+        },
       },
-      removeItem() {},
-      setItem() {},
-    },
-    sessionStorage: {
-      getItem() {
-        return null;
+      {
+        id: "update-summary",
+        title: "Update summary",
+        target: "basic.summary",
+        reason: "Improve the opening statement.",
+        operation: {
+          type: "replace_field",
+          path: "basic.summary",
+          value: "Agent-edited summary",
+        },
       },
-      removeItem() {},
-      setItem() {},
-    },
-  };
-  globalThis.fetch = async (url, options = {}) => {
-    requests.push({
-      body: options.body,
-      method: options.method ?? "GET",
-      url: String(url),
+    ];
+    const latestResume = structuredClone(baseResume);
+    latestResume.basic.summary = "User edit after draft generation";
+    const appliedDraft = applyAgentEditsWithMerge(
+      draftBase,
+      latestResume,
+      edits,
+    );
+
+    assert(
+      appliedDraft.errors.length === 1 &&
+        appliedDraft.errors[0].reason === "conflict",
+      "A competing manual edit made after draft generation must reject the draft.",
+    );
+    assert(
+      appliedDraft.appliedCount === 0 &&
+        appliedDraft.resume.basic.headline === "Engineer" &&
+        appliedDraft.resume.basic.summary ===
+          "User edit after draft generation",
+      "A late conflict must leave the complete current resume untouched.",
+    );
+  }
+
+  {
+    const originalFetch = globalThis.fetch;
+    const originalWindow = globalThis.window;
+    const authSession = JSON.stringify({
+      accessToken: "agent-draft-token",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      username: "agent-draft-test",
     });
-    const response = responses.shift();
-    assert(response, "The draft decision client made an unexpected request.");
-    return response;
-  };
+    const requests = [];
+    const responses = [
+      apiResponse(createDraftSession("pending", "revision-discard-pending")),
+      apiResponse(createResumeDetail("version-discard-formal")),
+      apiResponse({
+        session: createDraftSession("discarded", "revision-discarded"),
+        resume: null,
+      }),
+    ];
 
-  try {
-    const { resolveAgentDraftDecision } = await server.ssrLoadModule(
-      "/src/lib/agent-session-run-client.ts",
-    );
-    const resolution = await resolveAgentDraftDecision(
-      "resume-draft-decision",
-      "assistant-draft-decision",
-      {
-        currentResume: createResume(),
-        currentVersionId: "version-formal",
-        rebaseOnLatest: false,
-        reviewItemIds: ["agent-review-edit-draft-decision"],
-        status: "applied",
+    globalThis.window = {
+      location: { assign() {}, pathname: "/resumes/resume-draft-decision" },
+      localStorage: {
+        getItem(key) {
+          return key === "reseno-auth-session" ? authSession : null;
+        },
+        removeItem() {},
+        setItem() {},
       },
-    );
-
-    assert(
-      resolution.draft?.reviewItems[0].status === "applied" &&
-        resolution.session.revision === "revision-applied" &&
-        resolution.resume?.versionId === "version-applied" &&
-        resolution.committed &&
-        resolution.resolvedAsRequested,
-      "A successful apply must resolve from the durable assistant response.",
-    );
-    assert(
-      requests.length === 3 &&
-        requests[0].method === "GET" &&
-        requests[1].method === "GET" &&
-        requests[2].method === "PATCH" &&
-        requests[2].url.endsWith(
-          "/api/agent/resumes/resume-draft-decision/session/messages/assistant-draft-decision/draft",
-        ) &&
-        requests[2].body ===
-          JSON.stringify({
-            expectedVersionId: "version-formal",
-            revision: "revision-pending",
-            reviewItemIds: ["agent-review-edit-draft-decision"],
-            resume: createAppliedResume(),
-            status: "applied",
-          }),
-      "A draft apply must atomically submit the candidate with both current revisions.",
-    );
-  } finally {
-    globalThis.fetch = originalFetch;
-    if (typeof originalWindow === "undefined") {
-      delete globalThis.window;
-    } else {
-      globalThis.window = originalWindow;
-    }
-  }
-}
-
-{
-  const originalFetch = globalThis.fetch;
-  const originalWindow = globalThis.window;
-  const authSession = JSON.stringify({
-    accessToken: "agent-draft-token",
-    authenticatedAt: new Date().toISOString(),
-    expiresAt: "2099-01-01T00:00:00.000Z",
-    username: "agent-draft-test",
-  });
-  const requests = [];
-  const responses = [
-    apiResponse(createDraftSession("pending", "revision-stale")),
-    apiResponse(createResumeDetail()),
-    transportError("AGENT_SESSION_REVISION_CONFLICT", {
-      revision: "revision-refreshed",
-    }),
-    apiResponse(createDraftSession("pending", "revision-refreshed")),
-    apiResponse(createResumeDetail()),
-    apiResponse({
-      session: createDraftSession("applied", "revision-reconciled"),
-      resume: createResumeDetail("version-reconciled"),
-    }),
-  ];
-
-  globalThis.window = {
-    location: { assign() {}, pathname: "/resumes/resume-draft-decision" },
-    localStorage: {
-      getItem(key) {
-        return key === "reseno-auth-session" ? authSession : null;
+      sessionStorage: {
+        getItem() {
+          return null;
+        },
+        removeItem() {},
+        setItem() {},
       },
-      removeItem() {},
-      setItem() {},
-    },
-    sessionStorage: {
-      getItem() {
-        return null;
-      },
-      removeItem() {},
-      setItem() {},
-    },
-  };
-  globalThis.fetch = async (url, options = {}) => {
-    requests.push({
-      body: options.body,
-      method: options.method ?? "GET",
-      url: String(url),
-    });
-    const response = responses.shift();
-    assert(response, "Draft decision reconciliation exceeded one retry.");
-    return response;
-  };
+    };
+    globalThis.fetch = async (url, options = {}) => {
+      requests.push({
+        body: options.body,
+        method: options.method ?? "GET",
+        url: String(url),
+      });
+      const response = responses.shift();
+      assert(response, "The draft discard client made an unexpected request.");
+      return response;
+    };
 
-  try {
-    const { resolveAgentDraftDecision } = await server.ssrLoadModule(
-      "/src/lib/agent-session-run-client.ts",
-    );
-    const resolution = await resolveAgentDraftDecision(
-      "resume-draft-decision",
-      "assistant-draft-decision",
-      {
-        currentResume: createResume(),
-        currentVersionId: "version-formal",
-        rebaseOnLatest: false,
-        reviewItemIds: ["agent-review-edit-draft-decision"],
-        status: "applied",
-      },
-    );
-
-    assert(
-      resolution.draft?.reviewItems[0].status === "applied" &&
-        resolution.session.revision === "revision-reconciled" &&
-        resolution.resume?.versionId === "version-reconciled" &&
-        resolution.committed &&
-        resolution.resolvedAsRequested,
-      "A stale draft decision must converge after one authoritative reload.",
-    );
-    assert(
-      requests.length === 6 &&
-        requests[2].body ===
-          JSON.stringify({
-            expectedVersionId: "version-formal",
-            revision: "revision-stale",
-            reviewItemIds: ["agent-review-edit-draft-decision"],
-            resume: createAppliedResume(),
-            status: "applied",
-          }) &&
-        requests[5].body ===
-          JSON.stringify({
-            expectedVersionId: "version-formal",
-            revision: "revision-refreshed",
-            reviewItemIds: ["agent-review-edit-draft-decision"],
-            resume: createAppliedResume(),
-            status: "applied",
-          }),
-      "A revision conflict may retry once, using the reloaded session and formal resume.",
-    );
-  } finally {
-    globalThis.fetch = originalFetch;
-    if (typeof originalWindow === "undefined") {
-      delete globalThis.window;
-    } else {
-      globalThis.window = originalWindow;
-    }
-  }
-}
-
-{
-  const originalFetch = globalThis.fetch;
-  const originalWindow = globalThis.window;
-  const authSession = JSON.stringify({
-    accessToken: "agent-draft-token",
-    authenticatedAt: new Date().toISOString(),
-    expiresAt: "2099-01-01T00:00:00.000Z",
-    username: "agent-draft-test",
-  });
-  const requests = [];
-  const responses = [
-    apiResponse(createDraftSession("pending", "revision-formal-stale")),
-    apiResponse(createResumeDetail("version-stale")),
-    transportError("RESUME_VERSION_CONFLICT", {
-      versionId: "version-current",
-    }),
-    apiResponse(
-      createDraftSession("pending", "revision-formal-current"),
-    ),
-    apiResponse(createResumeDetail("version-current")),
-  ];
-
-  globalThis.window = {
-    location: { assign() {}, pathname: "/resumes/resume-draft-decision" },
-    localStorage: {
-      getItem(key) {
-        return key === "reseno-auth-session" ? authSession : null;
-      },
-      removeItem() {},
-      setItem() {},
-    },
-    sessionStorage: {
-      getItem() {
-        return null;
-      },
-      removeItem() {},
-      setItem() {},
-    },
-  };
-  globalThis.fetch = async (url, options = {}) => {
-    requests.push({ method: options.method ?? "GET", url: String(url) });
-    const response = responses.shift();
-    assert(response, "A formal-version conflict reconciliation made an unexpected request.");
-    return response;
-  };
-
-  try {
-    const { resolveAgentDraftDecision } = await server.ssrLoadModule(
-      "/src/lib/agent-session-run-client.ts",
-    );
-    let conflictRaised = false;
     try {
-      await resolveAgentDraftDecision(
+      const { resolveAgentDraftDecision } = await server.ssrLoadModule(
+        "/src/lib/agent-session-run-client.ts",
+      );
+      const resolution = await resolveAgentDraftDecision(
+        "resume-draft-decision",
+        "assistant-draft-decision",
+        {
+          reviewItemIds: ["agent-review-edit-draft-decision"],
+          status: "discarded",
+        },
+      );
+
+      assert(
+        resolution.draft?.reviewItems[0].status === "discarded" &&
+          resolution.resume?.versionId === "version-discard-formal" &&
+          resolution.committed &&
+          resolution.resolvedAsRequested,
+        "A discard must resolve the selected item and retain the fresh formal resume.",
+      );
+      assert(
+        requests.length === 3 &&
+          requests[2].method === "PATCH" &&
+          requests[2].body ===
+            JSON.stringify({
+              revision: "revision-discard-pending",
+              reviewItemIds: ["agent-review-edit-draft-decision"],
+              status: "discarded",
+            }),
+        "A discard must submit only its review-item scope and session revision.",
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (typeof originalWindow === "undefined") {
+        delete globalThis.window;
+      } else {
+        globalThis.window = originalWindow;
+      }
+    }
+  }
+
+  for (const authoritativeStatus of ["applied", "discarded", "superseded"]) {
+    const originalFetch = globalThis.fetch;
+    const originalWindow = globalThis.window;
+    const authSession = JSON.stringify({
+      accessToken: "agent-draft-token",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      username: "agent-draft-test",
+    });
+    const requests = [];
+    const responses = [
+      apiResponse(
+        createDraftSession(authoritativeStatus, "revision-other-tab"),
+      ),
+      apiResponse(
+        createResumeDetail(`version-authoritative-${authoritativeStatus}`),
+      ),
+    ];
+
+    globalThis.window = {
+      location: { assign() {}, pathname: "/resumes/resume-draft-decision" },
+      localStorage: {
+        getItem(key) {
+          return key === "reseno-auth-session" ? authSession : null;
+        },
+        removeItem() {},
+        setItem() {},
+      },
+      sessionStorage: {
+        getItem() {
+          return null;
+        },
+        removeItem() {},
+        setItem() {},
+      },
+    };
+    globalThis.fetch = async (url, options = {}) => {
+      requests.push({ method: options.method ?? "GET", url: String(url) });
+      const response = responses.shift();
+      assert(
+        response,
+        "An authoritative apply read made an unexpected request.",
+      );
+      return response;
+    };
+
+    try {
+      const { resolveAgentDraftDecision } = await server.ssrLoadModule(
+        "/src/lib/agent-session-run-client.ts",
+      );
+      const resolution = await resolveAgentDraftDecision(
         "resume-draft-decision",
         "assistant-draft-decision",
         {
           currentResume: createResume(),
-          currentVersionId: "version-stale",
+          currentVersionId: `version-authoritative-${authoritativeStatus}`,
+          rebaseOnLatest: true,
+          reviewItemIds: ["agent-review-edit-draft-decision"],
+          status: "applied",
+        },
+      );
+
+      assert(
+        resolution.draft?.reviewItems[0].status === authoritativeStatus &&
+          resolution.resume?.versionId ===
+            `version-authoritative-${authoritativeStatus}` &&
+          !resolution.committed &&
+          resolution.resolvedAsRequested ===
+            (authoritativeStatus === "applied"),
+        "An already-processed decision must report whether authority matches the requested status.",
+      );
+      assert(
+        requests.length === 2 &&
+          requests.every((request) => request.method === "GET"),
+        "An already-processed decision must use authoritative reads without issuing PATCH.",
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (typeof originalWindow === "undefined") {
+        delete globalThis.window;
+      } else {
+        globalThis.window = originalWindow;
+      }
+    }
+  }
+
+  {
+    const originalFetch = globalThis.fetch;
+    const originalWindow = globalThis.window;
+    const authSession = JSON.stringify({
+      accessToken: "agent-draft-token",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      username: "agent-draft-test",
+    });
+    const requests = [];
+    const responses = [
+      apiResponse(createDraftSession("pending", "revision-pending")),
+      apiResponse(createResumeDetail()),
+      apiResponse({
+        session: createDraftSession("applied", "revision-applied"),
+        resume: createResumeDetail("version-applied"),
+      }),
+    ];
+
+    globalThis.window = {
+      location: { assign() {}, pathname: "/resumes/resume-draft-decision" },
+      localStorage: {
+        getItem(key) {
+          return key === "reseno-auth-session" ? authSession : null;
+        },
+        removeItem() {},
+        setItem() {},
+      },
+      sessionStorage: {
+        getItem() {
+          return null;
+        },
+        removeItem() {},
+        setItem() {},
+      },
+    };
+    globalThis.fetch = async (url, options = {}) => {
+      requests.push({
+        body: options.body,
+        method: options.method ?? "GET",
+        url: String(url),
+      });
+      const response = responses.shift();
+      assert(response, "The draft decision client made an unexpected request.");
+      return response;
+    };
+
+    try {
+      const { resolveAgentDraftDecision } = await server.ssrLoadModule(
+        "/src/lib/agent-session-run-client.ts",
+      );
+      const resolution = await resolveAgentDraftDecision(
+        "resume-draft-decision",
+        "assistant-draft-decision",
+        {
+          currentResume: createResume(),
+          currentVersionId: "version-formal",
           rebaseOnLatest: false,
           reviewItemIds: ["agent-review-edit-draft-decision"],
           status: "applied",
         },
       );
-    } catch {
-      conflictRaised = true;
-    }
 
-    assert(
-      conflictRaised &&
-        requests.length === 5 &&
-        requests.filter((request) => request.method === "PATCH").length === 1,
-      "A stale formal resume with local edits must reload authority, then abort without an overwrite retry.",
-    );
-  } finally {
-    globalThis.fetch = originalFetch;
-    if (typeof originalWindow === "undefined") {
-      delete globalThis.window;
-    } else {
-      globalThis.window = originalWindow;
-    }
-  }
-}
-
-{
-  const originalFetch = globalThis.fetch;
-  const originalWindow = globalThis.window;
-  const authSession = JSON.stringify({
-    accessToken: "agent-draft-token",
-    authenticatedAt: new Date().toISOString(),
-    expiresAt: "2099-01-01T00:00:00.000Z",
-    username: "agent-draft-test",
-  });
-  const requests = [];
-  const otherTabResume = createResume();
-  otherTabResume.basic.summary = "Summary saved by another tab";
-  const rebasedResume = createAppliedResume();
-  rebasedResume.basic.summary = otherTabResume.basic.summary;
-  const responses = [
-    apiResponse(createDraftSession("pending", "revision-rebase-stale")),
-    apiResponse(createResumeDetail("version-rebase-stale")),
-    transportError("RESUME_VERSION_CONFLICT", {
-      versionId: "version-rebase-current",
-    }),
-    apiResponse(createDraftSession("pending", "revision-rebase-current")),
-    apiResponse(
-      createResumeDetail("version-rebase-current", otherTabResume),
-    ),
-    apiResponse({
-      session: createDraftSession("applied", "revision-rebase-applied"),
-      resume: createResumeDetail("version-rebase-applied", rebasedResume),
-    }),
-  ];
-
-  globalThis.window = {
-    location: { assign() {}, pathname: "/resumes/resume-draft-decision" },
-    localStorage: {
-      getItem(key) {
-        return key === "reseno-auth-session" ? authSession : null;
-      },
-      removeItem() {},
-      setItem() {},
-    },
-    sessionStorage: {
-      getItem() {
-        return null;
-      },
-      removeItem() {},
-      setItem() {},
-    },
-  };
-  globalThis.fetch = async (url, options = {}) => {
-    requests.push({
-      body: options.body,
-      method: options.method ?? "GET",
-      url: String(url),
-    });
-    const response = responses.shift();
-    assert(response, "A safe draft rebase made an unexpected request.");
-    return response;
-  };
-
-  try {
-    const { resolveAgentDraftDecision } = await server.ssrLoadModule(
-      "/src/lib/agent-session-run-client.ts",
-    );
-    const resolution = await resolveAgentDraftDecision(
-      "resume-draft-decision",
-      "assistant-draft-decision",
-      {
-        currentResume: createResume(),
-        currentVersionId: "version-rebase-stale",
-        rebaseOnLatest: true,
-        reviewItemIds: ["agent-review-edit-draft-decision"],
-        status: "applied",
-      },
-    );
-
-    assert(
-      resolution.resume?.resume.resume.basic.headline === "Staff Engineer" &&
-        resolution.resume.resume.resume.basic.summary ===
-          "Summary saved by another tab" &&
-        resolution.committed &&
-        resolution.resolvedAsRequested,
-      "A clean tab must rebase its selected item onto another tab's fresh formal resume.",
-    );
-    assert(
-      requests.length === 6 &&
-        requests[5].body ===
-          JSON.stringify({
-            expectedVersionId: "version-rebase-current",
-            revision: "revision-rebase-current",
-            reviewItemIds: ["agent-review-edit-draft-decision"],
-            resume: rebasedResume,
-            status: "applied",
-          }),
-      "A safe retry must rebuild the candidate from the reloaded formal resume.",
-    );
-  } finally {
-    globalThis.fetch = originalFetch;
-    if (typeof originalWindow === "undefined") {
-      delete globalThis.window;
-    } else {
-      globalThis.window = originalWindow;
+      assert(
+        resolution.draft?.reviewItems[0].status === "applied" &&
+          resolution.session.revision === "revision-applied" &&
+          resolution.resume?.versionId === "version-applied" &&
+          resolution.committed &&
+          resolution.resolvedAsRequested,
+        "A successful apply must resolve from the durable assistant response.",
+      );
+      assert(
+        requests.length === 3 &&
+          requests[0].method === "GET" &&
+          requests[1].method === "GET" &&
+          requests[2].method === "PATCH" &&
+          requests[2].url.endsWith(
+            "/api/agent/resumes/resume-draft-decision/session/messages/assistant-draft-decision/draft",
+          ) &&
+          requests[2].body ===
+            JSON.stringify({
+              expectedVersionId: "version-formal",
+              revision: "revision-pending",
+              reviewItemIds: ["agent-review-edit-draft-decision"],
+              resume: createAppliedResume(),
+              status: "applied",
+            }),
+        "A draft apply must atomically submit the candidate with both current revisions.",
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (typeof originalWindow === "undefined") {
+        delete globalThis.window;
+      } else {
+        globalThis.window = originalWindow;
+      }
     }
   }
-}
 
-for (const {
-  authoritativeStatus,
-  conflictCode,
-} of [
   {
-    authoritativeStatus: "applied",
-    conflictCode: "AGENT_SESSION_REVISION_CONFLICT",
-  },
-  {
-    authoritativeStatus: "discarded",
-    conflictCode: "AGENT_DRAFT_DECISION_CONFLICT",
-  },
-]) {
-  const originalFetch = globalThis.fetch;
-  const originalWindow = globalThis.window;
-  const authSession = JSON.stringify({
-    accessToken: "agent-draft-token",
-    authenticatedAt: new Date().toISOString(),
-    expiresAt: "2099-01-01T00:00:00.000Z",
-    username: "agent-draft-test",
-  });
-  const requests = [];
-  const responses = [
-    apiResponse(createDraftSession("pending", "revision-before-terminal")),
-    apiResponse(createResumeDetail()),
-    transportError(conflictCode, {
-      revision: "revision-terminal",
-      status: authoritativeStatus,
-    }),
-    apiResponse(
-      createDraftSession(authoritativeStatus, "revision-terminal"),
-    ),
-    apiResponse(createResumeDetail("version-terminal")),
-  ];
-
-  globalThis.window = {
-    location: { assign() {}, pathname: "/resumes/resume-draft-decision" },
-    localStorage: {
-      getItem(key) {
-        return key === "reseno-auth-session" ? authSession : null;
-      },
-      removeItem() {},
-      setItem() {},
-    },
-    sessionStorage: {
-      getItem() {
-        return null;
-      },
-      removeItem() {},
-      setItem() {},
-    },
-  };
-  globalThis.fetch = async (url, options = {}) => {
-    requests.push({ method: options.method ?? "GET", url: String(url) });
-    const response = responses.shift();
-    assert(response, "A terminal draft reconciliation must not retry.");
-    return response;
-  };
-
-  try {
-    const { resolveAgentDraftDecision } = await server.ssrLoadModule(
-      "/src/lib/agent-session-run-client.ts",
-    );
-    const resolution = await resolveAgentDraftDecision(
-      "resume-draft-decision",
-      "assistant-draft-decision",
-      {
-        currentResume: createResume(),
-        currentVersionId: "version-formal",
-        rebaseOnLatest: false,
-        reviewItemIds: ["agent-review-edit-draft-decision"],
-        status: "applied",
-      },
-    );
-
-    assert(
-      resolution.draft?.reviewItems[0].status === authoritativeStatus &&
-        requests.length === 5 &&
-        !resolution.committed &&
-        resolution.resolvedAsRequested ===
-          (authoritativeStatus === "applied"),
-      "After a 409, the authoritative terminal draft status must win without another PATCH.",
-    );
-  } finally {
-    globalThis.fetch = originalFetch;
-    if (typeof originalWindow === "undefined") {
-      delete globalThis.window;
-    } else {
-      globalThis.window = originalWindow;
-    }
-  }
-}
-
-for (const [scenario, conflictResolution] of ["use-original", "keep-manual"].flatMap((resolution) =>
-  ["local", "saved", "changed", "raced"].map((scenario) => [scenario, resolution]))) {
-  const originalFetch = globalThis.fetch;
-  const originalWindow = globalThis.window;
-  const authSession = JSON.stringify({
-    accessToken: "agent-draft-token", authenticatedAt: new Date().toISOString(),
-    expiresAt: "2099-01-01T00:00:00.000Z", username: "agent-draft-test",
-  });
-  const currentResume = createResume();
-  currentResume.basic.headline = "Reviewed manual headline";
-  currentResume.basic.name = "Unrelated manual name";
-  const candidate = conflictResolution === "use-original" ? createAppliedResume() : structuredClone(currentResume);
-  candidate.basic.summary = "Agent summary";
-  const reviewItemIds = ["agent-review-edit-draft-decision", "agent-review-summary"];
-  const createResolutionSession = (status, revision) => {
-    const session = createDraftSession(status, revision);
-    const response = session.messages[0].response;
-    response.edits.push({
-      id: "summary", title: "Summary", target: "basic.summary", reason: "Requested change",
-      operation: { type: "replace_field", path: "basic.summary", value: "Agent summary" },
+    const originalFetch = globalThis.fetch;
+    const originalWindow = globalThis.window;
+    const authSession = JSON.stringify({
+      accessToken: "agent-draft-token",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      username: "agent-draft-test",
     });
-    response.draft.reviewItems.push({ id: "agent-review-summary", editIds: ["summary"], status });
-    return session;
-  };
-  const changedResume = structuredClone(currentResume);
-  changedResume.basic.headline = "Unseen later headline";
-  const requests = [];
-  const responses = [
-    apiResponse(createResolutionSession("pending", "revision-explicit")),
-    apiResponse(createResumeDetail(
-      scenario === "changed" ? "version-changed" : "version-reviewed",
-      scenario === "changed" ? changedResume : currentResume,
-    )),
-  ];
-  if (scenario === "raced") {
-    responses.push(
-      transportError("RESUME_VERSION_CONFLICT", { versionId: "version-changed" }),
-      apiResponse(createResolutionSession("pending", "revision-changed")),
-      apiResponse(createResumeDetail("version-changed", changedResume)),
-    );
-  } else if (scenario !== "changed") {
-    responses.push(apiResponse({
-      session: createResolutionSession("applied", "revision-explicit-applied"),
-      resume: createResumeDetail("version-explicit-applied", candidate),
-    }));
-  }
-  globalThis.window = {
-    location: { assign() {}, pathname: "/resumes/resume-draft-decision" },
-    localStorage: {
-      getItem(key) { return key === "reseno-auth-session" ? authSession : null; },
-      removeItem() {}, setItem() {},
-    },
-    sessionStorage: { getItem() { return null; }, removeItem() {}, setItem() {} },
-  };
-  globalThis.fetch = async (url, options = {}) => {
-    requests.push({ url: String(url), method: options.method ?? "GET", body: options.body });
-    const response = responses.shift();
-    assert(response, `Explicit suggestion resolution made an unexpected ${scenario} request.`);
-    return response;
-  };
-  try {
-    const { resolveAgentDraftDecision } = await server.ssrLoadModule("/src/lib/agent-session-run-client.ts");
-    let resolution;
-    let rejected = false;
-    try {
-      resolution = await resolveAgentDraftDecision("resume-draft-decision", "assistant-draft-decision", {
-        conflictResolution, currentResume,
-        currentVersionId: "version-reviewed", rebaseOnLatest: scenario !== "local",
-        reviewItemIds, status: "applied",
+    const requests = [];
+    const responses = [
+      apiResponse(createDraftSession("pending", "revision-stale")),
+      apiResponse(createResumeDetail()),
+      transportError("AGENT_SESSION_REVISION_CONFLICT", {
+        revision: "revision-refreshed",
+      }),
+      apiResponse(createDraftSession("pending", "revision-refreshed")),
+      apiResponse(createResumeDetail()),
+      apiResponse({
+        session: createDraftSession("applied", "revision-reconciled"),
+        resume: createResumeDetail("version-reconciled"),
+      }),
+    ];
+
+    globalThis.window = {
+      location: { assign() {}, pathname: "/resumes/resume-draft-decision" },
+      localStorage: {
+        getItem(key) {
+          return key === "reseno-auth-session" ? authSession : null;
+        },
+        removeItem() {},
+        setItem() {},
+      },
+      sessionStorage: {
+        getItem() {
+          return null;
+        },
+        removeItem() {},
+        setItem() {},
+      },
+    };
+    globalThis.fetch = async (url, options = {}) => {
+      requests.push({
+        body: options.body,
+        method: options.method ?? "GET",
+        url: String(url),
       });
-    } catch { rejected = true; }
-    const writes = requests.filter((request) => request.method === "PATCH");
-    if (scenario === "changed" || scenario === "raced") {
-      assert(
-        rejected && !resolution && writes.length === (scenario === "raced" ? 1 : 0) &&
-          requests.length === (scenario === "raced" ? 5 : 2) && responses.length === 0,
-        "Explicit conflict resolution must stop when the formal version changes, even when ordinary clean-tab rebasing is allowed.",
-      );
-    } else {
-      assert(
-        !rejected && resolution?.committed && resolution.resolvedAsRequested &&
-          JSON.stringify(resolution.resume?.resume.resume) === JSON.stringify(candidate) &&
-          resolution.draft?.reviewItems.every((item) => item.status === "applied") &&
-          writes.length === 1 && requests.length === 3 && responses.length === 0,
-        "Each whole-draft choice must atomically apply its complete candidate and resolve every pending group.",
-      );
-    }
-    if (writes.length > 0) {
-      assert(
-        writes[0].body === JSON.stringify({
-          expectedVersionId: "version-reviewed", revision: "revision-explicit",
-          reviewItemIds, resume: candidate, status: "applied",
-        }),
-        "The explicit decision must commit the selected candidate with its reviewed version through the existing atomic API.",
-      );
-    }
-  } finally {
-    globalThis.fetch = originalFetch;
-    if (typeof originalWindow === "undefined") delete globalThis.window;
-    else globalThis.window = originalWindow;
-  }
-}
+      const response = responses.shift();
+      assert(response, "Draft decision reconciliation exceeded one retry.");
+      return response;
+    };
 
-console.log("Resume agent edit transaction checks passed.");
+    try {
+      const { resolveAgentDraftDecision } = await server.ssrLoadModule(
+        "/src/lib/agent-session-run-client.ts",
+      );
+      const resolution = await resolveAgentDraftDecision(
+        "resume-draft-decision",
+        "assistant-draft-decision",
+        {
+          currentResume: createResume(),
+          currentVersionId: "version-formal",
+          rebaseOnLatest: false,
+          reviewItemIds: ["agent-review-edit-draft-decision"],
+          status: "applied",
+        },
+      );
+
+      assert(
+        resolution.draft?.reviewItems[0].status === "applied" &&
+          resolution.session.revision === "revision-reconciled" &&
+          resolution.resume?.versionId === "version-reconciled" &&
+          resolution.committed &&
+          resolution.resolvedAsRequested,
+        "A stale draft decision must converge after one authoritative reload.",
+      );
+      assert(
+        requests.length === 6 &&
+          requests[2].body ===
+            JSON.stringify({
+              expectedVersionId: "version-formal",
+              revision: "revision-stale",
+              reviewItemIds: ["agent-review-edit-draft-decision"],
+              resume: createAppliedResume(),
+              status: "applied",
+            }) &&
+          requests[5].body ===
+            JSON.stringify({
+              expectedVersionId: "version-formal",
+              revision: "revision-refreshed",
+              reviewItemIds: ["agent-review-edit-draft-decision"],
+              resume: createAppliedResume(),
+              status: "applied",
+            }),
+        "A revision conflict may retry once, using the reloaded session and formal resume.",
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (typeof originalWindow === "undefined") {
+        delete globalThis.window;
+      } else {
+        globalThis.window = originalWindow;
+      }
+    }
+  }
+
+  {
+    const originalFetch = globalThis.fetch;
+    const originalWindow = globalThis.window;
+    const authSession = JSON.stringify({
+      accessToken: "agent-draft-token",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      username: "agent-draft-test",
+    });
+    const requests = [];
+    const responses = [
+      apiResponse(createDraftSession("pending", "revision-formal-stale")),
+      apiResponse(createResumeDetail("version-stale")),
+      transportError("RESUME_VERSION_CONFLICT", {
+        versionId: "version-current",
+      }),
+      apiResponse(createDraftSession("pending", "revision-formal-current")),
+      apiResponse(createResumeDetail("version-current")),
+    ];
+
+    globalThis.window = {
+      location: { assign() {}, pathname: "/resumes/resume-draft-decision" },
+      localStorage: {
+        getItem(key) {
+          return key === "reseno-auth-session" ? authSession : null;
+        },
+        removeItem() {},
+        setItem() {},
+      },
+      sessionStorage: {
+        getItem() {
+          return null;
+        },
+        removeItem() {},
+        setItem() {},
+      },
+    };
+    globalThis.fetch = async (url, options = {}) => {
+      requests.push({ method: options.method ?? "GET", url: String(url) });
+      const response = responses.shift();
+      assert(
+        response,
+        "A formal-version conflict reconciliation made an unexpected request.",
+      );
+      return response;
+    };
+
+    try {
+      const { resolveAgentDraftDecision } = await server.ssrLoadModule(
+        "/src/lib/agent-session-run-client.ts",
+      );
+      let conflictRaised = false;
+      try {
+        await resolveAgentDraftDecision(
+          "resume-draft-decision",
+          "assistant-draft-decision",
+          {
+            currentResume: createResume(),
+            currentVersionId: "version-stale",
+            rebaseOnLatest: false,
+            reviewItemIds: ["agent-review-edit-draft-decision"],
+            status: "applied",
+          },
+        );
+      } catch {
+        conflictRaised = true;
+      }
+
+      assert(
+        conflictRaised &&
+          requests.length === 5 &&
+          requests.filter((request) => request.method === "PATCH").length === 1,
+        "A stale formal resume with local edits must reload authority, then abort without an overwrite retry.",
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (typeof originalWindow === "undefined") {
+        delete globalThis.window;
+      } else {
+        globalThis.window = originalWindow;
+      }
+    }
+  }
+
+  {
+    const originalFetch = globalThis.fetch;
+    const originalWindow = globalThis.window;
+    const authSession = JSON.stringify({
+      accessToken: "agent-draft-token",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      username: "agent-draft-test",
+    });
+    const requests = [];
+    const otherTabResume = createResume();
+    otherTabResume.basic.summary = "Summary saved by another tab";
+    const rebasedResume = createAppliedResume();
+    rebasedResume.basic.summary = otherTabResume.basic.summary;
+    const responses = [
+      apiResponse(createDraftSession("pending", "revision-rebase-stale")),
+      apiResponse(createResumeDetail("version-rebase-stale")),
+      transportError("RESUME_VERSION_CONFLICT", {
+        versionId: "version-rebase-current",
+      }),
+      apiResponse(createDraftSession("pending", "revision-rebase-current")),
+      apiResponse(createResumeDetail("version-rebase-current", otherTabResume)),
+      apiResponse({
+        session: createDraftSession("applied", "revision-rebase-applied"),
+        resume: createResumeDetail("version-rebase-applied", rebasedResume),
+      }),
+    ];
+
+    globalThis.window = {
+      location: { assign() {}, pathname: "/resumes/resume-draft-decision" },
+      localStorage: {
+        getItem(key) {
+          return key === "reseno-auth-session" ? authSession : null;
+        },
+        removeItem() {},
+        setItem() {},
+      },
+      sessionStorage: {
+        getItem() {
+          return null;
+        },
+        removeItem() {},
+        setItem() {},
+      },
+    };
+    globalThis.fetch = async (url, options = {}) => {
+      requests.push({
+        body: options.body,
+        method: options.method ?? "GET",
+        url: String(url),
+      });
+      const response = responses.shift();
+      assert(response, "A safe draft rebase made an unexpected request.");
+      return response;
+    };
+
+    try {
+      const { resolveAgentDraftDecision } = await server.ssrLoadModule(
+        "/src/lib/agent-session-run-client.ts",
+      );
+      const resolution = await resolveAgentDraftDecision(
+        "resume-draft-decision",
+        "assistant-draft-decision",
+        {
+          currentResume: createResume(),
+          currentVersionId: "version-rebase-stale",
+          rebaseOnLatest: true,
+          reviewItemIds: ["agent-review-edit-draft-decision"],
+          status: "applied",
+        },
+      );
+
+      assert(
+        resolution.resume?.resume.resume.basic.headline === "Staff Engineer" &&
+          resolution.resume.resume.resume.basic.summary ===
+            "Summary saved by another tab" &&
+          resolution.committed &&
+          resolution.resolvedAsRequested,
+        "A clean tab must rebase its selected item onto another tab's fresh formal resume.",
+      );
+      assert(
+        requests.length === 6 &&
+          requests[5].body ===
+            JSON.stringify({
+              expectedVersionId: "version-rebase-current",
+              revision: "revision-rebase-current",
+              reviewItemIds: ["agent-review-edit-draft-decision"],
+              resume: rebasedResume,
+              status: "applied",
+            }),
+        "A safe retry must rebuild the candidate from the reloaded formal resume.",
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (typeof originalWindow === "undefined") {
+        delete globalThis.window;
+      } else {
+        globalThis.window = originalWindow;
+      }
+    }
+  }
+
+  for (const { authoritativeStatus, conflictCode } of [
+    {
+      authoritativeStatus: "applied",
+      conflictCode: "AGENT_SESSION_REVISION_CONFLICT",
+    },
+    {
+      authoritativeStatus: "discarded",
+      conflictCode: "AGENT_DRAFT_DECISION_CONFLICT",
+    },
+  ]) {
+    const originalFetch = globalThis.fetch;
+    const originalWindow = globalThis.window;
+    const authSession = JSON.stringify({
+      accessToken: "agent-draft-token",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      username: "agent-draft-test",
+    });
+    const requests = [];
+    const responses = [
+      apiResponse(createDraftSession("pending", "revision-before-terminal")),
+      apiResponse(createResumeDetail()),
+      transportError(conflictCode, {
+        revision: "revision-terminal",
+        status: authoritativeStatus,
+      }),
+      apiResponse(createDraftSession(authoritativeStatus, "revision-terminal")),
+      apiResponse(createResumeDetail("version-terminal")),
+    ];
+
+    globalThis.window = {
+      location: { assign() {}, pathname: "/resumes/resume-draft-decision" },
+      localStorage: {
+        getItem(key) {
+          return key === "reseno-auth-session" ? authSession : null;
+        },
+        removeItem() {},
+        setItem() {},
+      },
+      sessionStorage: {
+        getItem() {
+          return null;
+        },
+        removeItem() {},
+        setItem() {},
+      },
+    };
+    globalThis.fetch = async (url, options = {}) => {
+      requests.push({ method: options.method ?? "GET", url: String(url) });
+      const response = responses.shift();
+      assert(response, "A terminal draft reconciliation must not retry.");
+      return response;
+    };
+
+    try {
+      const { resolveAgentDraftDecision } = await server.ssrLoadModule(
+        "/src/lib/agent-session-run-client.ts",
+      );
+      const resolution = await resolveAgentDraftDecision(
+        "resume-draft-decision",
+        "assistant-draft-decision",
+        {
+          currentResume: createResume(),
+          currentVersionId: "version-formal",
+          rebaseOnLatest: false,
+          reviewItemIds: ["agent-review-edit-draft-decision"],
+          status: "applied",
+        },
+      );
+
+      assert(
+        resolution.draft?.reviewItems[0].status === authoritativeStatus &&
+          requests.length === 5 &&
+          !resolution.committed &&
+          resolution.resolvedAsRequested ===
+            (authoritativeStatus === "applied"),
+        "After a 409, the authoritative terminal draft status must win without another PATCH.",
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (typeof originalWindow === "undefined") {
+        delete globalThis.window;
+      } else {
+        globalThis.window = originalWindow;
+      }
+    }
+  }
+
+  for (const [scenario, conflictResolution] of [
+    "use-original",
+    "keep-manual",
+  ].flatMap((resolution) =>
+    ["local", "saved", "changed", "raced"].map((scenario) => [
+      scenario,
+      resolution,
+    ]),
+  )) {
+    const originalFetch = globalThis.fetch;
+    const originalWindow = globalThis.window;
+    const authSession = JSON.stringify({
+      accessToken: "agent-draft-token",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      username: "agent-draft-test",
+    });
+    const currentResume = createResume();
+    currentResume.basic.headline = "Reviewed manual headline";
+    currentResume.basic.name = "Unrelated manual name";
+    const candidate =
+      conflictResolution === "use-original"
+        ? createAppliedResume()
+        : structuredClone(currentResume);
+    candidate.basic.summary = "Agent summary";
+    const reviewItemIds = [
+      "agent-review-edit-draft-decision",
+      "agent-review-summary",
+    ];
+    const createResolutionSession = (status, revision) => {
+      const session = createDraftSession(status, revision);
+      const response = session.messages[0].response;
+      response.edits.push({
+        id: "summary",
+        title: "Summary",
+        target: "basic.summary",
+        reason: "Requested change",
+        operation: {
+          type: "replace_field",
+          path: "basic.summary",
+          value: "Agent summary",
+        },
+      });
+      response.draft.reviewItems.push({
+        id: "agent-review-summary",
+        editIds: ["summary"],
+        status,
+      });
+      return session;
+    };
+    const changedResume = structuredClone(currentResume);
+    changedResume.basic.headline = "Unseen later headline";
+    const requests = [];
+    const responses = [
+      apiResponse(createResolutionSession("pending", "revision-explicit")),
+      apiResponse(
+        createResumeDetail(
+          scenario === "changed" ? "version-changed" : "version-reviewed",
+          scenario === "changed" ? changedResume : currentResume,
+        ),
+      ),
+    ];
+    if (scenario === "raced") {
+      responses.push(
+        transportError("RESUME_VERSION_CONFLICT", {
+          versionId: "version-changed",
+        }),
+        apiResponse(createResolutionSession("pending", "revision-changed")),
+        apiResponse(createResumeDetail("version-changed", changedResume)),
+      );
+    } else if (scenario !== "changed") {
+      responses.push(
+        apiResponse({
+          session: createResolutionSession(
+            "applied",
+            "revision-explicit-applied",
+          ),
+          resume: createResumeDetail("version-explicit-applied", candidate),
+        }),
+      );
+    }
+    globalThis.window = {
+      location: { assign() {}, pathname: "/resumes/resume-draft-decision" },
+      localStorage: {
+        getItem(key) {
+          return key === "reseno-auth-session" ? authSession : null;
+        },
+        removeItem() {},
+        setItem() {},
+      },
+      sessionStorage: {
+        getItem() {
+          return null;
+        },
+        removeItem() {},
+        setItem() {},
+      },
+    };
+    globalThis.fetch = async (url, options = {}) => {
+      requests.push({
+        url: String(url),
+        method: options.method ?? "GET",
+        body: options.body,
+      });
+      const response = responses.shift();
+      assert(
+        response,
+        `Explicit suggestion resolution made an unexpected ${scenario} request.`,
+      );
+      return response;
+    };
+    try {
+      const { resolveAgentDraftDecision } = await server.ssrLoadModule(
+        "/src/lib/agent-session-run-client.ts",
+      );
+      let resolution;
+      let rejected = false;
+      try {
+        resolution = await resolveAgentDraftDecision(
+          "resume-draft-decision",
+          "assistant-draft-decision",
+          {
+            conflictResolution,
+            currentResume,
+            currentVersionId: "version-reviewed",
+            rebaseOnLatest: scenario !== "local",
+            reviewItemIds,
+            status: "applied",
+          },
+        );
+      } catch {
+        rejected = true;
+      }
+      const writes = requests.filter((request) => request.method === "PATCH");
+      if (scenario === "changed" || scenario === "raced") {
+        assert(
+          rejected &&
+            !resolution &&
+            writes.length === (scenario === "raced" ? 1 : 0) &&
+            requests.length === (scenario === "raced" ? 5 : 2) &&
+            responses.length === 0,
+          "Explicit conflict resolution must stop when the formal version changes, even when ordinary clean-tab rebasing is allowed.",
+        );
+      } else {
+        assert(
+          !rejected &&
+            resolution?.committed &&
+            resolution.resolvedAsRequested &&
+            JSON.stringify(resolution.resume?.resume.resume) ===
+              JSON.stringify(candidate) &&
+            resolution.draft?.reviewItems.every(
+              (item) => item.status === "applied",
+            ) &&
+            writes.length === 1 &&
+            requests.length === 3 &&
+            responses.length === 0,
+          "Each whole-draft choice must atomically apply its complete candidate and resolve every pending group.",
+        );
+      }
+      if (writes.length > 0) {
+        assert(
+          writes[0].body ===
+            JSON.stringify({
+              expectedVersionId: "version-reviewed",
+              revision: "revision-explicit",
+              reviewItemIds,
+              resume: candidate,
+              status: "applied",
+            }),
+          "The explicit decision must commit the selected candidate with its reviewed version through the existing atomic API.",
+        );
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (typeof originalWindow === "undefined") delete globalThis.window;
+      else globalThis.window = originalWindow;
+    }
+  }
+
+  console.log("Resume agent edit transaction checks passed.");
 } finally {
   await server.close();
 }

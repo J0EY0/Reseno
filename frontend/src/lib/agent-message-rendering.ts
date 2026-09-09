@@ -1,12 +1,13 @@
 import type { AgentResumeEditSuggestion } from "@/types/api";
 
-const MARKDOWN_BLOCK_PATTERN =
-  /(^|\n)\s*(#{1,6}\s|[-*+]\s|\d+\.\s|>|```)/;
+const MARKDOWN_BLOCK_PATTERN = /(^|\n)\s*(#{1,6}\s|[-*+]\s|\d+\.\s|>|```)/;
 const MARKDOWN_INLINE_PATTERN =
   /`|[[\]]|(\*\*|__)[^\n]+?\1|(?:^|[\s\u3000])([*_])[^*_\n]+?\2/;
 
 export function isPlainAgentText(text: string) {
-  return !MARKDOWN_BLOCK_PATTERN.test(text) && !MARKDOWN_INLINE_PATTERN.test(text);
+  return (
+    !MARKDOWN_BLOCK_PATTERN.test(text) && !MARKDOWN_INLINE_PATTERN.test(text)
+  );
 }
 
 function addFieldLabel(
@@ -47,9 +48,8 @@ export function getAgentDisplayFieldLabels(
   const displayLabels = new Map<string, string>();
 
   for (const [token, labels] of labelsByToken) {
-    const uniqueLabel = labels.size === 1
-      ? labels.values().next().value
-      : undefined;
+    const uniqueLabel =
+      labels.size === 1 ? labels.values().next().value : undefined;
     if (uniqueLabel) {
       displayLabels.set(token, uniqueLabel);
       continue;

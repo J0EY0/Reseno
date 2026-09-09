@@ -5,9 +5,8 @@ declare module "pdfjs-dist/build/pdf.mjs" {
     workerSrc: string;
   };
 
-  export function getDocument(source: {
-    data: Uint8Array;
-  }): {
+  export function getDocument(source: { data: Uint8Array }): {
+    destroy(): Promise<void>;
     promise: Promise<{
       numPages: number;
       getPage(pageNumber: number): Promise<{

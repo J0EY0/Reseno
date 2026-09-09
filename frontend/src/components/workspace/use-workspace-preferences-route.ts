@@ -4,7 +4,7 @@ import { useWorkspaceLateralRouteData } from "@/components/workspace/use-workspa
 import { useWorkspacePreferences } from "@/components/workspace/workspace-preferences-context";
 import { fetchWorkspacePageData } from "@/components/workspace/workspace-route-preparation";
 import { getMessagesSync, type Locale } from "@/i18n";
-import { isAbortError, isApiErrorToastShown } from "@/lib/api-client";
+import { isAbortError } from "@/lib/api-client";
 import { normalizeModelConfigs } from "@/lib/model-config";
 import {
   dismissWorkspaceLoadError,
@@ -45,7 +45,7 @@ export function useWorkspacePreferencesRoute({
   );
   const modelConfigsRef = useRef(modelConfigs);
   const routeData = useMemo(
-    () => agentSettings ? { agentSettings, modelConfigs, theme } : null,
+    () => (agentSettings ? { agentSettings, modelConfigs, theme } : null),
     [agentSettings, modelConfigs, theme],
   );
   const loadRouteData = useCallback(
@@ -65,7 +65,10 @@ export function useWorkspacePreferencesRoute({
           return;
         }
 
-        const nextModelConfigs = normalizeModelConfigs(source.data, initialLocaleRef.current);
+        const nextModelConfigs = normalizeModelConfigs(
+          source.data,
+          initialLocaleRef.current,
+        );
         modelConfigsRef.current = nextModelConfigs;
         setModelConfigs(nextModelConfigs);
         setHasLoaded(true);
@@ -79,11 +82,10 @@ export function useWorkspacePreferencesRoute({
         }
 
         console.error(`Failed to load the ${kind} workspace route.`, error);
-        if (!isApiErrorToastShown(error)) {
-          showWorkspaceLoadError(
-            getMessagesSync(initialLocaleRef.current).apiMessages.REQUEST_FAILED,
-          );
-        }
+        showWorkspaceLoadError(
+          error,
+          getMessagesSync(initialLocaleRef.current).apiMessages.REQUEST_FAILED,
+        );
         setHasLoaded(false);
         setHasLoadError(true);
       } finally {

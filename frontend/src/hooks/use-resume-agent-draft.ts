@@ -6,7 +6,8 @@ import {
   waitForAgentDraftReviewExit,
 } from "@/hooks/use-agent-draft-review-selection";
 import type { AppMessages } from "@/i18n";
-import { isAbortError, isApiErrorToastShown } from "@/lib/api-client";
+import { isAbortError } from "@/lib/api-client";
+import { notifyApiError } from "@/lib/api-error-notifier";
 import {
   createProvisionalAgentDraftReviewItems,
   createReviewItemIdByOperationId,
@@ -168,8 +169,8 @@ export function useResumeAgentDraft({
     const shouldClear = (draft: AgentDraftState | null) =>
       Boolean(
         draft &&
-          draft.pendingCount > 0 &&
-          (!sourceMessageId || draft.sourceMessageId === sourceMessageId),
+        draft.pendingCount > 0 &&
+        (!sourceMessageId || draft.sourceMessageId === sourceMessageId),
       );
 
     setStoredAgentDraft((draft) => {
@@ -238,10 +239,10 @@ export function useResumeAgentDraft({
     const shouldRollback = (draft: AgentDraftState | null) =>
       Boolean(
         draft &&
-          draft.pendingCount > 0 &&
-          (sourceMessageId
-            ? draft.sourceMessageId === sourceMessageId
-            : draft.transactionState === "provisional"),
+        draft.pendingCount > 0 &&
+        (sourceMessageId
+          ? draft.sourceMessageId === sourceMessageId
+          : draft.transactionState === "provisional"),
       );
 
     setStoredAgentDraft((draft) => {
@@ -382,26 +383,28 @@ export function useResumeAgentDraft({
       if (!selection || selection.isTransitioning) {
         return null;
       }
-      const selectedItem = !conflictResolution && selection.mode === "single"
-        ? previousPendingItems.find(
-            (item) => item.id === selection.selectedItemId,
-          ) ?? previousPendingItems[0]
-        : null;
+      const selectedItem =
+        !conflictResolution && selection.mode === "single"
+          ? (previousPendingItems.find(
+              (item) => item.id === selection.selectedItemId,
+            ) ?? previousPendingItems[0])
+          : null;
       const scopeItems = selectedItem ? [selectedItem] : previousPendingItems;
       if (scopeItems.length === 0) {
         return null;
       }
       const reviewItemIds = scopeItems.map((item) => item.id);
-      const candidate = status === "applied"
-        ? projectAgentDraftReview({
-            baseResume: draftBase.resume,
-            conflictResolution,
-            currentResume: currentResumeRef.current,
-            edits: draft.edits,
-            reviewItemIds,
-            reviewItems: draft.reviewItems,
-          })
-        : null;
+      const candidate =
+        status === "applied"
+          ? projectAgentDraftReview({
+              baseResume: draftBase.resume,
+              conflictResolution,
+              currentResume: currentResumeRef.current,
+              edits: draft.edits,
+              reviewItemIds,
+              reviewItems: draft.reviewItems,
+            })
+          : null;
       if (candidate?.errors.length) {
         toast.error(messages.agentDraftBatchRejected, {
           closeButton: true,
@@ -484,9 +487,7 @@ export function useResumeAgentDraft({
           return null;
         }
         console.error("Failed to persist the Agent draft decision.", error);
-        if (!isApiErrorToastShown(error)) {
-          toast.error(messages.agentRequestFailed, { closeButton: true });
-        }
+        notifyApiError(error, messages.agentRequestFailed);
         return null;
       } finally {
         if (draftDecisionTokenRef.current === decisionToken) {
@@ -534,7 +535,10 @@ export function useResumeAgentDraft({
     };
     const allProjection = previewAgentDraftReview(projectionInput);
     const projection = selectedItem
-      ? previewAgentDraftReview({ ...projectionInput, reviewItemIds: [selectedItem.id] })
+      ? previewAgentDraftReview({
+          ...projectionInput,
+          reviewItemIds: [selectedItem.id],
+        })
       : allProjection;
 
     return {

@@ -1,29 +1,29 @@
-import { Trash2, Upload, UserRound } from 'lucide-react'
-import type { ChangeEvent } from 'react'
+import { Trash2, Upload, UserRound } from "lucide-react";
+import type { ChangeEvent } from "react";
 
-import type { AppMessages } from '@/i18n'
-import { normalizeContactFieldType } from '@/lib/contact-links'
-import { getInitials } from '@/lib/resume'
-import { getRichTextPlainText } from '@/lib/rich-text'
+import type { AppMessages } from "@/i18n";
+import { normalizeContactFieldType } from "@/lib/contact-links";
+import { getInitials } from "@/lib/resume";
+import { getRichTextPlainText } from "@/lib/rich-text";
 import type {
   ContactFieldType,
   CustomField,
   ResumeBasicInfo,
-} from '@/types/resume'
+} from "@/types/resume";
 
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '@/components/ui/select'
+} from "@/components/ui/select";
 
-import { EditorCardShell } from './editor-card-shell'
-import { FormField } from './form-field'
-import { InlineTextInput } from './inline-text-input'
+import { EditorCardShell } from "./editor-card-shell";
+import { FormField } from "./form-field";
+import { InlineTextInput } from "./inline-text-input";
 
 export function BasicInfoCard({
   t,
@@ -37,25 +37,25 @@ export function BasicInfoCard({
   onAvatarUpload,
   onRemoveAvatar,
 }: {
-  t: AppMessages
-  basic: ResumeBasicInfo
-  collapsed: boolean
-  onToggle: () => void
+  t: AppMessages;
+  basic: ResumeBasicInfo;
+  collapsed: boolean;
+  onToggle: () => void;
   onUpdateBasic: <K extends keyof ResumeBasicInfo>(
     field: K,
     value: ResumeBasicInfo[K],
-  ) => void
-  onUpdateCustomField: <K extends keyof Omit<CustomField, 'id'>>(
+  ) => void;
+  onUpdateCustomField: <K extends keyof Omit<CustomField, "id">>(
     id: string,
     field: K,
     value: CustomField[K],
-  ) => void
-  onAddCustomField: () => void
-  onRemoveCustomField: (id: string) => void
-  onAvatarUpload: (event: ChangeEvent<HTMLInputElement>) => void
-  onRemoveAvatar: () => void
+  ) => void;
+  onAddCustomField: () => void;
+  onRemoveCustomField: (id: string) => void;
+  onAvatarUpload: (event: ChangeEvent<HTMLInputElement>) => void;
+  onRemoveAvatar: () => void;
 }) {
-  const hasAvatar = Boolean(basic.avatar.trim())
+  const hasAvatar = Boolean(basic.avatar.trim());
 
   return (
     <EditorCardShell
@@ -70,7 +70,11 @@ export function BasicInfoCard({
           <div className="relative">
             <div className="flex aspect-[4/5] items-center justify-center overflow-hidden rounded-2xl border border-border bg-gradient-to-br from-primary/12 to-amber-200/30 text-2xl font-semibold text-primary">
               {hasAvatar ? (
-                <img src={basic.avatar} alt={getRichTextPlainText(basic.name)} className="size-full object-cover" />
+                <img
+                  src={basic.avatar}
+                  alt={getRichTextPlainText(basic.name)}
+                  className="size-full object-cover"
+                />
               ) : (
                 <span>{getInitials(basic.name)}</span>
               )}
@@ -100,7 +104,12 @@ export function BasicInfoCard({
                 {t.uploadAvatar}
               </span>
             </Button>
-            <input type="file" accept="image/*" hidden onChange={onAvatarUpload} />
+            <input
+              type="file"
+              accept="image/*"
+              hidden
+              onChange={onAvatarUpload}
+            />
           </label>
         </div>
 
@@ -110,7 +119,7 @@ export function BasicInfoCard({
               t={t}
               aria-label={t.fieldLabels.name}
               value={basic.name}
-              onChange={(value) => onUpdateBasic('name', value)}
+              onChange={(value) => onUpdateBasic("name", value)}
             />
           </FormField>
           <FormField label={t.fieldLabels.headline}>
@@ -118,7 +127,7 @@ export function BasicInfoCard({
               t={t}
               aria-label={t.fieldLabels.headline}
               value={basic.headline}
-              onChange={(value) => onUpdateBasic('headline', value)}
+              onChange={(value) => onUpdateBasic("headline", value)}
             />
           </FormField>
           <FormField label={t.fieldLabels.phone}>
@@ -127,7 +136,7 @@ export function BasicInfoCard({
               type="tel"
               autoComplete="tel"
               value={basic.phone}
-              onChange={(event) => onUpdateBasic('phone', event.target.value)}
+              onChange={(event) => onUpdateBasic("phone", event.target.value)}
             />
           </FormField>
           <FormField label={t.fieldLabels.email}>
@@ -136,7 +145,7 @@ export function BasicInfoCard({
               type="email"
               autoComplete="email"
               value={basic.email}
-              onChange={(event) => onUpdateBasic('email', event.target.value)}
+              onChange={(event) => onUpdateBasic("email", event.target.value)}
             />
           </FormField>
           <FormField label={t.fieldLabels.location}>
@@ -144,10 +153,13 @@ export function BasicInfoCard({
               t={t}
               aria-label={t.fieldLabels.location}
               value={basic.location}
-              onChange={(value) => onUpdateBasic('location', value)}
+              onChange={(value) => onUpdateBasic("location", value)}
             />
           </FormField>
-          <FormField label={t.fieldLabels.summary} className="[grid-column:1/-1]">
+          <FormField
+            label={t.fieldLabels.summary}
+            className="[grid-column:1/-1]"
+          >
             <InlineTextInput
               t={t}
               aria-label={t.fieldLabels.summary}
@@ -155,7 +167,7 @@ export function BasicInfoCard({
               className="min-h-24"
               placeholder={t.placeholders.summary}
               value={basic.summary}
-              onChange={(value) => onUpdateBasic('summary', value)}
+              onChange={(value) => onUpdateBasic("summary", value)}
             />
           </FormField>
         </div>
@@ -165,7 +177,12 @@ export function BasicInfoCard({
         <p className="text-xs font-medium text-muted-foreground">
           {t.customFields}
         </p>
-        <Button type="button" variant="outline" size="sm" onClick={onAddCustomField}>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={onAddCustomField}
+        >
           {t.addField}
         </Button>
       </div>
@@ -182,7 +199,7 @@ export function BasicInfoCard({
                 onValueChange={(value) =>
                   onUpdateCustomField(
                     field.id,
-                    'type',
+                    "type",
                     normalizeContactFieldType(value),
                   )
                 }
@@ -207,24 +224,24 @@ export function BasicInfoCard({
               <Input
                 value={field.label}
                 onChange={(event) =>
-                  onUpdateCustomField(field.id, 'label', event.target.value)
+                  onUpdateCustomField(field.id, "label", event.target.value)
                 }
               />
             </FormField>
             <FormField label={t.fieldLabels.fieldValue}>
               <Input
                 type={
-                  field.type === 'email'
-                    ? 'email'
-                    : field.type === 'phone'
-                      ? 'tel'
-                      : field.type === 'url'
-                        ? 'url'
-                        : 'text'
+                  field.type === "email"
+                    ? "email"
+                    : field.type === "phone"
+                      ? "tel"
+                      : field.type === "url"
+                        ? "url"
+                        : "text"
                 }
                 value={field.value}
                 onChange={(event) =>
-                  onUpdateCustomField(field.id, 'value', event.target.value)
+                  onUpdateCustomField(field.id, "value", event.target.value)
                 }
               />
             </FormField>
@@ -235,12 +252,11 @@ export function BasicInfoCard({
               className="self-end"
               onClick={() => onRemoveCustomField(field.id)}
             >
-              <span className="sr-only">{t.removeField}</span>
-              ×
+              <span className="sr-only">{t.removeField}</span>×
             </Button>
           </div>
         ))}
       </div>
     </EditorCardShell>
-  )
+  );
 }

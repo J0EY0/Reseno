@@ -1,4 +1,10 @@
-import { startTransition, useEffect, useEffectEvent, useRef, useState } from "react";
+import {
+  startTransition,
+  useEffect,
+  useEffectEvent,
+  useRef,
+  useState,
+} from "react";
 import { useNavigate } from "react-router-dom";
 
 import {
@@ -9,10 +15,13 @@ import {
   refreshAuthSession,
   setupAuthOwner,
 } from "@/lib/auth";
+import { isApiErrorCode } from "@/lib/api-client";
+import { notifyApiError } from "@/lib/api-error-notifier";
 import {
-  isApiErrorCode,
-  isApiErrorToastShown,
-} from "@/lib/api-client";
+  AUTH_SESSION_INVALIDATED_EVENT,
+  AUTH_SESSION_RESTORED_EVENT,
+} from "@/lib/api-auth";
+import { getAuthEnvironmentError } from "@/lib/auth-environment";
 import { AUTH_SESSION_KEY, getAccessToken } from "@/lib/auth-session";
 import {
   createWorkspaceLateralRouteHandoff,
@@ -23,8 +32,12 @@ type AuthGateState =
   | { phase: "loading" }
   | { phase: "setup" }
   | { phase: "login" }
-  | { phase: "app" }
-  | { phase: "error" };
+  | { phase: "app"; sessionExpired?: boolean }
+  | { phase: "error" }
+  | {
+      phase: "unsupported";
+      reason: NonNullable<ReturnType<typeof getAuthEnvironmentError>>;
+    };
 
 type AuthDestinationCommit = {
   destination: "resume" | "settings";
@@ -48,13 +61,20 @@ export function useAuthGate({
   requestFallbackError: string;
 }) {
   const navigate = useNavigate();
-  const [authGate, setAuthGate] = useState<AuthGateState>({ phase: "loading" });
+  const [authGate, setAuthGate] = useState<AuthGateState>(() => {
+    const reason = getAuthEnvironmentError();
+    return reason ? { phase: "unsupported", reason } : { phase: "loading" };
+  });
   const [authCheckAttempt, setAuthCheckAttempt] = useState(0);
   const [hasOAuthLoginCallback] = useState(() => {
     const params = new URLSearchParams(window.location.hash.slice(1));
-    return window.location.pathname === "/login" && (params.has("oauth_code") || params.has("oauth_error"));
+    return (
+      window.location.pathname === "/login" &&
+      (params.has("oauth_code") || params.has("oauth_error"))
+    );
   });
-  const [destinationCommit, setDestinationCommit] = useState<AuthDestinationCommit | null>(null);
+  const [destinationCommit, setDestinationCommit] =
+    useState<AuthDestinationCommit | null>(null);
   const commitRef = useRef<{
     request: AuthDestinationCommit;
     cancel: () => void;
@@ -64,9 +84,12 @@ export function useAuthGate({
     if (hasSession && authGate.phase === "login") {
       onAuthenticated();
       setAuthGate({ phase: "app" });
-    } else if (!hasSession && authGate.phase === "app") {
-      onLoggedOut();
-      setAuthGate({ phase: "login" });
+    } else if (authGate.phase === "app") {
+      if (hasSession && authGate.sessionExpired) {
+        restoreWorkspaceSession();
+      } else if (!hasSession && !authGate.sessionExpired) {
+        setAuthGate({ phase: "app", sessionExpired: true });
+      }
     }
   });
 
@@ -83,15 +106,27 @@ export function useAuthGate({
       if (event.persisted) synchronizeAuthSession();
     };
 
+    const handleSessionChange = () => synchronizeAuthSession();
+    window.addEventListener(
+      AUTH_SESSION_INVALIDATED_EVENT,
+      handleSessionChange,
+    );
+    window.addEventListener("focus", handleSessionChange);
     window.addEventListener("storage", handleStorage);
     window.addEventListener("pageshow", handlePageShow);
     return () => {
+      window.removeEventListener(
+        AUTH_SESSION_INVALIDATED_EVENT,
+        handleSessionChange,
+      );
+      window.removeEventListener("focus", handleSessionChange);
       window.removeEventListener("storage", handleStorage);
       window.removeEventListener("pageshow", handlePageShow);
     };
   }, []);
 
   useEffect(() => {
+    if (getAuthEnvironmentError()) return;
     let cancelled = false;
 
     void getAuthSetupStatus()
@@ -121,29 +156,35 @@ export function useAuthGate({
     };
   }, [authCheckAttempt, hasOAuthLoginCallback]);
 
-  useEffect(() => () => {
-    commitRef.current?.cancel();
-  }, []);
+  useEffect(
+    () => () => {
+      commitRef.current?.cancel();
+    },
+    [],
+  );
 
   useEffect(() => {
-    if (authGate.phase !== "app") {
+    if (authGate.phase !== "app" || authGate.sessionExpired) {
       return;
     }
 
-    const refreshInterval = window.setInterval(() => {
-      void refreshAuthSession().then(
-        () => synchronizeAuthSession(),
-        (error) => {
-          console.error("Failed to refresh auth session.", error);
-          synchronizeAuthSession();
-        },
-      );
-    }, 4 * 60 * 60 * 1000);
+    const refreshInterval = window.setInterval(
+      () => {
+        void refreshAuthSession().then(
+          () => synchronizeAuthSession(),
+          (error) => {
+            console.error("Failed to refresh auth session.", error);
+            synchronizeAuthSession();
+          },
+        );
+      },
+      4 * 60 * 60 * 1000,
+    );
 
     return () => {
       window.clearInterval(refreshInterval);
     };
-  }, [authGate.phase]);
+  }, [authGate]);
 
   async function login(credentials: { username: string; password: string }) {
     try {
@@ -153,10 +194,11 @@ export function useAuthGate({
 
       return { ok: true as const };
     } catch (error) {
+      notifyApiError(error, loginFallbackError);
       return {
         ok: false as const,
         error: error instanceof Error ? error.message : loginFallbackError,
-        errorShown: isApiErrorToastShown(error),
+        errorShown: true,
       };
     }
   }
@@ -177,10 +219,11 @@ export function useAuthGate({
         setAuthGate({ phase: "login" });
       }
 
+      notifyApiError(error, requestFallbackError);
       return {
         ok: false as const,
         error: error instanceof Error ? error.message : requestFallbackError,
-        errorShown: isApiErrorToastShown(error),
+        errorShown: true,
       };
     }
   }
@@ -198,10 +241,21 @@ export function useAuthGate({
     setAuthCheckAttempt((current) => current + 1);
   }
 
+  function restoreWorkspaceSession() {
+    setAuthGate({ phase: "app" });
+    window.dispatchEvent(new Event(AUTH_SESSION_RESTORED_EVENT));
+  }
+
   async function acceptSession(
     destination: "resume" | "settings" = "resume",
     signal = new AbortController().signal,
   ) {
+    if (authGate.phase === "app" && authGate.sessionExpired) {
+      signal.throwIfAborted();
+      if (!loadAuthSession()) throw new Error(requestFallbackError);
+      restoreWorkspaceSession();
+      return;
+    }
     const [prepared] = await Promise.all([
       prepareDestination(destination, { signal }).catch((error: unknown) => {
         signal.throwIfAborted();

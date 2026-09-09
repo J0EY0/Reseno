@@ -1,9 +1,6 @@
 import { lazy, Suspense } from "react";
 
-import {
-  formatRichTextAsPlainText,
-  getInlineTextHtml,
-} from "@/lib/rich-text";
+import { formatRichTextAsPlainText, getInlineTextHtml } from "@/lib/rich-text";
 import { cn } from "@/lib/utils";
 import type { ResumeDraftDiff } from "@/types/resume";
 
@@ -26,10 +23,7 @@ function DiffTextFallback({
 }) {
   return (
     <span
-      className={cn(
-        "resume-diff-field resume-diff-field--whole",
-        className,
-      )}
+      className={cn("resume-diff-field resume-diff-field--whole", className)}
       data-resume-diff-path={diffs.map((diff) => diff.path).join(" ")}
     >
       {richText ? (
@@ -66,8 +60,10 @@ export function ResumeDiffText({
   if (
     richText &&
     (formatRichTextAsPlainText(value) ||
-      diffs.some((diff) =>
-        typeof diff.before === "string" && formatRichTextAsPlainText(diff.before),
+      diffs.some(
+        (diff) =>
+          typeof diff.before === "string" &&
+          formatRichTextAsPlainText(diff.before),
       ))
   ) {
     return (

@@ -37,8 +37,9 @@ export function NewResumeDialog({
   onCreateResume: (documentLocale: DocumentLocale) => void;
 }) {
   const [isOpen, setIsOpen] = useState(false);
-  const [documentLocale, setDocumentLocale] =
-    useState<DocumentLocale | null>(null);
+  const [documentLocale, setDocumentLocale] = useState<DocumentLocale | null>(
+    null,
+  );
 
   function handleOpenChange(open: boolean) {
     setIsOpen(open);

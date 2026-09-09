@@ -259,10 +259,13 @@ export function AgentDraftReviewDock({
       }
 
       setIsLeaving(true);
-      exitTimer = window.setTimeout(() => {
-        setRenderedView(null);
-        setIsLeaving(false);
-      }, prefersReducedMotion() ? 0 : DOCK_EXIT_DURATION_MS);
+      exitTimer = window.setTimeout(
+        () => {
+          setRenderedView(null);
+          setIsLeaving(false);
+        },
+        prefersReducedMotion() ? 0 : DOCK_EXIT_DURATION_MS,
+      );
     });
 
     return () => {
@@ -278,10 +281,6 @@ export function AgentDraftReviewDock({
   }
 
   return (
-    <DraftReviewDockContent
-      isLeaving={isLeaving}
-      t={t}
-      view={renderedView}
-    />
+    <DraftReviewDockContent isLeaving={isLeaving} t={t} view={renderedView} />
   );
 }

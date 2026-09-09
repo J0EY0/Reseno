@@ -18,17 +18,28 @@ const server = await createServer({
 });
 
 try {
-  const {
-    compactResumeDraftDiffs,
-    formatAgentDiffValue,
-  } = await server.ssrLoadModule("/src/lib/agent-diff-value.ts");
-  const { getInlineTextHtml, getRichTextPlainText } = await server.ssrLoadModule("/src/lib/rich-text.ts");
+  const { compactResumeDraftDiffs, formatAgentDiffValue } =
+    await server.ssrLoadModule("/src/lib/agent-diff-value.ts");
+  const { getInlineTextHtml, getRichTextPlainText } =
+    await server.ssrLoadModule("/src/lib/rich-text.ts");
   const { getInitials } = await server.ssrLoadModule("/src/lib/resume.ts");
-  assert.equal(getInlineTextHtml("R&D <Component>"), "R&amp;D &lt;Component&gt;");
-  assert.equal(getInlineTextHtml("<strong>literal</strong>"), "&lt;strong&gt;literal&lt;/strong&gt;");
-  assert.equal(getRichTextPlainText("<p>H<sub>2</sub>O x<sup>2</sup></p>"), "H2O x2");
+  assert.equal(
+    getInlineTextHtml("R&D <Component>"),
+    "R&amp;D &lt;Component&gt;",
+  );
+  assert.equal(
+    getInlineTextHtml("<strong>literal</strong>"),
+    "&lt;strong&gt;literal&lt;/strong&gt;",
+  );
+  assert.equal(
+    getRichTextPlainText("<p>H<sub>2</sub>O x<sup>2</sup></p>"),
+    "H2O x2",
+  );
   assert.equal(getInitials("<p><strong>Ada</strong> Lovelace</p>"), "AL");
-  assert.equal(formatAgentDiffValue("<p><sup>Lead</sup> <sub>Engineer</sub></p>"), "Lead Engineer");
+  assert.equal(
+    formatAgentDiffValue("<p><sup>Lead</sup> <sub>Engineer</sub></p>"),
+    "Lead Engineer",
+  );
   const value = formatAgentDiffValue({
     id: "project-1",
     name: "Reseno",
@@ -52,10 +63,16 @@ try {
     "Built the editor",
     "Added agent workflows",
   ]) {
-    assert.match(value, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(
+      value,
+      new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+    );
   }
   assert.doesNotMatch(value, /project-1/);
-  assert.match(formatAgentDiffValue({ content: "English · CET-6" }), /English · CET-6/);
+  assert.match(
+    formatAgentDiffValue({ content: "English · CET-6" }),
+    /English · CET-6/,
+  );
   assert.equal(formatAgentDiffValue(""), "—");
   assert.equal(formatAgentDiffValue([]), "—");
   assert.match(formatAgentDiffValue({ highlights: [] }), /highlights: —/);
@@ -66,7 +83,9 @@ try {
     "Ordinary text containing angle brackets must not be treated as rich text.",
   );
   assert.equal(
-    formatAgentDiffValue("Explain the literal <strong>text</strong> markup to the user."),
+    formatAgentDiffValue(
+      "Explain the literal <strong>text</strong> markup to the user.",
+    ),
     "Explain the literal <strong>text</strong> markup to the user.",
     "Inline markup mentioned inside ordinary text must remain literal text.",
   );
@@ -91,7 +110,9 @@ try {
     "Decimal and hexadecimal entities emitted by canonical serializers must be decoded.",
   );
   assert.equal(
-    formatAgentDiffValue("<p><strong>React</strong> and <em>TypeScript</em></p>"),
+    formatAgentDiffValue(
+      "<p><strong>React</strong> and <em>TypeScript</em></p>",
+    ),
     "React and TypeScript",
     "Canonical paragraph and inline formatting tags must not leak into the summary.",
   );
@@ -148,15 +169,17 @@ try {
       target: "basic.summary",
       reason: "First step",
       operation: { type: "replace_field", path: "basic.summary", value: "B" },
-      diffs: [{
-        id: "diff-summary-1",
-        operationId: "edit-summary-1",
-        path: "basic.summary",
-        kind: "modified",
-        label: "Summary",
-        before: "A",
-        after: "B",
-      }],
+      diffs: [
+        {
+          id: "diff-summary-1",
+          operationId: "edit-summary-1",
+          path: "basic.summary",
+          kind: "modified",
+          label: "Summary",
+          before: "A",
+          after: "B",
+        },
+      ],
     },
     {
       id: "edit-summary-2",
@@ -164,15 +187,17 @@ try {
       target: "basic.summary",
       reason: "Second step",
       operation: { type: "replace_field", path: "basic.summary", value: "C" },
-      diffs: [{
-        id: "diff-summary-2",
-        operationId: "edit-summary-2",
-        path: "basic.summary",
-        kind: "modified",
-        label: "Summary",
-        before: "B",
-        after: "C",
-      }],
+      diffs: [
+        {
+          id: "diff-summary-2",
+          operationId: "edit-summary-2",
+          path: "basic.summary",
+          kind: "modified",
+          label: "Summary",
+          before: "B",
+          after: "C",
+        },
+      ],
     },
   ];
 
@@ -321,23 +346,25 @@ try {
   assert.equal(stillPendingMarkup, "");
   const warningMarkup = renderSummary(
     [{ id: "review-1", editIds: ["edit-1"], status: "pending" }],
-    [{
-      state: "output-available",
-      output: {
-        qualityIssues: [
-          {
-            code: "target_requirements_not_covered",
-            severity: "warning",
-            target: "resume",
-          },
-          {
-            code: "unsupported_edit_claim",
-            severity: "warning",
-            target: "sections.project.items.project-1",
-          },
-        ],
+    [
+      {
+        state: "output-available",
+        output: {
+          qualityIssues: [
+            {
+              code: "target_requirements_not_covered",
+              severity: "warning",
+              target: "resume",
+            },
+            {
+              code: "unsupported_edit_claim",
+              severity: "warning",
+              target: "sections.project.items.project-1",
+            },
+          ],
+        },
       },
-    }],
+    ],
   );
   assert.match(warningMarkup, /2 warnings/);
   assert.match(warningMarkup, /Target coverage/);
@@ -356,11 +383,13 @@ try {
     agentDiscardingDraft: "Discarding change",
     agentDraftReview: "Draft change review",
     agentDraftConflictScope: "Resolve all {count} pending changes",
-    agentDraftConflictOriginalDescription: "Compare your edits with the original suggestion",
+    agentDraftConflictOriginalDescription:
+      "Compare your edits with the original suggestion",
     agentDraftConflictApplyOriginal: "Apply original suggestion",
     agentDraftConflictKeepManual: "Keep manual edits",
     agentDraftConflictApplyOriginalHint: "Use the full suggested result",
-    agentDraftConflictKeepManualHint: "Merge suggestions and keep your edits in conflicts",
+    agentDraftConflictKeepManualHint:
+      "Merge suggestions and keep your edits in conflicts",
     agentReviewAll: "All",
     agentReviewNext: "Next change",
     agentReviewOneByOne: "Review one by one",
@@ -458,7 +487,9 @@ try {
   );
   assert.match(safeScopeWithOtherConflicts, /Resolve draft conflicts/);
   assert.doesNotMatch(
-    safeScopeWithOtherConflicts.match(/<button[^>]*aria-label="Apply this change"[^>]*>/)?.[0],
+    safeScopeWithOtherConflicts.match(
+      /<button[^>]*aria-label="Apply this change"[^>]*>/,
+    )?.[0],
     /disabled=/,
     "Conflicts elsewhere in the draft must not block applying a safe selected item.",
   );
@@ -487,10 +518,12 @@ try {
     sameTargetEdits[0],
     {
       ...sameTargetEdits[1],
-      diffs: [{
-        ...sameTargetEdits[1].diffs[0],
-        after: "A",
-      }],
+      diffs: [
+        {
+          ...sameTargetEdits[1].diffs[0],
+          after: "A",
+        },
+      ],
     },
   ];
   assert.deepEqual(
@@ -639,22 +672,26 @@ try {
     id: "experience-existing",
     kind: "experience",
     title: "Experience",
-    items: [{
-      id: "job-existing",
-      company: "Acme",
-      position: "Engineer",
-      location: "Remote",
-      period: "2024–2026",
-      description: "Original description",
-      highlights: [],
-    }],
+    items: [
+      {
+        id: "job-existing",
+        company: "Acme",
+        position: "Engineer",
+        location: "Remote",
+        period: "2024–2026",
+        description: "Original description",
+        highlights: [],
+      },
+    ],
   };
   const revisedExperience = {
     ...originalExperience,
-    items: [{
-      ...originalExperience.items[0],
-      description: "Revised description",
-    }],
+    items: [
+      {
+        ...originalExperience.items[0],
+        description: "Revised description",
+      },
+    ],
   };
   assert.deepEqual(
     compactResumeDraftDiffs([
@@ -679,32 +716,38 @@ try {
         before: revisedExperience,
       },
     ]),
-    [{
-      id: "diff-delete-experience-section",
-      operationId: "edit-delete-experience-section",
-      path: "sections.experience-existing",
-      kind: "deleted",
-      label: "Delete experience section",
-      sectionId: "experience-existing",
-      before: originalExperience,
-    }],
+    [
+      {
+        id: "diff-delete-experience-section",
+        operationId: "edit-delete-experience-section",
+        path: "sections.experience-existing",
+        kind: "deleted",
+        label: "Delete experience section",
+        sectionId: "experience-existing",
+        before: originalExperience,
+      },
+    ],
     "Deleting a section must rewind item field changes inside its items array.",
   );
 
   const addedExperience = {
     ...originalExperience,
     id: "experience-new",
-    items: [{
-      ...originalExperience.items[0],
-      id: "job-new",
-    }],
+    items: [
+      {
+        ...originalExperience.items[0],
+        id: "job-new",
+      },
+    ],
   };
   const updatedAddedExperience = {
     ...addedExperience,
-    items: [{
-      ...addedExperience.items[0],
-      description: "Updated after insertion",
-    }],
+    items: [
+      {
+        ...addedExperience.items[0],
+        description: "Updated after insertion",
+      },
+    ],
   };
   assert.deepEqual(
     compactResumeDraftDiffs([
@@ -729,15 +772,17 @@ try {
         after: "Updated after insertion",
       },
     ]),
-    [{
-      id: "diff-add-experience-section",
-      operationId: "edit-add-experience-section",
-      path: "sections.experience-new",
-      kind: "added",
-      label: "Add experience section",
-      sectionId: "experience-new",
-      after: updatedAddedExperience,
-    }],
+    [
+      {
+        id: "diff-add-experience-section",
+        operationId: "edit-add-experience-section",
+        path: "sections.experience-new",
+        kind: "added",
+        label: "Add experience section",
+        sectionId: "experience-new",
+        after: updatedAddedExperience,
+      },
+    ],
     "Updating an item in an inserted section must keep one final section snapshot.",
   );
 
@@ -752,10 +797,7 @@ try {
   };
   const reorderedSection = {
     ...originalReorderSection,
-    items: [
-      originalReorderSection.items[1],
-      originalReorderSection.items[0],
-    ],
+    items: [originalReorderSection.items[1], originalReorderSection.items[0]],
   };
   assert.deepEqual(
     compactResumeDraftDiffs([
@@ -779,32 +821,38 @@ try {
         before: reorderedSection,
       },
     ]),
-    [{
-      id: "diff-delete-reordered-section",
-      operationId: "edit-delete-reordered-section",
-      path: "sections.experience-reorder",
-      kind: "deleted",
-      label: "Delete experience section",
-      sectionId: "experience-reorder",
-      before: originalReorderSection,
-    }],
+    [
+      {
+        id: "diff-delete-reordered-section",
+        operationId: "edit-delete-reordered-section",
+        path: "sections.experience-reorder",
+        kind: "deleted",
+        label: "Delete experience section",
+        sectionId: "experience-reorder",
+        before: originalReorderSection,
+      },
+    ],
     "Rewinding a reorder must preserve item objects in the deleted section snapshot.",
   );
 
   const dottedSection = {
     ...addedExperience,
     id: "experience.archive",
-    items: [{
-      ...addedExperience.items[0],
-      id: "job.v2",
-    }],
+    items: [
+      {
+        ...addedExperience.items[0],
+        id: "job.v2",
+      },
+    ],
   };
   const updatedDottedSection = {
     ...dottedSection,
-    items: [{
-      ...dottedSection.items[0],
-      description: "Updated dotted item",
-    }],
+    items: [
+      {
+        ...dottedSection.items[0],
+        description: "Updated dotted item",
+      },
+    ],
   };
   assert.deepEqual(
     compactResumeDraftDiffs([
@@ -829,15 +877,17 @@ try {
         after: "Updated dotted item",
       },
     ]),
-    [{
-      id: "diff-add-dotted-section",
-      operationId: "edit-add-dotted-section",
-      path: "sections.experience.archive",
-      kind: "added",
-      label: "Add archived experience",
-      sectionId: "experience.archive",
-      after: updatedDottedSection,
-    }],
+    [
+      {
+        id: "diff-add-dotted-section",
+        operationId: "edit-add-dotted-section",
+        path: "sections.experience.archive",
+        kind: "added",
+        label: "Add archived experience",
+        sectionId: "experience.archive",
+        after: updatedDottedSection,
+      },
+    ],
     "Section and item IDs containing dots must remain atomic path segments.",
   );
 

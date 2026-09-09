@@ -5,9 +5,10 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
-  --font-sans: 'Inter Variable', 'Inter', 'PingFang SC', 'Hiragino Sans GB',
-    'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif;
-  --font-mono: 'IBM Plex Mono', monospace;
+  --font-sans:
+    "Inter Variable", "Inter", "PingFang SC", "Hiragino Sans GB",
+    "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "IBM Plex Mono", monospace;
 
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
@@ -153,7 +154,7 @@
     @apply min-w-[360px] bg-background font-sans text-foreground antialiased;
   }
 
-  input[data-slot='input-group-control']:is(:autofill, :-webkit-autofill) {
+  input[data-slot="input-group-control"]:is(:autofill, :-webkit-autofill) {
     -webkit-background-clip: text;
     background-clip: text;
     -webkit-text-fill-color: var(--foreground);
@@ -161,7 +162,7 @@
   }
 
   @media (forced-colors: active) {
-    input[data-slot='input-group-control']:is(:autofill, :-webkit-autofill) {
+    input[data-slot="input-group-control"]:is(:autofill, :-webkit-autofill) {
       -webkit-background-clip: border-box;
       background-clip: border-box;
       -webkit-text-fill-color: CanvasText;
@@ -172,9 +173,9 @@
   button,
   a,
   summary,
-  [role='button'],
-  [role='tab'],
-  [role='option'] {
+  [role="button"],
+  [role="tab"],
+  [role="option"] {
     @apply cursor-pointer select-none;
   }
 }
@@ -207,7 +208,8 @@
     color-mix(in oklab, currentColor 10%, transparent) 50%,
     transparent 80%
   );
-  animation: auth-loading-sweep 2.4s cubic-bezier(0.4, 0, 0.25, 1) infinite paused;
+  animation: auth-loading-sweep 2.4s cubic-bezier(0.4, 0, 0.25, 1) infinite
+    paused;
 }
 
 .auth-loading-button[aria-busy="true"]:disabled {
@@ -254,7 +256,8 @@ main.app-shell[tabindex="-1"]:focus-visible {
 }
 
 .workspace-document-enter {
-  animation: workspace-document-enter var(--duration-enter) var(--ease-move) both;
+  animation: workspace-document-enter var(--duration-enter) var(--ease-move)
+    both;
 }
 
 @keyframes workspace-route-enter {
@@ -281,11 +284,11 @@ main.app-shell[tabindex="-1"]:focus-visible {
   }
 }
 
-.dialog-overlay-motion[data-state='open'] {
+.dialog-overlay-motion[data-state="open"] {
   animation: dialog-overlay-enter var(--duration-enter) ease-out both;
 }
 
-.dialog-overlay-motion[data-state='closed'] {
+.dialog-overlay-motion[data-state="closed"] {
   animation: dialog-overlay-exit var(--duration-exit) ease-in both;
 }
 
@@ -293,22 +296,30 @@ main.app-shell[tabindex="-1"]:focus-visible {
   transform: translate(-50%, -50%);
 }
 
-.dialog-content-motion[data-state='open'] {
+.dialog-content-motion[data-state="open"] {
   animation: dialog-content-enter var(--duration-enter) var(--ease-move) both;
 }
 
-.dialog-content-motion[data-state='closed'] {
+.dialog-content-motion[data-state="closed"] {
   animation: dialog-content-exit var(--duration-exit) ease-in both;
 }
 
 @keyframes dialog-overlay-enter {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 @keyframes dialog-overlay-exit {
-  from { opacity: 1; }
-  to { opacity: 0; }
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
 }
 
 @keyframes dialog-content-enter {
@@ -359,11 +370,7 @@ main.app-shell[tabindex="-1"]:focus-visible {
 
 .agent-thread-scroll:hover,
 .agent-thread-scroll:focus-within {
-  scrollbar-color: color-mix(
-      in srgb,
-      var(--muted-foreground) 38%,
-      transparent
-    )
+  scrollbar-color: color-mix(in srgb, var(--muted-foreground) 38%, transparent)
     transparent;
 }
 
@@ -499,7 +506,7 @@ html:has(.app-shell--document)::-webkit-scrollbar {
 }
 
 [data-academic-italic="true"] {
-  font-family: 'Latin Modern Roman', serif;
+  font-family: "Latin Modern Roman", serif;
   font-style: italic;
 }
 
@@ -559,29 +566,29 @@ html:has(.app-shell--document)::-webkit-scrollbar {
   margin-top: 0.04em;
 }
 
-.resume-rich-text[data-resume-list-layout='columns'] > ul,
-.resume-rich-text[data-resume-list-layout='columns'] > ol,
-.resume-rich-text[data-resume-list-layout='columns'] > div > ul,
-.resume-rich-text[data-resume-list-layout='columns'] > div > ol {
+.resume-rich-text[data-resume-list-layout="columns"] > ul,
+.resume-rich-text[data-resume-list-layout="columns"] > ol,
+.resume-rich-text[data-resume-list-layout="columns"] > div > ul,
+.resume-rich-text[data-resume-list-layout="columns"] > div > ol {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   column-gap: 1.5em;
 }
 
-.resume-rich-text[data-resume-list-layout='inline'] > ul,
-.resume-rich-text[data-resume-list-layout='inline'] > ol,
-.resume-rich-text[data-resume-list-layout='inline'] > div > ul,
-.resume-rich-text[data-resume-list-layout='inline'] > div > ol {
+.resume-rich-text[data-resume-list-layout="inline"] > ul,
+.resume-rich-text[data-resume-list-layout="inline"] > ol,
+.resume-rich-text[data-resume-list-layout="inline"] > div > ul,
+.resume-rich-text[data-resume-list-layout="inline"] > div > ol {
   display: flex;
   flex-wrap: wrap;
   gap: 0 1em;
   padding-left: 0;
 }
 
-.resume-rich-text[data-resume-list-layout='inline'] > ul > li,
-.resume-rich-text[data-resume-list-layout='inline'] > ol > li,
-.resume-rich-text[data-resume-list-layout='inline'] > div > ul > li,
-.resume-rich-text[data-resume-list-layout='inline'] > div > ol > li {
+.resume-rich-text[data-resume-list-layout="inline"] > ul > li,
+.resume-rich-text[data-resume-list-layout="inline"] > ol > li,
+.resume-rich-text[data-resume-list-layout="inline"] > div > ul > li,
+.resume-rich-text[data-resume-list-layout="inline"] > div > ol > li {
   margin-left: 1em;
 }
 
@@ -666,7 +673,7 @@ html:has(.app-shell--document)::-webkit-scrollbar {
   inset: 0 auto 0 0;
   width: 64mm;
   background: var(--resume-surface-color, #111827);
-  content: '';
+  content: "";
 }
 
 .resume-page-content-viewport {
@@ -713,7 +720,8 @@ html:has(.app-shell--document)::-webkit-scrollbar {
 }
 
 .resume-diff-review-target[data-resume-review-tab-stop="true"][data-resume-review-state="entering"] {
-  animation: resume-diff-review-enter var(--duration-enter) var(--ease-move) both;
+  animation: resume-diff-review-enter var(--duration-enter) var(--ease-move)
+    both;
 }
 
 .resume-diff-review-target:focus-visible {
@@ -926,12 +934,10 @@ html:has(.app-shell--document)::-webkit-scrollbar {
     position: sticky;
     top: var(--document-sticky-top);
     height: calc(
-      100svh - var(--document-sticky-top) -
-        var(--document-sticky-bottom-gap)
+      100svh - var(--document-sticky-top) - var(--document-sticky-bottom-gap)
     );
     max-height: calc(
-      100svh - var(--document-sticky-top) -
-        var(--document-sticky-bottom-gap)
+      100svh - var(--document-sticky-top) - var(--document-sticky-bottom-gap)
     );
     overflow-y: auto;
     overscroll-behavior-y: contain;
@@ -961,7 +967,8 @@ html:has(.app-shell--document)::-webkit-scrollbar {
   }
 
   .app-shell--document .resume-editor-panel:hover::-webkit-scrollbar-thumb,
-  .app-shell--document .resume-editor-panel:focus-within::-webkit-scrollbar-thumb {
+  .app-shell--document
+    .resume-editor-panel:focus-within::-webkit-scrollbar-thumb {
     background-color: var(--muted-foreground);
   }
 
@@ -991,7 +998,9 @@ html:has(.app-shell--document)::-webkit-scrollbar {
     scrollbar-width: none;
   }
 
-  .app-shell--document .resume-workspace .resume-editor-panel::-webkit-scrollbar {
+  .app-shell--document
+    .resume-workspace
+    .resume-editor-panel::-webkit-scrollbar {
     display: none;
     width: 0;
   }
@@ -1003,24 +1012,19 @@ html:has(.app-shell--document)::-webkit-scrollbar {
   }
 
   .app-shell--document .resume-preview-card {
-    top: calc(
-      var(--document-sticky-top) - var(--document-workspace-gutter)
-    );
+    top: calc(var(--document-sticky-top) - var(--document-workspace-gutter));
     height: calc(
-      100svh - var(--document-sticky-top) +
-        var(--document-workspace-gutter)
+      100svh - var(--document-sticky-top) + var(--document-workspace-gutter)
     );
     margin-top: calc(var(--document-workspace-gutter) * -1);
   }
 
   .app-shell--document .agent-panel-dock {
     height: calc(
-      100svh - var(--document-sticky-top) -
-        var(--document-sticky-bottom-gap)
+      100svh - var(--document-sticky-top) - var(--document-sticky-bottom-gap)
     );
     max-height: calc(
-      100svh - var(--document-sticky-top) -
-        var(--document-sticky-bottom-gap)
+      100svh - var(--document-sticky-top) - var(--document-sticky-bottom-gap)
     );
   }
 
@@ -1049,7 +1053,7 @@ html:has(.app-shell--document)::-webkit-scrollbar {
   zoom: var(--canvas-scale, 1);
 }
 
-[data-slot='trash-preview-dialog'] .resume-preview-card {
+[data-slot="trash-preview-dialog"] .resume-preview-card {
   height: 100%;
   min-height: 0;
   max-height: none;
@@ -1059,11 +1063,7 @@ html:has(.app-shell--document)::-webkit-scrollbar {
   .app-shell--document .resume-preview-card {
     border: 0;
     border-radius: 0;
-    background-color: color-mix(
-      in oklab,
-      var(--muted) 35%,
-      transparent
-    );
+    background-color: color-mix(in oklab, var(--muted) 35%, transparent);
   }
 }
 
@@ -1073,11 +1073,11 @@ html:has(.app-shell--document)::-webkit-scrollbar {
   will-change: height;
 }
 
-.collapsible-content[data-state='open'] {
+.collapsible-content[data-state="open"] {
   animation: collapsible-down 260ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.collapsible-content[data-state='closed'] {
+.collapsible-content[data-state="closed"] {
   animation: collapsible-up 210ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
@@ -1086,11 +1086,11 @@ html:has(.app-shell--document)::-webkit-scrollbar {
   will-change: transform, opacity;
 }
 
-.collapsible-content[data-state='open'] .collapsible-content-inner {
+.collapsible-content[data-state="open"] .collapsible-content-inner {
   animation: collapsible-inner-in 260ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
-.collapsible-content[data-state='closed'] .collapsible-content-inner {
+.collapsible-content[data-state="closed"] .collapsible-content-inner {
   animation: collapsible-inner-out 170ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
@@ -1234,7 +1234,6 @@ html:has(.app-shell--document)::-webkit-scrollbar {
     transition: none !important;
     scroll-behavior: auto !important;
   }
-
 }
 
 @page {
@@ -1309,5 +1308,4 @@ html:has(.app-shell--document)::-webkit-scrollbar {
     break-after: auto;
     page-break-after: auto;
   }
-
 }

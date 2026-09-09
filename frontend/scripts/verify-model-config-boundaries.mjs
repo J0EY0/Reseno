@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import ts from "typescript";
+import { findNodes, parseSource } from "./source-analysis.mjs";
+import { evaluateTypeScript } from "./typescript-module.mjs";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
@@ -34,30 +37,29 @@ const [
   dataTable,
   workspaceSkeletons,
   messages,
-] =
-  await Promise.all([
-    readText("src/components/model-config-form-popover.tsx"),
-    readText("src/components/models/model-config-dialog.tsx"),
-    readText("src/components/models/use-model-config-dialog.ts"),
-    readText("src/components/models/model-config-draft.ts"),
-    readText("src/components/models/model-config-provider-fields.tsx"),
-    readText("src/components/models/model-config-model-fields.tsx"),
-    readText("src/components/models/model-config-advanced-settings-field.tsx"),
-    readText("src/components/models/model-config-context-window-field.tsx"),
-    readText("src/components/models/model-config-thinking-mode-field.tsx"),
-    readText("src/components/models/model-config-focus.ts"),
-    readText("src/lib/model-config.ts"),
-    readText("src/lib/model-config-api.ts"),
-    readText("src/types/resume.ts"),
-    readText("src/components/agent-settings-tab.tsx"),
-    readText("src/components/model-config-panel.tsx"),
-    readText("src/components/models/model-config-table.tsx"),
-    readText("src/components/models/model-config-bulk-delete-action.tsx"),
-    readText("src/components/models/use-model-config-table-selection.ts"),
-    readText("src/components/data-table.tsx"),
-    readText("src/components/workspace-skeletons.tsx"),
-    readText("src/i18n/locales/en.json").then(JSON.parse),
-  ]);
+] = await Promise.all([
+  readText("src/components/model-config-form-popover.tsx"),
+  readText("src/components/models/model-config-dialog.tsx"),
+  readText("src/components/models/use-model-config-dialog.ts"),
+  readText("src/components/models/model-config-draft.ts"),
+  readText("src/components/models/model-config-provider-fields.tsx"),
+  readText("src/components/models/model-config-model-fields.tsx"),
+  readText("src/components/models/model-config-advanced-settings-field.tsx"),
+  readText("src/components/models/model-config-context-window-field.tsx"),
+  readText("src/components/models/model-config-thinking-mode-field.tsx"),
+  readText("src/components/models/model-config-focus.ts"),
+  readText("src/lib/model-config.ts"),
+  readText("src/lib/model-config-api.ts"),
+  readText("src/types/resume.ts"),
+  readText("src/components/agent-settings-tab.tsx"),
+  readText("src/components/model-config-panel.tsx"),
+  readText("src/components/models/model-config-table.tsx"),
+  readText("src/components/models/model-config-bulk-delete-action.tsx"),
+  readText("src/components/models/use-model-config-table-selection.ts"),
+  readText("src/components/data-table.tsx"),
+  readText("src/components/workspace-skeletons.tsx"),
+  readText("src/i18n/locales/en.json").then(JSON.parse),
+]);
 
 assert.match(
   popover,
@@ -147,12 +149,12 @@ assert.match(
 );
 assert.match(
   modelConfigTable,
-  /accessorKey: 'model',[\s\S]*?header: \(\) => <span className="block pl-11">\{t\.model\}<\/span>[\s\S]*?className="flex size-8[\s\S]*?className="grid min-w-0/,
+  /accessorKey: ["']model["'],[\s\S]*?header: \(\) => <span className="block pl-11">\{t\.model\}<\/span>[\s\S]*?className="flex size-8[\s\S]*?className="grid min-w-0/,
   "The model header must align with the primary model text after its icon alignment box.",
 );
 assert.match(
   modelConfigTable,
-  /accessorKey: 'contextWindowTokens'[\s\S]*?className="block min-w-32 pr-2 text-right"[\s\S]*?className="flex min-w-32 justify-end pr-2"[\s\S]*?accessorKey: 'supportsImage'[\s\S]*?className="flex min-w-52 justify-center"[\s\S]*?className="flex min-w-52 justify-center gap-1\.5"/,
+  /accessorKey: ["']contextWindowTokens["'][\s\S]*?className="block min-w-32 pr-2 text-right"[\s\S]*?className="flex min-w-32 justify-end pr-2"[\s\S]*?accessorKey: ["']supportsImage["'][\s\S]*?className="flex min-w-52 justify-center"[\s\S]*?className="flex min-w-52 justify-center gap-1\.5"/,
   "Context values must stay right aligned while the capability heading and badge group share a centered, separated column.",
 );
 assert.match(
@@ -187,7 +189,7 @@ assert.match(
 );
 assert.match(
   dataTable,
-  /getRowId\?:[\s\S]*?getRowClassName\?:[\s\S]*?enableRowSelection\?:[\s\S]*?rowSelection\?: RowSelectionState[\s\S]*?onRowSelectionChange\?: OnChangeFn<RowSelectionState>[\s\S]*?useReactTable\(\{[\s\S]*?enableRowSelection[\s\S]*?onRowSelectionChange[\s\S]*?state: rowSelection === undefined \? undefined : \{ rowSelection \}[\s\S]*?data-state=\{row\.getIsSelected\(\) \? 'selected' : undefined\}/,
+  /getRowId\?:[\s\S]*?getRowClassName\?:[\s\S]*?enableRowSelection\?:[\s\S]*?rowSelection\?: RowSelectionState[\s\S]*?onRowSelectionChange\?: OnChangeFn<RowSelectionState>[\s\S]*?useReactTable\(\{[\s\S]*?enableRowSelection[\s\S]*?onRowSelectionChange[\s\S]*?state: rowSelection === undefined \? undefined : \{ rowSelection \}[\s\S]*?data-state=\{row\.getIsSelected\(\) \? ["']selected["'] : undefined\}/,
   "The shared table must expose controlled TanStack row selection while retaining stable row identity and selected-row styling.",
 );
 assert.match(
@@ -215,14 +217,35 @@ assert.match(
   /const pageChanged = selection\.page !== safeCurrentPage[\s\S]*?useEffect\(\(\) => \{[\s\S]*?setSelection\(\{ page: safeCurrentPage, modelConfigIds: \[\] \}\)[\s\S]*?\}, \[pageChanged, safeCurrentPage\]\)[\s\S]*?const selectedModelConfigIds = pageChanged\s*\? \[\]/,
   "URL POP navigation must clear the previous page selection before it can flash or reappear when returning to that page.",
 );
-assert.match(
-  modelConfigSelection,
-  /function changePage\(page: number\) \{\s*setSelection\(\{ page, modelConfigIds: \[\] \}\)\s*setCurrentPage\(page\)/,
-  "Explicit pagination must clear row selection before updating the URL.",
+const changePageDeclaration = findNodes(
+  parseSource(modelConfigSelection),
+  ts.isFunctionDeclaration,
+).find((node) => node.name?.text === "changePage");
+assert.ok(changePageDeclaration);
+const selectionEvents = [];
+const { changePage } = evaluateTypeScript(
+  `${changePageDeclaration.getText()}; export { changePage };`,
+  {
+    globals: {
+      setSelection: (value) =>
+        selectionEvents.push(["selection", JSON.parse(JSON.stringify(value))]),
+      setCurrentPage: (value) => selectionEvents.push(["page", value]),
+    },
+  },
 );
+changePage(2);
+assert.deepEqual(
+  selectionEvents,
+  [
+    ["selection", { page: 2, modelConfigIds: [] }],
+    ["page", 2],
+  ],
+  "Pagination must clear row selection before committing the new URL page.",
+);
+
 assert.match(
   modelConfigTable,
-  /id: 'select'[\s\S]*?getIsAllPageRowsSelected\(\)[\s\S]*?getIsSomePageRowsSelected\(\)[\s\S]*?'indeterminate'[\s\S]*?aria-label=\{t\.selectAll\}[\s\S]*?toggleAllPageRowsSelected\(checked === true\)[\s\S]*?checked=\{row\.getIsSelected\(\)\}[\s\S]*?row\.toggleSelected\(checked === true\)/,
+  /id: ["']select["'][\s\S]*?getIsAllPageRowsSelected\(\)[\s\S]*?getIsSomePageRowsSelected\(\)[\s\S]*?["']indeterminate["'][\s\S]*?aria-label=\{t\.selectAll\}[\s\S]*?toggleAllPageRowsSelected\(checked === true\)[\s\S]*?checked=\{row\.getIsSelected\(\)\}[\s\S]*?row\.toggleSelected\(checked === true\)/,
   "The model table must use TanStack v8 page and row selection APIs through the installed shadcn Checkbox.",
 );
 assert.match(
@@ -247,7 +270,7 @@ assert.match(
 );
 assert.match(
   modelConfigApi,
-  /function deleteModelConfigs\(ids: string\[\]\)[\s\S]*?`\$\{apiRoutes\.modelConfigs\}\/bulk-delete`[\s\S]*?method: 'POST'[\s\S]*?body: \{ ids \}/,
+  /function deleteModelConfigs\(ids: string\[\]\)[\s\S]*?`\$\{apiRoutes\.modelConfigs\}\/bulk-delete`[\s\S]*?method: ["']POST["'][\s\S]*?body: \{ ids \}/,
   "Bulk model deletion must use the POST /api/model-configs/bulk-delete contract.",
 );
 assert.doesNotMatch(
@@ -475,17 +498,17 @@ assert.doesNotMatch(
 );
 assert.match(
   resumeTypes,
-  /type ThinkingMode = 'auto' \| 'off'[\s\S]*interface ModelConfig[\s\S]*supportsThinking:\s*boolean[\s\S]*thinkingMode:\s*ThinkingMode[\s\S]*availableThinkingModes:\s*ThinkingMode\[\]/,
+  /type ThinkingMode = ["']auto["'] \| ["']off["'][\s\S]*interface ModelConfig[\s\S]*supportsThinking:\s*boolean[\s\S]*thinkingMode:\s*ThinkingMode[\s\S]*availableThinkingModes:\s*ThinkingMode\[\]/,
   "Saved model configs must distinguish the thinking capability, user preference, and currently available modes.",
 );
 assert.match(
   modelConfigApi,
-  /interface DiscoveredModel[\s\S]*supportsThinking:\s*boolean[\s\S]*availableThinkingModes:\s*ModelConfig\['availableThinkingModes'\]/,
+  /interface DiscoveredModel[\s\S]*supportsThinking:\s*boolean[\s\S]*availableThinkingModes:\s*ModelConfig\[["']availableThinkingModes["']\]/,
   "Discovered models must preserve provider-authoritative thinking mode metadata.",
 );
 assert.match(
   modelConfigApi,
-  /Omit<ModelConfig, 'id' \| 'availableThinkingModes'>/,
+  /Omit<ModelConfig, ["']id["'] \| ["']availableThinkingModes["']>/,
   "Model saves must submit the user preference without echoing server-derived mode capabilities.",
 );
 assert.match(
@@ -796,10 +819,9 @@ try {
     createSavedModelConfig,
     discoveredFromConfig,
     validateModelConfigDraft,
-  } =
-    await server.ssrLoadModule(
-      "/src/components/models/model-config-draft.ts",
-    );
+  } = await server.ssrLoadModule(
+    "/src/components/models/model-config-draft.ts",
+  );
   const discoveredCloudModel = {
     id: "gpt-test",
     label: "GPT Test",
@@ -841,19 +863,39 @@ try {
     apiUrl: localProvider.defaultBaseUrl,
     model: "qwen3:8b",
   };
-  for (const [temperature, topP] of [[0, 1], [1.234, 0.8765], [2, 0.01]]) {
-    const input = { ...localDraft, temperature: String(temperature), topP: String(topP) };
-    assert.deepEqual(validateModelConfigDraft(input, localProvider, [], messages), {});
+  for (const [temperature, topP] of [
+    [0, 1],
+    [1.234, 0.8765],
+    [2, 0.01],
+  ]) {
+    const input = {
+      ...localDraft,
+      temperature: String(temperature),
+      topP: String(topP),
+    };
+    assert.deepEqual(
+      validateModelConfigDraft(input, localProvider, [], messages),
+      {},
+    );
     const saved = createSavedModelConfig(input, localProvider);
     const [normalized] = normalizeModelConfigs({ modelConfigs: [saved] }, "en");
     const restored = createModelConfigDraft("en", normalized);
     assert.equal(saved.temperature, temperature);
     assert.equal(saved.topP, topP);
-    assert.equal(restored.temperature, String(temperature), "Saved local temperature must retain zero and decimal precision.");
-    assert.equal(restored.topP, String(topP), "Saved local Top P must retain decimal precision.");
+    assert.equal(
+      restored.temperature,
+      String(temperature),
+      "Saved local temperature must retain zero and decimal precision.",
+    );
+    assert.equal(
+      restored.topP,
+      String(topP),
+      "Saved local Top P must retain decimal precision.",
+    );
   }
   const autoSampling = createSavedModelConfig(
-    { ...localDraft, temperature: " ", topP: "" }, localProvider,
+    { ...localDraft, temperature: " ", topP: "" },
+    localProvider,
   );
   assert.equal(autoSampling.temperature, null);
   assert.equal(autoSampling.topP, null);
@@ -862,14 +904,25 @@ try {
     ["topP", ["0", "-0.1", "1.01", "NaN", "Infinity", "1e999", "abc", "0x1"]],
   ]) {
     for (const value of invalidValues) {
-      const errors = validateModelConfigDraft({ ...localDraft, [field]: value }, localProvider, [], messages);
-      assert.equal(errors[field], field === "temperature" ? messages.validationTemperature : messages.validationTopP,
-        `${field} must reject ${value} before saving.`);
+      const errors = validateModelConfigDraft(
+        { ...localDraft, [field]: value },
+        localProvider,
+        [],
+        messages,
+      );
+      assert.equal(
+        errors[field],
+        field === "temperature"
+          ? messages.validationTemperature
+          : messages.validationTopP,
+        `${field} must reject ${value} before saving.`,
+      );
     }
   }
   for (const providerKind of ["cloud", "custom"]) {
     const saved = createSavedModelConfig(
-      { ...localDraft, providerKind, temperature: "1.234", topP: "0.8765" }, cloudProvider,
+      { ...localDraft, providerKind, temperature: "1.234", topP: "0.8765" },
+      cloudProvider,
     );
     assert.equal(saved.temperature, null);
     assert.equal(saved.topP, null);
@@ -1044,9 +1097,9 @@ try {
             contextWindowTokens: "128000",
             supportsThinking: true,
             thinkingMode,
-            availableThinkingModes:
-              discoveredModels.find((model) => model.id === "gpt-test")
-                ?.availableThinkingModes ?? ["auto"],
+            availableThinkingModes: discoveredModels.find(
+              (model) => model.id === "gpt-test",
+            )?.availableThinkingModes ?? ["auto"],
           },
           errors,
           modelOptionsLoading,
@@ -1074,7 +1127,13 @@ try {
     const markup = renderToStaticMarkup(
       React.createElement(ModelConfigModelFields, {
         controller: {
-          draft: { ...localDraft, providerKind, temperature: "0", topP: "0.75", maxTokens: "4096" },
+          draft: {
+            ...localDraft,
+            providerKind,
+            temperature: "0",
+            topP: "0.75",
+            maxTokens: "4096",
+          },
           errors: {},
           modelOptionsLoading: false,
           selectedProvider: localProvider,
@@ -1084,8 +1143,14 @@ try {
       }),
     );
     if (providerKind === "local") {
-      assert.match(markup, /id="model-temperature"[^>]*inputMode="decimal"[^>]*value="0"/);
-      assert.match(markup, /id="model-top-p"[^>]*inputMode="decimal"[^>]*value="0.75"/);
+      assert.match(
+        markup,
+        /id="model-temperature"[^>]*inputMode="decimal"[^>]*value="0"/,
+      );
+      assert.match(
+        markup,
+        /id="model-top-p"[^>]*inputMode="decimal"[^>]*value="0.75"/,
+      );
     } else {
       assert.doesNotMatch(markup, /id="model-temperature"|id="model-top-p"/);
     }
@@ -1117,11 +1182,9 @@ try {
     /for="model-thinking-mode"[\s\S]*Thinking mode[\s\S]*role="switch"[\s\S]*aria-checked="true"/,
     "An Off-capable model must expose an accessible Switch that defaults to Auto.",
   );
-  const managedThinkingMarkup = renderCloudFields(
-    "8192",
-    {},
-    [{ ...discoveredCloudModel, availableThinkingModes: ["auto"] }],
-  );
+  const managedThinkingMarkup = renderCloudFields("8192", {}, [
+    { ...discoveredCloudModel, availableThinkingModes: ["auto"] },
+  ]);
   assert.match(
     managedThinkingMarkup,
     /role="switch"[\s\S]*aria-checked="true"[\s\S]*disabled=""/,

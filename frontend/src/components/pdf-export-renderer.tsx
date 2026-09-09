@@ -3,11 +3,7 @@ import { useSearchParams } from "react-router-dom";
 
 import { loadResumeFontStyles } from "@/components/preview/resume-font-loader";
 import { ResumePreview } from "@/components/preview/resume-preview";
-import {
-  getMessagesSync,
-  loadMessages,
-  type AppMessages,
-} from "@/i18n";
+import { getMessagesSync, loadMessages, type AppMessages } from "@/i18n";
 import {
   createTemplateSettings,
   getTemplateById,
@@ -105,8 +101,8 @@ export function PdfExportRenderer() {
         : null;
   const isReady = Boolean(
     activeState &&
-      assetsReadyLoadKey === loadKey &&
-      paginationReadyLoadKey === loadKey,
+    assetsReadyLoadKey === loadKey &&
+    paginationReadyLoadKey === loadKey,
   );
 
   const handlePaginationReadyChange = useCallback(

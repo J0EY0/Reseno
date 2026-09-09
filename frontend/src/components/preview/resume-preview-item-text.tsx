@@ -27,7 +27,9 @@ export function ResumeItemText({
   value: string;
 }) {
   if (!parts) {
-    return <ResumeDiffText richText={richText} value={value} diffs={fallbackDiffs} />;
+    return (
+      <ResumeDiffText richText={richText} value={value} diffs={fallbackDiffs} />
+    );
   }
 
   return parts.map((part, index) => {
@@ -46,7 +48,11 @@ export function ResumeItemText({
           className={cn(!part.value && "resume-diff-empty-slot")}
           data-resume-field={part.field}
         >
-          <ResumeDiffText richText={richText} value={part.value} diffs={partDiffs} />
+          <ResumeDiffText
+            richText={richText}
+            value={part.value}
+            diffs={partDiffs}
+          />
         </span>
       </Fragment>
     );

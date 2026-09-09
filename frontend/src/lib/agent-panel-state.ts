@@ -1,6 +1,4 @@
-import type {
-  AgentToolInvocation,
-} from "@/types/api";
+import type { AgentToolInvocation } from "@/types/api";
 
 /**
  * Keep the in-flight assistant message visible without duplicating the final
@@ -55,10 +53,7 @@ export function canSubmitAgentPrompt({
   isSubmitting: boolean;
 }) {
   return (
-    hasConfiguredModel &&
-    isSessionReady &&
-    !isRequestBusy &&
-    !isSubmitting
+    hasConfiguredModel && isSessionReady && !isRequestBusy && !isSubmitting
   );
 }
 

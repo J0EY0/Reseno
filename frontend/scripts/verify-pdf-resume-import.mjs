@@ -11,8 +11,7 @@ const require = createRequire(import.meta.url);
 const requireFromPdfJs = createRequire(
   require.resolve("pdfjs-dist/package.json"),
 );
-const { DOMMatrix, ImageData, Path2D } =
-  requireFromPdfJs("@napi-rs/canvas");
+const { DOMMatrix, ImageData, Path2D } = requireFromPdfJs("@napi-rs/canvas");
 const pdfWorkerFileUrl = pathToFileURL(
   require.resolve("pdfjs-dist/build/pdf.worker.min.mjs"),
 ).href;
@@ -34,16 +33,19 @@ if (typeof Uint8Array.prototype.toHex !== "function") {
   Object.defineProperty(Uint8Array.prototype, "toHex", {
     configurable: true,
     value() {
-      return Array.from(this, (byte) => byte.toString(16).padStart(2, "0")).join(
-        "",
-      );
+      return Array.from(this, (byte) =>
+        byte.toString(16).padStart(2, "0"),
+      ).join("");
     },
   });
 }
 
 const sectionRegistry = JSON.parse(
   readFileSync(
-    new URL("../../backend/app/services/agent/section_registry.json", import.meta.url),
+    new URL(
+      "../../backend/app/services/agent/section_registry.json",
+      import.meta.url,
+    ),
     "utf8",
   ),
 );
@@ -58,10 +60,7 @@ const resumeImportLexicon = JSON.parse(
 );
 const zhMinimalStructureFixture = JSON.parse(
   readFileSync(
-    new URL(
-      "./fixtures/pdf-import/zh-minimal-structure.json",
-      import.meta.url,
-    ),
+    new URL("./fixtures/pdf-import/zh-minimal-structure.json", import.meta.url),
     "utf8",
   ),
 );
@@ -228,18 +227,13 @@ try {
     pdfTextExtraction,
     textHeuristics,
     documentLanguage,
-  ] =
-    await Promise.all([
-      server.ssrLoadModule("/src/lib/pdf-resume-import.ts"),
-      server.ssrLoadModule("/src/lib/pdf-resume-import/parser.ts"),
-      server.ssrLoadModule(
-        "/src/lib/pdf-resume-import/pdf-text-extraction.ts",
-      ),
-      server.ssrLoadModule("/src/lib/pdf-resume-import/text-heuristics.ts"),
-      server.ssrLoadModule(
-        "/src/lib/pdf-resume-import/document-language.ts",
-      ),
-    ]);
+  ] = await Promise.all([
+    server.ssrLoadModule("/src/lib/pdf-resume-import.ts"),
+    server.ssrLoadModule("/src/lib/pdf-resume-import/parser.ts"),
+    server.ssrLoadModule("/src/lib/pdf-resume-import/pdf-text-extraction.ts"),
+    server.ssrLoadModule("/src/lib/pdf-resume-import/text-heuristics.ts"),
+    server.ssrLoadModule("/src/lib/pdf-resume-import/document-language.ts"),
+  ]);
   assert.deepEqual(
     Object.keys(productEntry).sort(),
     ["importResumeFromPdf"],
@@ -260,13 +254,14 @@ try {
       fallbackSectionTitle,
       sectionRegistry,
       lexicon,
-    );
+    ).resume;
 
   verifyColumnLineSplitting(textContentToLinesForResumeImport);
   verifyCompactTwoColumnReadingOrder(buildResumeFromLines);
   verifyMixedSingleAndTwoColumnReadingOrder(buildResumeFromLines);
   verifyDisjointTwoColumnReadingOrder(buildResumeFromLines);
   verifyContactLocationExtraction(buildResumeFromLines);
+  verifyUnrecognizedHeaderAndSectionContent(buildResumeFromLines);
   verifyProjectItemGrouping(buildResumeFromLines);
   verifyPublicationItemGrouping(buildResumeFromLines);
   verifyFallbackSectionShape(buildResumeFromLines);
@@ -302,9 +297,7 @@ try {
   );
   verifyRtlTextOrder(textContentToLinesForResumeImport);
   verifyMixedDirectionTextOrder(textContentToLinesForResumeImport);
-  verifyEqualWeightMixedDirectionTextOrder(
-    textContentToLinesForResumeImport,
-  );
+  verifyEqualWeightMixedDirectionTextOrder(textContentToLinesForResumeImport);
   verifyRotatedTextFontSize(textContentToLinesForResumeImport);
   verifyContinuousHanGlyphTokens(textContentToLinesForResumeImport);
   verifyDocumentLanguageDetection(detectPdfResumeDocumentLocale);
@@ -342,10 +335,9 @@ function verifyAcyclicParserModules(directory) {
   function visit(moduleName, trail) {
     assert.ok(
       !visiting.has(moduleName),
-      `PDF parser modules must stay acyclic: ${[
-        ...trail,
-        moduleName,
-      ].join(" -> ")}`,
+      `PDF parser modules must stay acyclic: ${[...trail, moduleName].join(
+        " -> ",
+      )}`,
     );
     if (visited.has(moduleName)) {
       return;
@@ -437,8 +429,7 @@ async function verifyPublicPdfImportEntry(importResumeFromPdf) {
   Date.now = () => fakeNow;
   try {
     parserConfigResponseMode = "success";
-    const { resume: imported, documentLocale } =
-      await importResumeFromPdf(pdf);
+    const { resume: imported, documentLocale } = await importResumeFromPdf(pdf);
     assert.equal(documentLocale, "en");
     assert.equal(imported.basic.name, "Test User");
     assert.equal(imported.basic.email, "test.user@example.com");
@@ -476,7 +467,30 @@ async function verifyPublicPdfImportEntry(importResumeFromPdf) {
       "2020 - 2024",
     ],
   ]);
-  const shortImport = await importResumeFromPdf(shortPdf);
+  const { getDocument } = await import("pdfjs-dist/build/pdf.mjs");
+  const probe = getDocument({
+    data: new Uint8Array(await shortPdf.arrayBuffer()),
+  });
+  await probe.promise;
+  const loadingTaskPrototype = Object.getPrototypeOf(probe);
+  await probe.destroy();
+  const originalDestroy = loadingTaskPrototype.destroy;
+  let destroyCount = 0;
+  let shortImport;
+  loadingTaskPrototype.destroy = function (...args) {
+    destroyCount += 1;
+    return originalDestroy.apply(this, args);
+  };
+  try {
+    shortImport = await importResumeFromPdf(shortPdf);
+    assert.equal(
+      destroyCount,
+      1,
+      "A real PDF.js loading task must be destroyed after successful import.",
+    );
+  } finally {
+    loadingTaskPrototype.destroy = originalDestroy;
+  }
   assert.equal(
     shortImport.resume.basic.name,
     "Short User",
@@ -493,10 +507,33 @@ async function verifyPublicPdfImportEntry(importResumeFromPdf) {
     ],
   ]);
   const freeformImport = await importResumeFromPdf(freeformPdf);
+  assert.equal(freeformImport.unclassifiedLineCount, 2);
+  assert.equal(
+    JSON.stringify(freeformImport.resume).match(
+      /Built accessible internal tools/g,
+    )?.length,
+    1,
+    "Unclassified content must be preserved once, without repeating the header or summary.",
+  );
   assert.equal(
     requiredSection(freeformImport.resume, "other").title,
     "Other",
     "fallback section titles must come from the registry and detected document language",
+  );
+
+  await assert.rejects(
+    importResumeFromPdf(
+      createPdfFile(Array.from({ length: 51 }, () => ["Page text"])),
+    ),
+    { code: "PDF_IMPORT_TOO_MANY_PAGES" },
+  );
+  await assert.rejects(
+    importResumeFromPdf(
+      new File(["invalid pdf bytes"], "invalid.pdf", {
+        type: "application/pdf",
+      }),
+    ),
+    { code: "PDF_IMPORT_INVALID_PDF" },
   );
 
   const noisePdf = createPdfFile([["1"]]);
@@ -504,6 +541,74 @@ async function verifyPublicPdfImportEntry(importResumeFromPdf) {
     importResumeFromPdf(noisePdf),
     /PDF_IMPORT_NO_TEXT/,
     "a non-empty but meaningless text layer must not create a fake resume",
+  );
+}
+
+function verifyUnrecognizedHeaderAndSectionContent(buildResumeFromLines) {
+  const resume = buildResumeFromLines(
+    [
+      line("No Contact User", 0, 24),
+      line("Senior Backend Engineer | 8 years of experience", 1, 14),
+      line("Built resilient services for global teams.", 2),
+      line("Delivered reliable tools with measurable results.", 3),
+      line("Education", 4, 14),
+      line("Example University", 5),
+      line("2020 - 2024", 6),
+    ],
+    "Other",
+  );
+  assert.match(
+    JSON.stringify(resume.basic),
+    /Senior Backend Engineer/,
+    "Headers without recognized contacts must retain the professional headline.",
+  );
+  assert.match(
+    JSON.stringify(resume.basic),
+    /Built resilient services/,
+    "Headers without recognized contacts must retain the introduction.",
+  );
+  assert.match(JSON.stringify(resume.basic), /Delivered reliable tools/);
+
+  const adjacentHeadings = buildResumeFromLines(
+    [
+      line("Test User", 0),
+      line("test@example.com", 1),
+      line("A heading with no body", 2, 16),
+      line("Education", 3, 14),
+      line("Experience", 4, 14),
+      line("Example Company", 5),
+      line("2020 - 2024", 6),
+      line("Built reliable services.", 7),
+    ],
+    "Other",
+  );
+  assert.match(
+    JSON.stringify(adjacentHeadings),
+    /Education/,
+    "An empty inferred section must preserve its source heading for review.",
+  );
+  assert.match(JSON.stringify(adjacentHeadings), /A heading with no body/);
+  const combinedContacts = buildResumeFromLines(
+    [
+      line("Test User", 0),
+      line("person@example.com +1 555 123 4567", 1),
+      line("Wechat: portfolio-owner", 2),
+      line("https://portfolio.example.com", 3),
+      line("Education", 4),
+      line("Example University", 5),
+    ],
+    "Other",
+  );
+  const combinedText = JSON.stringify(combinedContacts);
+  assert.equal(
+    combinedText.match(/person@example.com/g)?.length,
+    1,
+    "Preserving unclassified header content must not duplicate recognized contacts.",
+  );
+  assert.match(
+    combinedText,
+    /portfolio-owner/,
+    "Text between separate contact rows must remain visible.",
   );
 }
 
@@ -607,29 +712,73 @@ function verifyDisjointTwoColumnReadingOrder(buildResumeFromLines) {
     positionedLine("Example Role", 880, leftColumn, 10, pageWidth),
     positionedLine("2022 - Present", 860, leftColumn, 10, pageWidth),
     positionedLine("• Improved a workflow.", 840, leftColumn, 10, pageWidth),
-    positionedLine("• Reduced processing time.", 820, leftColumn, 10, pageWidth),
+    positionedLine(
+      "• Reduced processing time.",
+      820,
+      leftColumn,
+      10,
+      pageWidth,
+    ),
     positionedLine("• Documented the result.", 800, leftColumn, 10, pageWidth),
     positionedLine("Skills", 920, rightColumn, 14, pageWidth),
-    ...["TypeScript", "React", "Node.js", "Testing", "Accessibility", "SQL", "Git"]
-      .map((text, index) =>
-        positionedLine(text, 900 - index * 20, rightColumn, 10, pageWidth),
-      ),
+    ...[
+      "TypeScript",
+      "React",
+      "Node.js",
+      "Testing",
+      "Accessibility",
+      "SQL",
+      "Git",
+    ].map((text, index) =>
+      positionedLine(text, 900 - index * 20, rightColumn, 10, pageWidth),
+    ),
     positionedLine("Awards", 700, leftColumn, 14, pageWidth),
     positionedLine("Example Award", 680, leftColumn, 10, pageWidth),
     positionedLine("2023", 660, leftColumn, 10, pageWidth),
-    positionedLine("Recognized for reliable delivery.", 640, leftColumn, 10, pageWidth),
+    positionedLine(
+      "Recognized for reliable delivery.",
+      640,
+      leftColumn,
+      10,
+      pageWidth,
+    ),
     positionedLine("Projects", 540, leftColumn, 14, pageWidth),
     positionedLine("Resume Workspace", 520, leftColumn, 10, pageWidth),
     positionedLine("Project Lead", 500, leftColumn, 10, pageWidth),
     positionedLine("2024 - Present", 480, leftColumn, 10, pageWidth),
-    positionedLine("• Built structured editing.", 460, leftColumn, 10, pageWidth),
-    positionedLine("• Added deterministic import.", 440, leftColumn, 10, pageWidth),
-    positionedLine("• Verified export quality.", 420, leftColumn, 10, pageWidth),
+    positionedLine(
+      "• Built structured editing.",
+      460,
+      leftColumn,
+      10,
+      pageWidth,
+    ),
+    positionedLine(
+      "• Added deterministic import.",
+      440,
+      leftColumn,
+      10,
+      pageWidth,
+    ),
+    positionedLine(
+      "• Verified export quality.",
+      420,
+      leftColumn,
+      10,
+      pageWidth,
+    ),
     positionedLine("Languages", 540, rightColumn, 14, pageWidth),
-    ...["English", "Mandarin", "Spanish", "French", "German", "Japanese", "Korean"]
-      .map((text, index) =>
-        positionedLine(text, 520 - index * 20, rightColumn, 10, pageWidth),
-      ),
+    ...[
+      "English",
+      "Mandarin",
+      "Spanish",
+      "French",
+      "German",
+      "Japanese",
+      "Korean",
+    ].map((text, index) =>
+      positionedLine(text, 520 - index * 20, rightColumn, 10, pageWidth),
+    ),
   ];
   const resume = buildResumeFromLines(lines, "Imported content");
 
@@ -674,7 +823,10 @@ function verifyProjectItemGrouping(buildResumeFromLines) {
       line("Reseno", 4),
       line("2026.03 - 至今", 5),
       line("AI Agent 简历制作网站", 6),
-      line("• 实现实时编辑、A4 预览、可折叠 section、关键词匹配与 PDF 导出。", 7),
+      line(
+        "• 实现实时编辑、A4 预览、可折叠 section、关键词匹配与 PDF 导出。",
+        7,
+      ),
       line("• 将编辑器与真实简历版式拆分为结构化数据模型，渲染更加稳定。", 8),
     ],
     "导入内容",
@@ -1039,16 +1191,13 @@ function verifyLocalizedDateSuffixParsing(buildResumeFromLines) {
   );
 }
 
-function verifyImportedContentIsNotSilentlyTruncated(
-  buildResumeFromLines,
-) {
+function verifyImportedContentIsNotSilentlyTruncated(buildResumeFromLines) {
   const contactFields = Array.from(
     { length: 8 },
     (_, index) => `Site${index + 1}: profile${index + 1}.example`,
   ).join(" | ");
-  const highlights = Array.from(
-    { length: 8 },
-    (_, index) => line(`• 完成第 ${index + 1} 项可验证成果。`, index + 6),
+  const highlights = Array.from({ length: 8 }, (_, index) =>
+    line(`• 完成第 ${index + 1} 项可验证成果。`, index + 6),
   );
   const resume = buildResumeFromLines(
     [
@@ -1452,10 +1601,7 @@ function verifyDocumentLanguageDetection(detectDocumentLocale) {
     "accented Latin letters should remain an English document",
   );
   assert.equal(
-    detectDocumentLocale([
-      line("王小明", 0),
-      line("Software Engineer", 1),
-    ]),
+    detectDocumentLocale([line("王小明", 0), line("Software Engineer", 1)]),
     "zh",
     "mixed Han and Latin text should default to Chinese",
   );
@@ -1530,10 +1676,7 @@ function verifyZhMinimalStructureRegression(
     meta: "GPA 3.85 / 4.0",
     period: "2019.09 - 2023.06",
     description: "主修前端工程、数据结构、软件工程与机器学习相关课程。",
-    highlights: [
-      "获得校一等奖学金。",
-      "毕业设计围绕智能内容生成工具展开。",
-    ],
+    highlights: ["获得校一等奖学金。", "毕业设计围绕智能内容生成工具展开。"],
   });
 
   const internship = requiredSection(resume, "internship");
@@ -1557,7 +1700,8 @@ function verifyZhMinimalStructureRegression(
     subtitle: "AI Agent 简历制作网站",
     meta: "React · TypeScript · Tailwind · shadcn/ui",
     period: "2026.03 - 至今",
-    description: "实现实时编辑、A4 预览、可折叠 section、关键词匹配与 PDF 导出。",
+    description:
+      "实现实时编辑、A4 预览、可折叠 section、关键词匹配与 PDF 导出。",
     highlights: [
       "将编辑器与真实简历版式拆分为结构化数据模型，渲染更加稳定。",
       "通过 AI Copilot 对 JD 关键词进行识别，并提供简历内容增强建议。",
@@ -1608,14 +1752,15 @@ function requiredLine(lines, text) {
 }
 
 function requiredSection(resume, kind) {
-  const semanticKind = {
-    work: "experience",
-    internship: "experience",
-    skills: "simple_list",
-    languages: "simple_list",
-    other: "simple_list",
-    awards: "achievement",
-  }[kind] ?? kind;
+  const semanticKind =
+    {
+      work: "experience",
+      internship: "experience",
+      skills: "simple_list",
+      languages: "simple_list",
+      other: "simple_list",
+      awards: "achievement",
+    }[kind] ?? kind;
   const titleMatcher = {
     internship: /intern|实习/i,
     skills: /skill|技能|技术栈/i,
@@ -1625,12 +1770,13 @@ function requiredSection(resume, kind) {
   const candidates = resume.sections.filter(
     (candidate) => candidate.kind === semanticKind,
   );
-  const section = candidates.find(
-    (candidate) =>
-      (!titleMatcher || titleMatcher.test(candidate.title)),
-  ) ?? (kind === "internship" && candidates.length === 1
-    ? candidates[0]
-    : undefined);
+  const section =
+    candidates.find(
+      (candidate) => !titleMatcher || titleMatcher.test(candidate.title),
+    ) ??
+    (kind === "internship" && candidates.length === 1
+      ? candidates[0]
+      : undefined);
   assert.ok(section, `Expected imported section kind: ${kind}`);
   return section;
 }
@@ -1702,10 +1848,7 @@ function createPdfFile(pages) {
       .map((objectId) => `${objectId} 0 R`)
       .join(" ")}] /Count ${pages.length} >>`,
   );
-  objects.set(
-    3,
-    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-  );
+  objects.set(3, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
 
   pages.forEach((lines, index) => {
     const pageObjectId = pageObjectIds[index];
@@ -1768,7 +1911,10 @@ function createPdfFile(pages) {
 }
 
 function escapePdfString(value) {
-  return value.replaceAll("\\", "\\\\").replaceAll("(", "\\(").replaceAll(")", "\\)");
+  return value
+    .replaceAll("\\", "\\\\")
+    .replaceAll("(", "\\(")
+    .replaceAll(")", "\\)");
 }
 
 function textItem(text, x, y, overrides = {}) {

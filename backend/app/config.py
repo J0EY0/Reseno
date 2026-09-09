@@ -1,5 +1,5 @@
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
@@ -36,6 +36,9 @@ class Settings:
     frontend_render_base_url: str
     pdf_render_timeout_ms: int
     cors_origins: tuple[str, ...]
+    chromium_executable: str | None
+    master_key: str = field(repr=False)
+    jwt_secret: str = field(repr=False)
 
 
 def expand_path(value: str | Path) -> Path:
@@ -44,22 +47,16 @@ def expand_path(value: str | Path) -> Path:
     return Path(value).expanduser().resolve()
 
 
-def _path_from_env(key: str, default: str | Path) -> Path:
-    """Read a filesystem path from the environment with a fallback."""
-
-    value = os.getenv(key)
-    if not value:
-        return expand_path(default)
-
-    return expand_path(value)
-
-
-def load_env_file(path: Path) -> None:
-    """Read optional startup configuration without replacing environment values."""
-
-    for key, value in dotenv_values(path, interpolate=False).items():
-        if value is not None and key not in SECRET_ENV_NAMES:
-            os.environ.setdefault(key, value)
+def _configuration_values(path: Path) -> dict[str, str]:
+    values = {
+        key: value
+        for key, value in dotenv_values(path, interpolate=False).items()
+        if value is not None
+    }
+    for key, value in os.environ.items():
+        if key not in SECRET_ENV_NAMES or value:
+            values[key] = value
+    return values
 
 
 def _parse_origins(value: str | None) -> tuple[str, ...]:
@@ -90,19 +87,11 @@ def _parse_int(value: str | None, default: int) -> int:
 def get_settings() -> Settings:
     """Resolve and cache runtime settings for the backend process."""
 
-    env_file_path = _path_from_env("APP_ENV_FILE", DEFAULT_ENV_PATH)
-    load_env_file(env_file_path)
-
-    data_dir = _path_from_env("APP_DATA_DIR", DEFAULT_DATA_DIR)
-    db_path = _path_from_env("APP_DB_PATH", data_dir / "app.db")
-    storage_dir = _path_from_env("APP_STORAGE_DIR", data_dir / "storage")
-    os.environ.update(
-        ensure_env_secrets(
-            env_file_path,
-            {key: os.getenv(key, "") for key in SECRET_ENV_NAMES},
-            existing_data_paths=(db_path, data_dir / "auth.db"),
-        )
-    )
+    env_file_path = expand_path(os.getenv("APP_ENV_FILE") or DEFAULT_ENV_PATH)
+    values = _configuration_values(env_file_path)
+    data_dir = expand_path(values.get("APP_DATA_DIR") or DEFAULT_DATA_DIR)
+    db_path = expand_path(values.get("APP_DB_PATH") or data_dir / "app.db")
+    storage_dir = expand_path(values.get("APP_STORAGE_DIR") or data_dir / "storage")
 
     return Settings(
         app_name="Reseno Backend",
@@ -110,16 +99,34 @@ def get_settings() -> Settings:
         data_dir=data_dir,
         db_path=db_path,
         storage_dir=storage_dir,
-        export_dir=_path_from_env("EXPORT_DIR", storage_dir / "exports"),
-        user_settings_path=_path_from_env(
-            "APP_USER_SETTINGS_PATH",
-            data_dir / "user_settings.json",
+        export_dir=expand_path(values.get("EXPORT_DIR") or storage_dir / "exports"),
+        user_settings_path=expand_path(
+            values.get("APP_USER_SETTINGS_PATH") or data_dir / "user_settings.json",
         ),
         env_file_path=env_file_path,
-        frontend_render_base_url=os.getenv(
+        frontend_render_base_url=values.get(
             "FRONTEND_RENDER_BASE_URL",
             "http://127.0.0.1:5173",
         ).rstrip("/"),
-        pdf_render_timeout_ms=_parse_int(os.getenv("PDF_RENDER_TIMEOUT_MS"), 30000),
-        cors_origins=_parse_origins(os.getenv("BACKEND_CORS_ORIGINS")),
+        pdf_render_timeout_ms=_parse_int(values.get("PDF_RENDER_TIMEOUT_MS"), 30000),
+        cors_origins=_parse_origins(values.get("BACKEND_CORS_ORIGINS")),
+        chromium_executable=values.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE") or None,
+        master_key=values.get(MASTER_KEY_ENV_NAME, ""),
+        jwt_secret=values.get(JWT_SECRET_ENV_NAME, ""),
     )
+
+
+def initialize_settings() -> Settings:
+    """Validate startup keys and persist missing keys for a fresh workspace."""
+
+    settings = get_settings()
+    ensure_env_secrets(
+        settings.env_file_path,
+        {
+            MASTER_KEY_ENV_NAME: settings.master_key,
+            JWT_SECRET_ENV_NAME: settings.jwt_secret,
+        },
+        existing_data_paths=(settings.db_path, settings.data_dir / "auth.db"),
+    )
+    get_settings.cache_clear()
+    return get_settings()

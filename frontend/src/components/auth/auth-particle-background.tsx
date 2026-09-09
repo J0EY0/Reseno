@@ -44,13 +44,18 @@ export function AuthParticleBackground() {
       context.fillStyle = color;
       context.beginPath();
       for (const { x, y, nx, ny, mask, halo } of particles) {
-        const wave = Math.sin(nx * 8 + ny * 4 - time * 0.45)
-          + 0.65 * Math.sin(ny * 9 - nx * 5 + time * 0.65)
-          + 0.4 * Math.cos((nx - ny) * 12 - time * 0.5);
+        const wave =
+          Math.sin(nx * 8 + ny * 4 - time * 0.45) +
+          0.65 * Math.sin(ny * 9 - nx * 5 + time * 0.65) +
+          0.4 * Math.cos((nx - ny) * 12 - time * 0.5);
         const baseRadius = 0.1 + 1.6 * smooth((wave + 1.6) / 3.2);
-        const passage = smooth((Math.cos((nx - 0.5) * 2 + ny - 0.5 - time * 0.45) + 0.2) / 0.95);
+        const passage = smooth(
+          (Math.cos((nx - 0.5) * 2 + ny - 0.5 - time * 0.45) + 0.2) / 0.95,
+        );
         const amount = passage * 0.85;
-        const radius = baseRadius * (1 - amount * halo) + amount * (0.15 * halo + 1.5 * mask);
+        const radius =
+          baseRadius * (1 - amount * halo) +
+          amount * (0.15 * halo + 1.5 * mask);
         if (radius <= 0.13) continue;
         context.moveTo(x + radius, y);
         context.arc(x, y, radius, 0, Math.PI * 2);
@@ -74,12 +79,25 @@ export function AuthParticleBackground() {
       const style = getComputedStyle(canvas);
       color = style.getPropertyValue("--auth-particle-dots").trim();
       background = context.createRadialGradient(
-        width * 0.47, height * 0.44, 0,
-        width * 0.47, height * 0.44, width * 0.82,
+        width * 0.47,
+        height * 0.44,
+        0,
+        width * 0.47,
+        height * 0.44,
+        width * 0.82,
       );
-      background.addColorStop(0, style.getPropertyValue("--auth-particle-center").trim());
-      background.addColorStop(0.6, style.getPropertyValue("--auth-particle-base").trim());
-      background.addColorStop(1, style.getPropertyValue("--auth-particle-edge").trim());
+      background.addColorStop(
+        0,
+        style.getPropertyValue("--auth-particle-center").trim(),
+      );
+      background.addColorStop(
+        0.6,
+        style.getPropertyValue("--auth-particle-base").trim(),
+      );
+      background.addColorStop(
+        1,
+        style.getPropertyValue("--auth-particle-edge").trim(),
+      );
       draw();
       if (!reducedMotion.matches && !document.hidden) {
         lastFrame = performance.now();
@@ -105,20 +123,34 @@ export function AuthParticleBackground() {
       const sampler = document.createElement("canvas");
       sampler.width = width;
       sampler.height = height;
-      const sampleContext = sampler.getContext("2d", { willReadFrequently: true });
+      const sampleContext = sampler.getContext("2d", {
+        willReadFrequently: true,
+      });
       if (!sampleContext) return;
 
       const logoWidth = width * 0.8;
-      const logoHeight = logoWidth * logo.naturalHeight / logo.naturalWidth;
+      const logoHeight = (logoWidth * logo.naturalHeight) / logo.naturalWidth;
       if (logo.complete && logo.naturalWidth) {
         sampleContext.filter = "blur(8px)";
-        sampleContext.drawImage(logo, (width - logoWidth) / 2, (height - logoHeight) / 2, logoWidth, logoHeight);
+        sampleContext.drawImage(
+          logo,
+          (width - logoWidth) / 2,
+          (height - logoHeight) / 2,
+          logoWidth,
+          logoHeight,
+        );
       }
       const data = sampleContext.getImageData(0, 0, width, height).data;
       sampleContext.clearRect(0, 0, width, height);
       if (logo.complete && logo.naturalWidth) {
         sampleContext.filter = "blur(32px)";
-        sampleContext.drawImage(logo, (width - logoWidth) / 2, (height - logoHeight) / 2, logoWidth, logoHeight);
+        sampleContext.drawImage(
+          logo,
+          (width - logoWidth) / 2,
+          (height - logoHeight) / 2,
+          logoWidth,
+          logoHeight,
+        );
       }
       const haloData = sampleContext.getImageData(0, 0, width, height).data;
       const spacing = width < 400 ? 3.5 : 4.5;
@@ -126,7 +158,10 @@ export function AuthParticleBackground() {
         for (let x = 2; x < width; x += spacing) {
           const index = (Math.floor(y) * width + Math.floor(x)) * 4 + 3;
           const mask = data[index] / 255;
-          const halo = Math.max(mask, Math.min(1, haloData[index] / 255 * 2.2));
+          const halo = Math.max(
+            mask,
+            Math.min(1, (haloData[index] / 255) * 2.2),
+          );
           particles.push({ x, y, nx: x / width, ny: y / height, mask, halo });
         }
       }

@@ -11,8 +11,7 @@ export const OAUTH_TAB_RESULT = "reseno:oauth:result";
 export const OAUTH_TAB_RECEIVED = "reseno:oauth:received";
 
 export type OAuthProgress =
-  | { stage: "preparing" | "waiting" }
-  | { stage: "blocked"; open: () => void };
+  { stage: "preparing" | "waiting" } | { stage: "blocked"; open: () => void };
 
 interface OAuthBindingOptions {
   setup?: boolean;
@@ -59,40 +58,70 @@ export async function authorizeGitHubBinding({
     }
 
     async function receiveResult(event: MessageEvent<unknown>) {
-      if (!tab || event.origin !== origin || event.source !== tab || handling || settled) {
+      if (
+        !tab ||
+        event.origin !== origin ||
+        event.source !== tab ||
+        handling ||
+        settled
+      ) {
         return;
       }
       const result = event.data;
-      if (!result || typeof result !== "object" || !("type" in result) || result.type !== OAUTH_TAB_RESULT) {
+      if (
+        !result ||
+        typeof result !== "object" ||
+        !("type" in result) ||
+        result.type !== OAUTH_TAB_RESULT
+      ) {
         return;
       }
       const payload = result as Record<string, unknown>;
       if (typeof payload.error === "string" && payload.error.length <= 128) {
-        finish(new Error((t.apiMessages as Record<string, string>)[payload.error] ?? t.oauthStartFailed));
+        finish(
+          new Error(
+            (t.apiMessages as Record<string, string>)[payload.error] ??
+              t.oauthStartFailed,
+          ),
+        );
         return;
       }
-      if (typeof payload.code !== "string" || !payload.code || payload.code.length > 128 || payload.intent !== "bind") {
+      if (
+        typeof payload.code !== "string" ||
+        !payload.code ||
+        payload.code.length > 128 ||
+        payload.intent !== "bind"
+      ) {
         return;
       }
 
       handling = true;
       tab?.postMessage({ type: OAUTH_TAB_RECEIVED }, origin);
       try {
-        const completion = await completeOAuth(payload.code, controller.signal, "bind");
+        const completion = await completeOAuth(
+          payload.code,
+          controller.signal,
+          "bind",
+        );
         controller.signal.throwIfAborted();
         await onComplete(completion, controller.signal);
         finish();
       } catch (error) {
-        finish(error instanceof Error && error.message === "OAUTH_INVALID_STATE"
-          ? new Error(t.apiMessages.OAUTH_INVALID_STATE)
-          : error);
+        finish(
+          error instanceof Error && error.message === "OAUTH_INVALID_STATE"
+            ? new Error(t.apiMessages.OAUTH_INVALID_STATE)
+            : error,
+        );
       }
     }
 
     const closeTimer = window.setInterval(() => {
       if (tab?.closed) finish(new Error(t.oauthTabClosed));
     }, 250);
-    const timeout = window.setTimeout(() => finish(new Error(t.oauthTabTimeout)), 10 * 60 * 1_000);
+    const timeout = window.setTimeout(
+      () => finish(new Error(t.oauthTabTimeout)),
+      10 * 60 * 1_000,
+    );
     const preparingTimer = window.setTimeout(() => {
       if (!settled) onProgress({ stage: "preparing" });
     }, 150);
@@ -103,14 +132,21 @@ export async function authorizeGitHubBinding({
       try {
         const authorization = setup
           ? await requestGitHubSetup(controller.signal)
-          : await requestOAuthAuthorization("github", "bind", controller.signal);
+          : await requestOAuthAuthorization(
+              "github",
+              "bind",
+              controller.signal,
+            );
         controller.signal.throwIfAborted();
         window.clearTimeout(preparingTimer);
 
         function openAuthorization() {
           if (settled || tab) return;
           try {
-            tab = window.open(typeof authorization === "string" ? authorization : "", name);
+            tab = window.open(
+              typeof authorization === "string" ? authorization : "",
+              name,
+            );
             if (!tab) {
               onProgress({ stage: "blocked", open: openAuthorization });
               return;

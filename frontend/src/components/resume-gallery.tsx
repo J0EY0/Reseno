@@ -25,6 +25,9 @@ export function ResumeGallery({
   resumes,
   templates,
   isImporting,
+  importProgress,
+  onRetryImport,
+  onCancelImport,
   isCreating,
   openingResumeId,
   onPreloadResumeDetail,
@@ -39,6 +42,9 @@ export function ResumeGallery({
   resumes: ResumeWorkspaceItem[];
   templates: ResumeTemplateDefinition[];
   isImporting: boolean;
+  importProgress: { importedCount: number; remainingCount: number } | null;
+  onRetryImport: () => void;
+  onCancelImport: () => void;
   isCreating: boolean;
   openingResumeId: string | null;
   onPreloadResumeDetail: () => void;
@@ -125,6 +131,11 @@ export function ResumeGallery({
               )}
               {isImporting ? t.importing : t.importResume}
             </Button>
+            {isImporting ? (
+              <Button type="button" variant="outline" onClick={onCancelImport}>
+                {t.resumeImportCancel}
+              </Button>
+            ) : null}
             <NewResumeDialog
               disabled={isImporting || isCreating}
               isCreating={isCreating}
@@ -134,6 +145,27 @@ export function ResumeGallery({
           </>
         }
       />
+      {importProgress ? (
+        <div
+          className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-warning/40 bg-warning/5 p-3 text-sm"
+          role="status"
+          data-slot="resume-import-progress"
+        >
+          <p>
+            {t.resumeImportPartial
+              .replace("{count}", String(importProgress.importedCount))
+              .replace("{failed}", String(importProgress.remainingCount))}
+          </p>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={onRetryImport}
+          >
+            {t.retry}
+          </Button>
+        </div>
+      ) : null}
       {gallery.paginatedResumes.length === 0 ? (
         <Empty className="min-h-[390px]">
           <EmptyDescription className="font-medium">

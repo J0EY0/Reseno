@@ -27,14 +27,23 @@ function movedIds(beforeIds: string[], afterIds: string[]) {
   const sequences: string[][] = [];
   for (const id of afterIds) {
     const stable = sequences
-      .filter((_, index) =>
-        positions.get(afterIds[index]!)! < positions.get(id)!)
-      .reduce<string[]>((longest, sequence) =>
-        sequence.length > longest.length ? sequence : longest, []);
+      .filter(
+        (_, index) => positions.get(afterIds[index]!)! < positions.get(id)!,
+      )
+      .reduce<string[]>(
+        (longest, sequence) =>
+          sequence.length > longest.length ? sequence : longest,
+        [],
+      );
     sequences.push([...stable, id]);
   }
-  const stableIds = new Set(sequences.reduce<string[]>((longest, sequence) =>
-    sequence.length > longest.length ? sequence : longest, []));
+  const stableIds = new Set(
+    sequences.reduce<string[]>(
+      (longest, sequence) =>
+        sequence.length > longest.length ? sequence : longest,
+      [],
+    ),
+  );
   return new Set(afterIds.filter((id) => !stableIds.has(id)));
 }
 
@@ -44,10 +53,7 @@ function applyReplaceField(
   operation: Extract<ResumeEditOperation, { type: "replace_field" }>,
 ): OperationApplyResult {
   const field = replaceBasicField(operation.path);
-  if (
-    !field ||
-    typeof operation.value !== "string"
-  ) {
+  if (!field || typeof operation.value !== "string") {
     return operationRejected(
       "invalid_operation",
       typeof operation.path === "string" ? operation.path : edit.target,
@@ -84,10 +90,7 @@ function applyInsertSection(
   }
 
   if (!isCanonicalResumeSection(operation.section)) {
-    return operationRejected(
-      "invalid_operation",
-      sectionPath(sectionId),
-    );
+    return operationRejected("invalid_operation", sectionPath(sectionId));
   }
 
   if (findSection(resume, operation.section.id)) {
@@ -203,7 +206,10 @@ function applyReorderSections(
   const beforeIds = resume.sections.map((section) => section.id);
   const byId = new Map(resume.sections.map((section) => [section.id, section]));
 
-  if (!Array.isArray(operation.sectionIds) || operation.sectionIds.length === 0) {
+  if (
+    !Array.isArray(operation.sectionIds) ||
+    operation.sectionIds.length === 0
+  ) {
     return operationRejected("invalid_operation", "sections");
   }
 
@@ -241,16 +247,18 @@ function applyReorderSections(
     ...afterIds.flatMap((sectionId, afterIndex) => {
       return !movedSectionIds.has(sectionId)
         ? []
-        : [{
-            id: `diff-${edit.id}-${sectionId}`,
-            operationId: edit.id,
-            path: sectionPath(sectionId),
-            kind: "moved" as const,
-            label: edit.title,
-            sectionId,
-            before: beforeIds.indexOf(sectionId),
-            after: afterIndex,
-          }];
+        : [
+            {
+              id: `diff-${edit.id}-${sectionId}`,
+              operationId: edit.id,
+              path: sectionPath(sectionId),
+              kind: "moved" as const,
+              label: edit.title,
+              sectionId,
+              before: beforeIds.indexOf(sectionId),
+              after: afterIndex,
+            },
+          ];
     }),
   );
 }
@@ -295,7 +303,10 @@ function applyInsertItem(
     );
   }
 
-  const insertAt = clampInsertIndex(operation.index, match.section.items.length);
+  const insertAt = clampInsertIndex(
+    operation.index,
+    match.section.items.length,
+  );
   const nextItems = [...match.section.items];
   nextItems.splice(insertAt, 0, operation.item);
   resume.sections[match.index] = {
@@ -341,9 +352,10 @@ function applyUpdateItem(
   const allowedFields = new Set<string>(
     SECTION_ITEM_FIELDS[sectionMatch.section.kind],
   );
-  const patchFields = operation.patch && typeof operation.patch === "object"
-    ? Object.keys(operation.patch)
-    : [];
+  const patchFields =
+    operation.patch && typeof operation.patch === "object"
+      ? Object.keys(operation.patch)
+      : [];
 
   if (
     patchFields.length === 0 ||
@@ -358,7 +370,9 @@ function applyUpdateItem(
   const currentItem = itemMatch.item as unknown as Record<string, unknown>;
   const patch = operation.patch as Record<string, unknown>;
 
-  if (patchFields.every((field) => isDeepEqual(currentItem[field], patch[field]))) {
+  if (
+    patchFields.every((field) => isDeepEqual(currentItem[field], patch[field]))
+  ) {
     return operationRejected(
       "no_change",
       itemPath(operation.sectionId, operation.itemId),
@@ -483,7 +497,9 @@ function applyReorderItems(
   }
 
   const beforeIds = sectionMatch.section.items.map((item) => item.id);
-  const byId = new Map(sectionMatch.section.items.map((item) => [item.id, item]));
+  const byId = new Map(
+    sectionMatch.section.items.map((item) => [item.id, item]),
+  );
 
   if (!Array.isArray(operation.itemIds) || operation.itemIds.length === 0) {
     return operationRejected(
@@ -499,7 +515,9 @@ function applyReorderItems(
     );
   }
 
-  const missingItemIds = operation.itemIds.filter((itemId) => !byId.has(itemId));
+  const missingItemIds = operation.itemIds.filter(
+    (itemId) => !byId.has(itemId),
+  );
 
   if (missingItemIds.length > 0) {
     return operationRejected(
@@ -536,17 +554,19 @@ function applyReorderItems(
     ...afterIds.flatMap((itemId, afterIndex) => {
       return !movedItemIds.has(itemId)
         ? []
-        : [{
-            id: `diff-${edit.id}-${itemId}`,
-            operationId: edit.id,
-            path: itemPath(operation.sectionId, itemId),
-            kind: "moved" as const,
-            label: edit.title,
-            sectionId: operation.sectionId,
-            itemId,
-            before: beforeIds.indexOf(itemId),
-            after: afterIndex,
-          }];
+        : [
+            {
+              id: `diff-${edit.id}-${itemId}`,
+              operationId: edit.id,
+              path: itemPath(operation.sectionId, itemId),
+              kind: "moved" as const,
+              label: edit.title,
+              sectionId: operation.sectionId,
+              itemId,
+              before: beforeIds.indexOf(itemId),
+              after: afterIndex,
+            },
+          ];
     }),
   );
 }

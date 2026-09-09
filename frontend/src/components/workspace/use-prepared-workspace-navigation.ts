@@ -39,12 +39,9 @@ export function usePreparedWorkspaceNavigation({
   const { beginNavigation, cancelNavigation } =
     useWorkspaceNavigationTransaction();
 
-  const preload = useCallback(
-    (view: WorkspaceView) => {
-      void preloadWorkspaceRoute(view).catch(() => undefined);
-    },
-    [],
-  );
+  const preload = useCallback((view: WorkspaceView) => {
+    void preloadWorkspaceRoute(view).catch(() => undefined);
+  }, []);
 
   const request = useCallback(
     (view: WorkspaceView) => {

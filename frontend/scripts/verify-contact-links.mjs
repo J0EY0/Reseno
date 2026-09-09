@@ -11,12 +11,12 @@ import { createViteTestCacheDir } from "./vite-test-cache.mjs";
 const root = new URL("..", import.meta.url).pathname;
 const helperPath = join(root, "src", "lib", "contact-links.ts");
 const source = await readFile(helperPath, "utf8");
-const {
-  createContactHref,
-  normalizeContactFieldType,
-} = evaluateTypeScript(source, {
-  globals: { URL, Set },
-});
+const { createContactHref, normalizeContactFieldType } = evaluateTypeScript(
+  source,
+  {
+    globals: { URL, Set },
+  },
+);
 
 assert.equal(normalizeContactFieldType("url"), "url");
 assert.equal(normalizeContactFieldType("javascript"), "text");

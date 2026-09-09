@@ -19,6 +19,7 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 from playwright.sync_api import (
+    APIResponse,
     Browser,
     Locator,
     Page,
@@ -5225,7 +5226,9 @@ def test_duplicate_saved_resume_opens_only_from_toast_action(
             "button",
             name=re.compile(r"^(Basic Info: Toggle section|基本信息: 展开或收起模块)$"),
         ).click()
-        page.locator('input[name="name"]').fill("Duplicate Regression Source")
+        page.get_by_role("textbox", name=re.compile(r"^(Full Name|姓名)$")).fill(
+            "Duplicate Regression Source"
+        )
 
         with page.expect_response(
             lambda response: (
@@ -5452,7 +5455,7 @@ def test_duplicate_resume_stops_if_content_changes_during_save(
 
         page.route(f"**/api/resumes/{resume_id}*", hold_checkpoint_save)
 
-        name_input = page.locator('input[name="name"]')
+        name_input = page.get_by_role("textbox", name="姓名", exact=True)
         name_input.fill("Snapshot captured for copy")
         with page.expect_request(
             lambda request: (
@@ -5470,7 +5473,7 @@ def test_duplicate_resume_stops_if_content_changes_during_save(
             "Snapshot captured for copy"
         )
 
-        headline_input = page.locator('input[name="headline"]')
+        headline_input = page.get_by_role("textbox", name="职位 / 标题", exact=True)
         headline_input.fill("Newer edit must stay in the editor")
         with page.expect_response(
             lambda response: (
@@ -5491,7 +5494,7 @@ def test_duplicate_resume_stops_if_content_changes_during_save(
         assert duplicate_request_count == 0
         assert page.url == f"{frontend_url}/resume/{resume_id}"
         assert page.get_by_role("dialog").count() == 0
-        assert headline_input.input_value() == "Newer edit must stay in the editor"
+        assert headline_input.inner_text() == "Newer edit must stay in the editor"
         page.get_by_role("button", name="保存状态", exact=True).hover()
         page.get_by_text("有未保存更改", exact=True).wait_for(state="visible")
     finally:
@@ -8670,32 +8673,30 @@ def test_resume_preparation_establishes_checkpoint_before_editor_mount(
               const deadline = performance.now() + 8_000;
               let openedBasicInfo = false;
               const saveWhenReady = () => {{
-                const input = document.querySelector('input[name="name"]');
+                const input = document.querySelector(
+                  '[role="textbox"][aria-label="姓名"]',
+                );
                 const saveButton = document.querySelector(
                   'button[aria-label="保存状态"]',
                 );
-                const valueSetter = Object.getOwnPropertyDescriptor(
-                  HTMLInputElement.prototype,
-                  "value",
-                )?.set;
                 if (
                   window.location.pathname === "/resume/{resume_id}" &&
                   saveButton instanceof HTMLButtonElement &&
                   (!editBeforeCheckpoint ||
-                    (input instanceof HTMLInputElement && valueSetter))
+                    (input instanceof HTMLElement && input.isContentEditable))
                 ) {{
                   if (
                     editBeforeCheckpoint &&
-                    input instanceof HTMLInputElement &&
-                    valueSetter
+                    input instanceof HTMLElement &&
+                    input.isContentEditable
                   ) {{
-                    valueSetter.call(
-                      input,
-                      "Saved After Preparation Returned",
-                    );
-                    input.dispatchEvent(
-                      new Event("input", {{ bubbles: true }}),
-                    );
+                    input.focus();
+                    window.getSelection()?.selectAllChildren(input);
+                    if (!document.execCommand(
+                      "insertText", false, "Saved After Preparation Returned",
+                    )) {{
+                      throw new Error("Name editor could not accept text.");
+                    }}
                   }}
                   window.setTimeout(() => {{
                     saveButton.click();
@@ -8748,9 +8749,9 @@ def test_resume_preparation_establishes_checkpoint_before_editor_mount(
         page.wait_for_function("window.__resumePreparationReleased === true")
         page.wait_for_timeout(100)
         if edit_before_checkpoint:
-            assert page.locator('input[name="name"]').input_value() == (
-                "Saved After Preparation Returned"
-            )
+            assert page.get_by_role(
+                "textbox", name="姓名", exact=True
+            ).inner_text() == ("Saved After Preparation Returned")
         page.get_by_role("button", name="保存状态", exact=True).hover()
         page.get_by_text("有未保存更改", exact=True).wait_for(state="detached")
         checkpoint_label = page.evaluate(
@@ -8872,14 +8873,11 @@ def test_resume_version_switch_keeps_workspace_and_history_popover_stable(
 
         before = page.evaluate(
             """
-            () => {
+            (popover) => {
               const preview = document.querySelector(
                 '.resume-preview-card article.resume-page',
               );
               const editor = document.querySelector('.resume-editor-panel');
-              const popover = document.querySelector(
-                '[data-slot="popover-content"][aria-label="保存版本"]',
-              );
               if (!(preview instanceof HTMLElement) ||
                   !(editor instanceof HTMLElement) ||
                   !(popover instanceof HTMLElement)) {
@@ -8905,7 +8903,8 @@ def test_resume_version_switch_keeps_workspace_and_history_popover_stable(
                 },
               };
             }
-            """
+            """,
+            version_popover.element_handle(),
         )
 
         version_pattern = f"**/api/resumes/{resume_id}/versions/1"
@@ -9633,6 +9632,7 @@ def test_resume_autosave_persists_edit_made_during_active_save(
     page = context.new_page()
     save_payloads: list[dict[str, object]] = []
     save_urls: list[str] = []
+    held_saves: list[Route] = []
 
     def delay_first_save(route: Route) -> None:
         request = route.request
@@ -9645,7 +9645,8 @@ def test_resume_autosave_persists_edit_made_during_active_save(
         save_payloads.append(payload)
         save_urls.append(request.url)
         if len(save_payloads) == 1:
-            time.sleep(1)
+            held_saves.append(route)
+            return
         route.continue_()
 
     page.route(f"**/api/resumes/{resume_id}*", delay_first_save)
@@ -9657,63 +9658,23 @@ def test_resume_autosave_persists_edit_made_during_active_save(
             name="基本信息: 展开或收起模块",
             exact=True,
         ).click()
-        name_input = page.locator('input[name="name"]')
+        name_input = page.get_by_role("textbox", name="姓名", exact=True)
         name_input.fill("First Save Payload")
-        page.wait_for_timeout(50)
-        page.evaluate(
-            """
-            () => {
-              const input = document.querySelector('input[name="name"]');
-              if (!(input instanceof HTMLInputElement)) {
-                throw new Error("Name input is unavailable.");
-              }
-              const valueSetter = Object.getOwnPropertyDescriptor(
-                HTMLInputElement.prototype,
-                "value",
-              )?.set;
-              if (!valueSetter) {
-                throw new Error("Native input value setter is unavailable.");
-              }
-              window.setTimeout(() => {
-                valueSetter.call(input, "Latest Edit During Save");
-                input.dispatchEvent(new Event("input", { bubbles: true }));
-
-                const editTitleButton = document.querySelector(
-                  'button[aria-label="修改简历标题"]',
-                );
-                if (!(editTitleButton instanceof HTMLButtonElement)) {
-                  throw new Error("Edit title button is unavailable.");
-                }
-                editTitleButton.click();
-                window.setTimeout(() => {
-                  const dialog = document.querySelector('[role="dialog"]');
-                  const titleInput = dialog?.querySelector("input");
-                  const saveButton = [...(dialog?.querySelectorAll("button") ?? [])]
-                    .find((button) => button.textContent?.trim() === "保存");
-                  if (
-                    !(titleInput instanceof HTMLInputElement) ||
-                    !(saveButton instanceof HTMLButtonElement)
-                  ) {
-                    throw new Error("Resume title dialog is unavailable.");
-                  }
-                  valueSetter.call(titleInput, "Latest Title During");
-                  titleInput.dispatchEvent(new Event("input", { bubbles: true }));
-                  saveButton.click();
-                }, 0);
-              }, 200);
-              window.setTimeout(() => {
-                const backButton = [...document.querySelectorAll("button")].find(
-                  (button) => button.textContent?.includes("返回简历列表"),
-                );
-                if (!(backButton instanceof HTMLButtonElement)) {
-                  throw new Error("Back button is unavailable.");
-                }
-                backButton.click();
-              }, 500);
-            }
-            """
-        )
-        page.keyboard.press("Control+S")
+        with page.expect_request(
+            lambda request: (
+                request.method == "PUT"
+                and urlparse(request.url).path == f"/api/resumes/{resume_id}"
+            )
+        ):
+            page.keyboard.press("Control+S")
+        assert len(held_saves) == 1
+        name_input.fill("Latest Edit During Save")
+        page.get_by_role("button", name="修改简历标题", exact=True).click()
+        title_dialog = page.get_by_role("dialog", name="修改简历标题", exact=True)
+        title_dialog.get_by_role("textbox").fill("Latest Title During")
+        title_dialog.get_by_role("button", name="保存", exact=True).click()
+        page.get_by_role("button", name="返回简历列表", exact=True).click()
+        held_saves.pop().continue_()
 
         deadline = time.monotonic() + 8
         while len(save_payloads) < 2 and time.monotonic() < deadline:
@@ -10510,7 +10471,9 @@ def test_save_status_announces_unsaved_saving_and_saved_states(
             name="基本信息: 展开或收起模块",
             exact=True,
         ).click()
-        page.locator('input[name="name"]').fill("Accessible Save State")
+        page.get_by_role("textbox", name="姓名", exact=True).fill(
+            "Accessible Save State"
+        )
 
         announcement = page.locator('[data-slot="save-status-announcement"]')
         expect(announcement).to_have_attribute("role", "status")
@@ -11834,7 +11797,7 @@ def test_autosave_max_wait_retries_with_backoff_without_toast_storm(
             name="基本信息: 展开或收起模块",
             exact=True,
         ).click()
-        name_input = page.locator('input[name="name"]')
+        name_input = page.get_by_role("textbox", name="姓名", exact=True)
         page.clock.install()
         first_edit_started_at = page.evaluate("Date.now()")
 
@@ -13603,10 +13566,13 @@ def test_leave_reprepares_gallery_after_edit_during_target_load(
     workspace_servers: tuple[str, str],
 ) -> None:
     frontend_url, _ = workspace_servers
-    context = _authenticated_context(browser, viewport={"width": 1672, "height": 870})
+    context = _authenticated_context(
+        browser, locale="zh-CN", viewport={"width": 1672, "height": 870}
+    )
     page = context.new_page()
     resume_id: str | None = None
     gallery_request_count = 0
+    held_gallery_snapshots: list[tuple[Route, APIResponse]] = []
     updated_name = "Saved During Target Preparation"
 
     def hold_first_gallery_snapshot(route: Route) -> None:
@@ -13616,9 +13582,7 @@ def test_leave_reprepares_gallery_after_edit_during_target_load(
             route.continue_()
             return
 
-        response = route.fetch()
-        time.sleep(0.45)
-        route.fulfill(response=response)
+        held_gallery_snapshots.append((route, route.fetch()))
 
     try:
         create_response = page.request.post(
@@ -13641,29 +13605,18 @@ def test_leave_reprepares_gallery_after_edit_during_target_load(
             "**/api/workspace/pages/resumes",
             hold_first_gallery_snapshot,
         )
-        page.evaluate(
-            """
-            (nextName) => {
-              const back = [...document.querySelectorAll("button")].find(
-                (button) => button.textContent?.includes("返回简历列表"),
-              );
-              const name = document.querySelector('input[name="name"]');
-              const valueSetter = Object.getOwnPropertyDescriptor(
-                HTMLInputElement.prototype,
-                "value",
-              )?.set;
-              if (!(back instanceof HTMLButtonElement) ||
-                  !(name instanceof HTMLInputElement) ||
-                  !valueSetter) {
-                throw new Error("Resume leave targets are unavailable.");
-              }
-              back.click();
-              valueSetter.call(name, nextName);
-              name.dispatchEvent(new Event("input", { bubbles: true }));
-            }
-            """,
-            updated_name,
+        with page.expect_request("**/api/workspace/pages/resumes"):
+            page.get_by_role("button", name="返回简历列表", exact=True).click()
+        deadline = time.monotonic() + 3
+        while not held_gallery_snapshots and time.monotonic() < deadline:
+            page.wait_for_timeout(20)
+        assert len(held_gallery_snapshots) == 1
+        page.get_by_role("textbox", name="姓名", exact=True).fill(updated_name)
+        expect(page.locator('[data-slot="save-status-announcement"]')).to_have_text(
+            "有未保存更改"
         )
+        route, snapshot = held_gallery_snapshots.pop()
+        route.fulfill(response=snapshot)
 
         page.get_by_role(
             "heading",
@@ -13681,15 +13634,11 @@ def test_leave_reprepares_gallery_after_edit_during_target_load(
         page.wait_for_load_state("networkidle")
 
         assert gallery_request_count == 2
-        assert (
-            page.locator(f'a[href="/resume/{resume_id}"]')
-            .get_by_text(
-                updated_name,
-                exact=True,
+        expect(
+            page.locator(f'a[href="/resume/{resume_id}"]').get_by_text(
+                updated_name, exact=True
             )
-            .count()
-            == 1
-        )
+        ).to_have_count(1)
     finally:
         if resume_id:
             trash_response = page.request.post(
@@ -13725,7 +13674,9 @@ def test_leaving_resume_promotes_completed_autosave_to_checkpoint(
             name="基本信息: 展开或收起模块",
             exact=True,
         ).click()
-        page.locator('input[name="name"]').fill("Autosaved Before Leave")
+        page.get_by_role("textbox", name="姓名", exact=True).fill(
+            "Autosaved Before Leave"
+        )
 
         deadline = time.monotonic() + 8
         while len(save_urls) < 1 and time.monotonic() < deadline:
@@ -13781,7 +13732,7 @@ def test_latest_navigation_waits_for_active_checkpoint_promotion(
             ),
             timeout=8_000,
         ) as autosave_response_info:
-            page.locator('input[name="name"]').fill(
+            page.get_by_role("textbox", name="姓名", exact=True).fill(
                 "Autosaved Before Superseded Navigation"
             )
         assert autosave_response_info.value.ok
@@ -13870,7 +13821,9 @@ def test_checkpoint_failure_after_autosave_does_not_block_leaving_resume(
             name="基本信息: 展开或收起模块",
             exact=True,
         ).click()
-        page.locator('input[name="name"]').fill("Autosaved Before Failed Checkpoint")
+        page.get_by_role("textbox", name="姓名", exact=True).fill(
+            "Autosaved Before Failed Checkpoint"
+        )
 
         deadline = time.monotonic() + 8
         while len(save_urls) < 1 and time.monotonic() < deadline:
@@ -13907,6 +13860,7 @@ def test_checkpoint_failure_keeps_new_edit_made_before_logout(
     )
     page = context.new_page()
     save_urls: list[str] = []
+    held_checkpoints: list[Route] = []
 
     def fail_delayed_checkpoint(route: Route) -> None:
         if route.request.method != "PUT":
@@ -13918,19 +13872,7 @@ def test_checkpoint_failure_keeps_new_edit_made_before_logout(
             route.continue_()
             return
 
-        # Keep the checkpoint in flight while the browser applies a newer edit.
-        time.sleep(0.8)
-        route.fulfill(
-            status=200,
-            content_type="application/json",
-            body=json.dumps(
-                {
-                    "code": 40000,
-                    "message": "RESUME_DOCUMENT_INVALID",
-                    "data": None,
-                }
-            ),
-        )
+        held_checkpoints.append(route)
 
     page.route(f"**/api/resumes/{resume_id}*", fail_delayed_checkpoint)
 
@@ -13941,7 +13883,9 @@ def test_checkpoint_failure_keeps_new_edit_made_before_logout(
             name="基本信息: 展开或收起模块",
             exact=True,
         ).click()
-        page.locator('input[name="name"]').fill("Autosaved Before Promotion")
+        page.get_by_role("textbox", name="姓名", exact=True).fill(
+            "Autosaved Before Promotion"
+        )
 
         deadline = time.monotonic() + 8
         while len(save_urls) < 1 and time.monotonic() < deadline:
@@ -13950,28 +13894,26 @@ def test_checkpoint_failure_keeps_new_edit_made_before_logout(
         assert len(save_urls) == 1, save_urls
         assert "saveMode=autosave" in save_urls[0]
         page.wait_for_load_state("networkidle")
-        page.evaluate(
-            """
-            () => {
-              const input = document.querySelector('input[name="name"]');
-              if (!(input instanceof HTMLInputElement)) {
-                throw new Error("Name input is unavailable.");
-              }
-              const valueSetter = Object.getOwnPropertyDescriptor(
-                HTMLInputElement.prototype,
-                "value",
-              )?.set;
-              if (!valueSetter) {
-                throw new Error("Native input value setter is unavailable.");
-              }
-              window.setTimeout(() => {
-                valueSetter.call(input, "New Edit During Failed Checkpoint");
-                input.dispatchEvent(new Event("input", { bubbles: true }));
-              }, 150);
-            }
-            """
+        with page.expect_request(
+            lambda request: (
+                request.method == "PUT"
+                and urlparse(request.url).path == f"/api/resumes/{resume_id}"
+                and parse_qs(urlparse(request.url).query).get("saveMode")
+                == ["checkpoint"]
+            )
+        ):
+            page.get_by_role("button", name="退出登录", exact=True).click()
+        assert len(held_checkpoints) == 1
+        page.get_by_role("textbox", name="姓名", exact=True).fill(
+            "New Edit During Failed Checkpoint"
         )
-        page.get_by_role("button", name="退出登录", exact=True).click()
+        held_checkpoints.pop().fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                {"code": 40000, "message": "RESUME_DOCUMENT_INVALID", "data": None}
+            ),
+        )
 
         page.get_by_role(
             "heading",
@@ -13980,7 +13922,9 @@ def test_checkpoint_failure_keeps_new_edit_made_before_logout(
         ).wait_for(state="visible")
         assert page.url == f"{frontend_url}/resume/{resume_id}"
         assert (
-            page.locator('input[name="name"]').input_value()
+            page.get_by_role(
+                "textbox", name="姓名", exact=True, include_hidden=True
+            ).inner_text()
             == "New Edit During Failed Checkpoint"
         )
         assert len(save_urls) == 2, save_urls
@@ -14020,8 +13964,8 @@ def test_discard_waits_for_active_save_and_restores_persisted_resume(
             name="基本信息: 展开或收起模块",
             exact=True,
         ).click()
-        name_input = page.locator('input[name="name"]')
-        original_name = name_input.input_value()
+        name_input = page.get_by_role("textbox", name="姓名", exact=True)
+        original_name = name_input.inner_text()
         name_input.fill("Discarded During Active Save")
         page.evaluate(
             """
@@ -14080,7 +14024,9 @@ def test_browser_history_navigation_uses_unsaved_changes_guard(
             name="基本信息: 展开或收起模块",
             exact=True,
         ).click()
-        page.locator('input[name="name"]').fill("Unsaved Browser Back")
+        page.get_by_role("textbox", name="姓名", exact=True).fill(
+            "Unsaved Browser Back"
+        )
         page.evaluate("window.history.back()")
         page.wait_for_timeout(250)
 
@@ -14156,7 +14102,7 @@ def test_resume_leave_dialog_enter_activates_only_focused_action(
             name="基本信息: 展开或收起模块",
             exact=True,
         ).click()
-        name_input = page.locator('input[name="name"]')
+        name_input = page.get_by_role("textbox", name="姓名", exact=True)
         name_input.fill("Continue editing via Enter")
         open_leave_dialog()
 
@@ -14174,7 +14120,7 @@ def test_resume_leave_dialog_enter_activates_only_focused_action(
             exact=True,
         ).wait_for(state="hidden")
         assert page.url == f"{frontend_url}/resume/{resume_id}"
-        assert name_input.input_value() == "Continue editing via Enter"
+        assert name_input.inner_text() == "Continue editing via Enter"
 
         open_leave_dialog()
         save_payloads.clear()
@@ -14200,7 +14146,7 @@ def test_resume_leave_dialog_enter_activates_only_focused_action(
             exact=True,
         ).click()
         saved_name = "Save and leave via Enter"
-        page.locator('input[name="name"]').fill(saved_name)
+        page.get_by_role("textbox", name="姓名", exact=True).fill(saved_name)
         open_leave_dialog()
 
         save_payloads.clear()
@@ -14257,7 +14203,7 @@ def test_browser_back_does_not_restore_consumed_resume_handoff(
             name="基本信息: 展开或收起模块",
             exact=True,
         ).click()
-        name_input = page.locator('input[name="name"]')
+        name_input = page.get_by_role("textbox", name="姓名", exact=True)
         name_input.fill("Saved After Initial Handoff")
         with page.expect_response(
             lambda response: (
@@ -14289,17 +14235,20 @@ def test_browser_back_does_not_restore_consumed_resume_handoff(
               const deadline = performance.now() + 1_200;
               let openedBasicInfo = false;
               const editOnlyAnImmediateSeed = () => {{
-                const input = document.querySelector('input[name="name"]');
+                const input = document.querySelector(
+                  '[role="textbox"][aria-label="姓名"]',
+                );
                 if (
                   window.location.pathname === "/resume/{resume_id}" &&
-                  input instanceof HTMLInputElement
+                  input instanceof HTMLElement && input.isContentEditable
                 ) {{
-                  const valueSetter = Object.getOwnPropertyDescriptor(
-                    HTMLInputElement.prototype,
-                    "value",
-                  )?.set;
-                  valueSetter?.call(input, "Stale History Handoff");
-                  input.dispatchEvent(new Event("input", {{ bubbles: true }}));
+                  input.focus();
+                  window.getSelection()?.selectAllChildren(input);
+                  if (!document.execCommand(
+                    "insertText", false, "Stale History Handoff",
+                  )) {{
+                    throw new Error("Name editor could not accept text.");
+                  }}
                   window.__staleResumeHandoffEdited = true;
                   return;
                 }}
@@ -14329,7 +14278,7 @@ def test_browser_back_does_not_restore_consumed_resume_handoff(
         page.go_back(wait_until="commit")
         page.wait_for_url(f"{frontend_url}/resume/{resume_id}")
         page.wait_for_load_state("networkidle")
-        if not page.locator('input[name="name"]').is_visible():
+        if not page.get_by_role("textbox", name="姓名", exact=True).is_visible():
             page.get_by_role(
                 "button",
                 name=re.compile(
@@ -14338,7 +14287,7 @@ def test_browser_back_does_not_restore_consumed_resume_handoff(
             ).click()
 
         assert page.evaluate("window.__staleResumeHandoffEdited") is False
-        assert page.locator('input[name="name"]').input_value() == (
+        assert page.get_by_role("textbox", name="姓名", exact=True).inner_text() == (
             "Saved After Initial Handoff"
         )
     finally:
@@ -14839,13 +14788,13 @@ def test_recycle_bin_partial_batch_keeps_only_unfinished_items(
             page.get_by_role("checkbox", name=f"Select: {title}", exact=True).check()
 
         if operation == "delete":
-            page.get_by_role(
-                "button", name="Permanently Delete Selected Items", exact=True
-            ).click()
+            delete_button = page.get_by_role(
+                "button", name="Permanently Delete", exact=True
+            )
+            delete_button.click()
             dialog = page.get_by_role("alertdialog")
-            dialog.get_by_role(
-                "button", name="Permanently Delete Selected Items", exact=True
-            ).click()
+            confirm_delete = dialog.locator(delete_button)
+            confirm_delete.click()
         else:
             page.get_by_role("button", name="Restore selected", exact=True).click()
 
@@ -14858,7 +14807,7 @@ def test_recycle_bin_partial_batch_keeps_only_unfinished_items(
         expect(page.get_by_text(items[failed], exact=True)).to_have_count(1)
 
         if operation == "delete":
-            dialog.get_by_role("button", name="Permanently Delete", exact=True).click()
+            confirm_delete.click()
             expect(dialog).to_have_count(0)
         else:
             page.get_by_role("button", name="Restore selected", exact=True).click()
@@ -15579,12 +15528,48 @@ def test_login_session_is_shared_with_another_open_tab(
         other_page.wait_for_url(f"{frontend_url}/resume", timeout=5_000)
         expect(other_page.locator('input[name="resume-search"]')).to_be_visible()
 
+        search = login_page.locator('input[name="resume-search"]')
+        search.fill("Retained gallery filter")
+        search_node = search.element_handle()
+        assert search_node is not None
+        expect(login_page).to_have_url(
+            f"{frontend_url}/resume?q=Retained+gallery+filter"
+        )
+        original_url = login_page.url
+        previous_token = login_page.evaluate(
+            "JSON.parse(localStorage.getItem('reseno-auth-session')).accessToken"
+        )
         other_page.get_by_role("button", name="Log Out", exact=True).click()
+        other_page.wait_for_url(f"{frontend_url}/login", timeout=5_000)
+        expect(other_page.locator("#username")).to_be_visible()
+        expired = login_page.get_by_role(
+            "dialog", name="Your session has expired", exact=True
+        )
+        expect(expired).to_be_visible()
+        expect(login_page).to_have_url(original_url)
+        assert search_node.evaluate("node => node.isConnected")
+        expect(search).to_have_value("Retained gallery filter")
         for page in (other_page, login_page):
-            page.wait_for_url(f"{frontend_url}/login", timeout=5_000)
-            expect(page.locator("#username")).to_be_visible()
-        login_page.reload(wait_until="networkidle")
-        expect(login_page.locator("#username")).to_be_visible()
+            assert page.evaluate("localStorage.getItem('reseno-auth-session')") is None
+
+        other_page.reload(wait_until="networkidle")
+        expect(other_page.locator("#username")).to_be_visible()
+        other_page.locator("#username").fill("e2e-owner")
+        other_page.locator("#password").fill("E2ePassword2026")
+        other_page.get_by_role("button", name="Sign In", exact=True).click()
+        other_page.wait_for_url(f"{frontend_url}/resume")
+        expect(expired).not_to_be_visible()
+        expect(login_page).to_have_url(original_url)
+        assert search.evaluate("(node, original) => node === original", search_node)
+        expect(search).to_have_value("Retained gallery filter")
+        tokens = [
+            page.evaluate(
+                "JSON.parse(localStorage.getItem('reseno-auth-session')).accessToken"
+            )
+            for page in (other_page, login_page)
+        ]
+        assert tokens[0] == tokens[1]
+        assert tokens[0] != previous_token
     finally:
         context.close()
 

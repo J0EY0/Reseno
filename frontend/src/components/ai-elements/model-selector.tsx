@@ -42,7 +42,7 @@ export const ModelSelectorContent = ({
     aria-describedby={undefined}
     className={cn(
       "outline! border-none! p-0 outline-border! outline-solid!",
-      className
+      className,
     )}
     {...props}
   >

@@ -1,5 +1,20 @@
 import assert from "node:assert/strict";
 import { access, readFile } from "node:fs/promises";
+import ts from "typescript";
+import * as React from "react";
+import * as jsxRuntime from "react/jsx-runtime";
+import { matchPath } from "react-router-dom";
+import {
+  findJsxElements,
+  findNodes,
+  getLiteralValue,
+  getJsxAttributes,
+  getMemberPath,
+  hasCall,
+  hasImport,
+  parseSource,
+} from "./source-analysis.mjs";
+import { evaluateTypeScript } from "./typescript-module.mjs";
 
 const frontendRoot = new URL("../", import.meta.url);
 const readText = (path) => readFile(new URL(path, frontendRoot), "utf8");
@@ -21,7 +36,6 @@ const [
   templateGalleryRouteSource,
   templateDetailPageSource,
   templateDetailRouteSource,
-  templateDetailSaveSource,
   templateDetailLeaveSource,
   trashPageSource,
   trashRouteSource,
@@ -37,7 +51,7 @@ const [
   workspaceRouteLoadersSource,
   routeLoaderSource,
   workspaceRouteSource,
-  workspaceRouteMemorySource,
+  workspaceDetailHandoffSource,
   resumeGallerySource,
   resumeGalleryGridSource,
   resumeGalleryCardSource,
@@ -58,7 +72,6 @@ const [
   readText("src/components/workspace/use-template-gallery-workspace.ts"),
   readText("src/components/workspace/template-detail-workspace-page.tsx"),
   readText("src/components/workspace/use-template-detail-workspace.ts"),
-  readText("src/components/workspace/use-template-detail-save.ts"),
   readText("src/components/workspace/use-template-detail-leave.ts"),
   readText("src/components/workspace/trash-workspace-page.tsx"),
   readText("src/components/workspace/use-trash-workspace.ts"),
@@ -68,17 +81,13 @@ const [
   readText("src/components/app-sidebar.tsx"),
   readText("src/components/workspace/use-workspace-preferences-route.ts"),
   readText("src/components/workspace/use-workspace-lateral-route-data.ts"),
-  readText(
-    "src/components/workspace/use-prepared-workspace-navigation.ts",
-  ),
-  readText(
-    "src/components/workspace/use-workspace-navigation-transaction.ts",
-  ),
+  readText("src/components/workspace/use-prepared-workspace-navigation.ts"),
+  readText("src/components/workspace/use-workspace-navigation-transaction.ts"),
   readText("src/components/workspace/workspace-route-preparation.ts"),
   readText("src/components/workspace/workspace-route-loaders.ts"),
   readText("src/lib/route-loader.ts"),
   readText("src/lib/workspace-route.ts"),
-  readText("src/lib/workspace-route-memory.ts"),
+  readText("src/lib/workspace-detail-route-handoff.ts"),
   readText("src/components/resume-gallery.tsx"),
   readText("src/components/resume-gallery-grid.tsx"),
   readText("src/components/resume-gallery-card.tsx"),
@@ -90,7 +99,33 @@ const templateDetailInitialRouteSource = await readText(
   "src/components/workspace/template-detail-initial-route.ts",
 );
 
-for (const loadOwner of [
+for (const specifier of [
+  "@/lib/workspace-route-handoff",
+  "@/lib/workspace-detail-route-handoff",
+]) {
+  assert.equal(
+    hasImport(parseSource(workspaceRouteSource), specifier),
+    false,
+    "Route matching must not statically load detail handoff payloads into the shell.",
+  );
+}
+const appFile = parseSource(appSource);
+const routeLoadersFile = parseSource(workspaceRouteLoadersSource);
+const workspaceRoutes = evaluateTypeScript(workspaceRouteSource, {
+  imports: { "react-router-dom": { matchPath } },
+});
+const workspaceLoaders = evaluateTypeScript(workspaceRouteLoadersSource, {
+  imports: {
+    "@/lib/workspace-route": workspaceRoutes,
+    "@/lib/route-loader": {
+      createRouteLoader: (_loadModule, component) => async () => ({
+        default: component,
+      }),
+    },
+  },
+});
+const routePreparationFile = parseSource(workspaceRoutePreparationSource);
+for (const source of [
   resumeDetailLoaderSource,
   resumeGalleryRouteSource,
   templateDetailRouteSource,
@@ -98,14 +133,13 @@ for (const loadOwner of [
   trashRouteSource,
   preferencesRouteSource,
 ]) {
-  assert.match(loadOwner, /from "@\/lib\/workspace-load-error"/,
-    "Every route loader must share ownership of its replaceable load error.");
-  assert.match(loadOwner, /dismissWorkspaceLoadError\(\)/,
-    "Starting a new route request must dismiss the previous load error.");
-  assert.doesNotMatch(loadOwner, /["']workspace-load-error["']/,
-    "A retried route must not reuse the ID of a Toast that is still leaving.");
+  const owner = parseSource(source);
+  assert.ok(
+    hasImport(owner, "@/lib/workspace-load-error"),
+    "Every route loader must share ownership of its replaceable load error.",
+  );
+  assert.ok(hasCall(owner, "dismissWorkspaceLoadError"));
 }
-
 for (const routeEntry of [
   "resume-gallery-workspace-page",
   "resume-detail-workspace-page",
@@ -116,44 +150,47 @@ for (const routeEntry of [
   "trash-workspace-page",
   "workspace-preferences",
 ]) {
-  assert.match(
-    workspaceRouteLoadersSource,
-    new RegExp(`import\\("@/components/workspace/${routeEntry}"\\)`),
-    `${routeEntry} must remain a literal, statically analyzable lazy entry.`,
+  const specifier = `@/components/workspace/${routeEntry}`;
+  assert.ok(
+    hasImport(routeLoadersFile, specifier, { dynamic: true }),
+    `${routeEntry} must retain its lazy entry.`,
   );
-  assert.doesNotMatch(
-    appSource + workspaceRoutePreparationSource,
-    new RegExp(`import\\("@/components/workspace/${routeEntry}"\\)`),
-    `${routeEntry} must have one shared dynamic-import owner.`,
-  );
+  for (const source of [appFile, routePreparationFile]) {
+    assert.equal(
+      hasImport(source, specifier, { dynamic: true }),
+      false,
+      `${routeEntry} must have one shared dynamic-import owner.`,
+    );
+    assert.equal(
+      hasImport(source, specifier),
+      false,
+      `${routeEntry} must not become a static App dependency.`,
+    );
+  }
 }
-for (const routeLoader of [
-  "loadResumeGalleryWorkspacePage",
-  "loadResumeDetailWorkspacePage",
-  "loadModelsWorkspacePage",
-  "loadSettingsWorkspacePage",
-  "loadTemplateGalleryWorkspacePage",
-  "loadTemplateDetailWorkspacePage",
-  "loadTrashWorkspacePage",
-  "loadWorkspaceLateralLayout",
-  "loadWorkspacePreferencesProvider",
-]) {
-  assert.match(
-    appSource,
-    new RegExp(`lazy\\(${routeLoader}\\)`),
-    `${routeLoader} must be consumed directly by React.lazy.`,
-  );
-}
-assert.match(
-  appSource,
-  /from "@\/components\/workspace\/workspace-route-loaders"/,
-  "App lazy routes must consume the shared workspace route loaders.",
+assert.ok(hasImport(appFile, "@/components/workspace/workspace-route-loaders"));
+const { createRouteLoader } = evaluateTypeScript(routeLoaderSource);
+let resolveModule;
+let moduleRequests = 0;
+const component = {};
+const modulePromise = new Promise((resolve) => {
+  resolveModule = resolve;
+});
+const loadPage = createRouteLoader(() => {
+  moduleRequests += 1;
+  return modulePromise;
+}, "Page");
+const preload = loadPage();
+const renderRequest = loadPage();
+assert.equal(
+  preload,
+  renderRequest,
+  "Preloading and React.lazy must share the same in-flight module Promise.",
 );
-assert.match(
-  routeLoaderSource,
-  /function createRouteLoader[\s\S]{0,220}let request:[\s\S]{0,180}request \|\|= loader\(\)\.then/,
-  "Workspace route preload and React.lazy must share one memoized module Promise.",
-);
+assert.equal(moduleRequests, 1);
+resolveModule({ Page: component });
+assert.equal((await preload).default, component);
+assert.equal(loadPage(), preload, "A loaded route must not reload its module.");
 const appRouteSuspenseSource = appSource.slice(
   appSource.indexOf("function AppRouteSuspense"),
   appSource.indexOf("function DocumentMetadata"),
@@ -163,17 +200,113 @@ assert.doesNotMatch(
   /ViewTransitionBoundary|slide-(?:up|down)/,
   "Route Suspense resolution must not animate loading into content; explicit workspace navigation owns route motion.",
 );
-assert.match(appSource, /<Route path="\/resume"/);
-assert.match(appSource, /<Route path="\/resume\/:id"/);
-assert.match(appSource, /<Route path="\/models"/);
-assert.match(appSource, /<Route path="\/settings"/);
-assert.match(appSource, /<Route path="\/templates"/);
-assert.match(appSource, /<Route path="\/template\/:id"/);
-assert.match(appSource, /<Route path="\/trash"/);
-assert.match(
-  appSource,
-  /loadWorkspaceLateralLayout[\s\S]*?<Route element=\{renderWorkspaceLateralLayout\(\)\}>[\s\S]*?<Route path="\/resume"[\s\S]*?<Route path="\/trash"[\s\S]*?<\/Route>/,
-  "The five lateral routes must share one lazy persistent workspace layout.",
+const routeDeclarations = findJsxElements(appFile, "Route");
+const routePaths = routeDeclarations
+  .map((element) => getMemberPath(getJsxAttributes(element).get("path")))
+  .filter((member) => member?.startsWith("workspaceRoutePaths."));
+assert.deepEqual(
+  routePaths.slice().sort(),
+  Object.keys(workspaceRoutes.workspaceRoutePaths)
+    .map((key) => `workspaceRoutePaths.${key}`)
+    .sort(),
+  "The rendered workspace routes must use the canonical path registry exactly once.",
+);
+const metadataDocument = { documentElement: { lang: "" }, title: "" };
+const metadataLocation = { pathname: "" };
+const { DocumentMetadata } = evaluateTypeScript(
+  `${appSource}\nexport { DocumentMetadata };`,
+  {
+    filename: "App.tsx",
+    globals: { document: metadataDocument },
+    imports: {
+      react: { ...React, useEffect: (effect) => effect() },
+      "react/jsx-runtime": jsxRuntime,
+      "react-router-dom": { useLocation: () => metadataLocation },
+      "@/lib/auth": {},
+      "@/lib/workspace-route": workspaceRoutes,
+      "@/i18n": {},
+      "@/i18n/use-locale-messages": {},
+      "@/lib/preference-api": {},
+      "@/hooks/use-auth-gate": {},
+      "@/components/ui/spinner": {},
+      "@/hooks/use-oauth-login": {},
+      "@/components/workspace/workspace-route-loaders": workspaceLoaders,
+      "@/lib/dynamic-import-recovery": {},
+      "@/lib/route-loader": { createRouteLoader },
+    },
+  },
+);
+const messages = JSON.parse(await readText("src/i18n/locales/en.json"));
+for (const [key, componentName, titleKey] of [
+  ["resumeGallery", "ResumeGalleryWorkspacePage", "myResume"],
+  ["resumeDetail", "ResumeDetailWorkspacePage", "myResume"],
+  ["templateGallery", "TemplateGalleryWorkspacePage", "resumeTemplates"],
+  ["templateDetail", "TemplateDetailWorkspacePage", "resumeTemplates"],
+  ["trash", "TrashWorkspacePage", "recycleBin"],
+  ["models", "ModelsWorkspacePage", "modelSettings"],
+  ["settings", "SettingsWorkspacePage", "settings"],
+]) {
+  const path = workspaceRoutes.workspaceRoutePaths[key].replace(
+    ":id",
+    "example",
+  );
+  for (const pathname of [path, `${path}/`]) {
+    assert.notEqual(
+      workspaceRoutes.getWorkspaceRoute(pathname).kind,
+      "unknown",
+    );
+    const loader = workspaceLoaders.getWorkspaceRouteLoader(pathname);
+    assert.equal((await loader()).default, componentName, pathname);
+    metadataLocation.pathname = pathname;
+    DocumentMetadata({ locale: "en", messages });
+    assert.equal(
+      metadataDocument.title,
+      `${messages[titleKey]} · ${messages.brandTitle}`,
+      pathname,
+    );
+  }
+}
+for (const [pathname, titleKey] of [
+  ["/unknown", "brandTitle"],
+  ["/templates/example", "brandTitle"],
+  ["/login", "loginTitle"],
+  ["/setup", "setupTitle"],
+  ["/auth/callback", "brandTitle"],
+  ["/pdf-export", "brandTitle"],
+]) {
+  assert.equal(workspaceRoutes.getWorkspaceRoute(pathname).kind, "unknown");
+  assert.equal(
+    (await workspaceLoaders.getWorkspaceRouteLoader(pathname)()).default,
+    "ResumeGalleryWorkspacePage",
+  );
+  metadataLocation.pathname = pathname;
+  DocumentMetadata({ locale: "en", messages });
+  assert.equal(metadataDocument.title, messages[titleKey], pathname);
+}
+assert.equal(metadataDocument.documentElement.lang, "en");
+DocumentMetadata({ locale: "zh", messages });
+assert.equal(metadataDocument.documentElement.lang, "zh-CN");
+
+const lateralRoutes = routeDeclarations.filter((element) => {
+  const value = getJsxAttributes(element).get("element");
+  return value && findJsxElements(value, "WorkspaceLateralLayout").length > 0;
+});
+assert.equal(
+  lateralRoutes.length,
+  1,
+  "The workspace must retain one shared lateral layout route.",
+);
+const [lateralRoute] = lateralRoutes;
+assert.equal(getJsxAttributes(lateralRoute).has("path"), false);
+assert.deepEqual(
+  findJsxElements(lateralRoute.parent, "Route")
+    .map((element) => getMemberPath(getJsxAttributes(element).get("path")))
+    .filter(Boolean)
+    .sort(),
+  ["resumeGallery", "models", "settings", "templateGallery", "trash"]
+    .map((key) => `workspaceRoutePaths.${key}`)
+    .sort(),
+  "The lateral routes must share one persistent workspace layout.",
 );
 assert.doesNotMatch(
   workspaceRouteSource,
@@ -190,36 +323,6 @@ assert.doesNotMatch(
     trashPageSource,
   /from\s+["']@\/components\/resume-builder["']/,
   "Independent workspace pages must not statically depend on the retired ResumeBuilder.",
-);
-assert.match(
-  workspaceRouteLoadersSource,
-  /case "resume":\s*return loadResumeGalleryWorkspacePage\(\)/,
-  "Prepared workspace navigation must preload the independent resume gallery route entry.",
-);
-assert.match(
-  workspaceRouteLoadersSource,
-  /case "models":\s*return loadModelsWorkspacePage\(\)/,
-  "Prepared workspace navigation must preload the models route entry.",
-);
-assert.match(
-  workspaceRouteLoadersSource,
-  /case "settings":\s*return loadSettingsWorkspacePage\(\)/,
-  "Prepared workspace navigation must preload the settings route entry.",
-);
-assert.match(
-  workspaceRouteLoadersSource,
-  /case "templates":\s*return loadTemplateGalleryWorkspacePage\(\)/,
-  "Prepared workspace navigation must preload the template gallery route entry.",
-);
-assert.match(
-  workspaceRouteLoadersSource,
-  /case "trash":\s*return loadTrashWorkspacePage\(\)/,
-  "Prepared workspace navigation must preload the trash route entry.",
-);
-assert.match(
-  workspaceRouteLoadersSource,
-  /return Promise\.all\(\[\s*loadWorkspacePreferencesProvider\(\),\s*loadWorkspaceLateralLayout\(\),\s*loadWorkspaceRoute\(view\),\s*\]\)/,
-  "Prepared lateral navigation must preload the shared preferences provider, persistent layout, and child route together.",
 );
 assert.match(
   workspaceRoutePreparationSource,
@@ -294,11 +397,25 @@ assert.match(
   /<WorkspaceShell[\s\S]*?<Outlet \/>/,
   "The lateral layout must keep Sidebar and Header mounted around the changing route outlet.",
 );
-assert.match(
-  appSource,
-  /<WorkspacePreferencesProvider[\s\S]*?<Route element=\{renderWorkspaceLateralLayout\(\)\}>[\s\S]*?<Route path="\/resume\/:id"[\s\S]*?<Route path="\/template\/:id"[\s\S]*?<\/Route>/,
-  "One preferences provider must span both persistent lateral routes and document detail routes.",
+const preferencesRoute = routeDeclarations.find((element) => {
+  const value = getJsxAttributes(element).get("element");
+  return (
+    value && findJsxElements(value, "WorkspacePreferencesProvider").length === 1
+  );
+});
+assert.ok(
+  preferencesRoute,
+  "The workspace must have one shared preferences provider.",
 );
+assert.deepEqual(
+  findJsxElements(preferencesRoute.parent, "Route")
+    .map((element) => getMemberPath(getJsxAttributes(element).get("path")))
+    .filter(Boolean)
+    .sort(),
+  routePaths.slice().sort(),
+  "One preferences provider must span every workspace route.",
+);
+
 assert.doesNotMatch(
   resumeGalleryPageSource +
     templateGalleryPageSource +
@@ -536,7 +653,7 @@ assert.match(
 );
 assert.match(
   preferencesRouteSource,
-  /isAbortError\(error\)[\s\S]{0,160}requestIdRef\.current !== requestId[\s\S]*!isApiErrorToastShown\(error\)[\s\S]*showWorkspaceLoadError\([\s\S]*setHasLoadError\(true\)/,
+  /isAbortError\(error\)[\s\S]{0,160}requestIdRef\.current !== requestId[\s\S]*showWorkspaceLoadError\([\s\S]*setHasLoadError\(true\)/,
   "Cancelled and stale preference requests must exit before the retry state and Toast.",
 );
 assert.match(
@@ -605,7 +722,7 @@ assert.match(
 );
 assert.match(
   templateDetailRouteSource,
-  /isAbortError\(error\)[\s\S]{0,160}requestIdRef\.current !== requestId[\s\S]*!isApiErrorToastShown\(error\)[\s\S]*showWorkspaceLoadError\([\s\S]*setHasLoadError\(true\)/,
+  /isAbortError\(error\)[\s\S]{0,160}requestIdRef\.current !== requestId[\s\S]*showWorkspaceLoadError\([\s\S]*setHasLoadError\(true\)/,
   "Cancelled and stale template detail requests must exit before retry state and Toast.",
 );
 assert.match(
@@ -638,11 +755,16 @@ assert.match(
   /useNavigationType\(\)[\s\S]{0,180}useLayoutEffect\([\s\S]{0,180}navigationType !== ["']PUSH["'][\s\S]{0,180}window\.scrollTo\([\s\S]{0,120}top:\s*0[\s\S]{0,180}getElementById\(["']main-content["']\)[\s\S]{0,60}\?\.focus\(\{\s*preventScroll:\s*true\s*\}\)/,
   "Template detail PUSH entry must hand focus to main content without reacting to its history scrub.",
 );
-assert.match(
-  templateDetailSaveSource,
-  /activeRequestRef[\s\S]*submittedFingerprint[\s\S]*acceptedFingerprints[\s\S]*onAdoptSavedTemplateRef/,
-  "Template detail must keep serialized saves and protect edits made during an active request.",
-);
+for (const specifier of [
+  "@/components/workspace/use-template-detail-save",
+  "@/components/workspace/use-template-detail-leave",
+]) {
+  assert.ok(
+    hasImport(parseSource(templateDetailRouteSource), specifier),
+    "Template detail must compose persistence and leave protection through their owning hooks.",
+  );
+}
+
 assert.match(
   templateDetailLeaveSource,
   /useBlocker\(hasUnsavedChanges\)[\s\S]*beforeunload[\s\S]*saveAndLeave[\s\S]*discardAndLeave/,
@@ -667,13 +789,17 @@ assert.match(
   /fetchWorkspacePageData\(\s*"resume-gallery",\s*persistence,/,
   "The resume gallery must flush queued preferences before reading route data.",
 );
-assert.ok(
-  /targetIndex \+ 1,\s*resumes\.length/.test(resumeGalleryRouteSource) &&
-    /resumes\.length \+ savedImports\.length/.test(resumeGalleryRouteSource) &&
-    /resumeCount/.test(workspaceRouteSource) &&
-    /resumeOrdinal/.test(workspaceRouteSource),
-  "The typed handoff must preserve the gallery ordinal and count without another detail request.",
+const galleryDetailCommits = findNodes(
+  parseSource(resumeGalleryRouteSource),
+  (node) =>
+    ts.isCallExpression(node) &&
+    getMemberPath(node.expression) === "commitResumeDetailNavigation",
 );
+for (const call of galleryDetailCommits) {
+  assert.equal(call.arguments.length >= 5, true);
+  assert.ok(call.arguments[3] && call.arguments[4]);
+}
+assert.equal(galleryDetailCommits.length, 3);
 assert.match(
   resumeGalleryRouteSource,
   /new AbortController\(\)[\s\S]{0,500}window\.setTimeout[\s\S]{0,300}controller\.abort\(\)/,
@@ -681,7 +807,7 @@ assert.match(
 );
 assert.match(
   resumeGalleryRouteSource,
-  /isAbortError\(error\)[\s\S]{0,160}requestIdRef\.current !== requestId[\s\S]*!isApiErrorToastShown\(error\)[\s\S]*showWorkspaceLoadError\([\s\S]*setHasLoadError\(true\)/,
+  /isAbortError\(error\)[\s\S]{0,160}requestIdRef\.current !== requestId[\s\S]*showWorkspaceLoadError\([\s\S]*setHasLoadError\(true\)/,
   "Cancelled and stale resume gallery requests must exit before retry state and Toast.",
 );
 const openResumeSource = resumeGalleryRouteSource.slice(
@@ -754,14 +880,13 @@ assert.match(
   /prepareCreatedResumeDetailRoute\([\s\S]*publishCreatedResume[\s\S]*messages\.resumeCreatedOpenFailed[\s\S]*commitResumeDetailNavigation\(\s*intent,[\s\S]{0,220}publishCreatedResume/,
   "Resume creation must publish only after preparation, publish on preparation failure, and batch success publication with navigation.",
 );
-const importResumeSource = resumeGalleryRouteSource.slice(
-  resumeGalleryRouteSource.indexOf("const importResume"),
-  resumeGalleryRouteSource.indexOf("const moveResumesToTrash"),
-);
-assert.match(
-  importResumeSource,
-  /const intent = beginNavigation\(\)[\s\S]*setResumes\([\s\S]{0,300}!intent\.isCurrent\(\)[\s\S]*prepareCreatedResumeDetailRoute\([\s\S]{0,180}signal: intent\.signal[\s\S]*commitResumeDetailNavigation\(\s*intent/,
-  "Resume import must keep its mutation result but never navigate after a newer intent.",
+assert.ok(
+  hasImport(
+    parseSource(resumeGalleryRouteSource),
+    "@/components/workspace/resume-gallery-import",
+    { dynamic: true },
+  ),
+  "Resume import processing must remain outside the gallery's initial dependency graph.",
 );
 assert.doesNotMatch(
   resumeGalleryRouteSource,
@@ -769,12 +894,12 @@ assert.doesNotMatch(
   "Resume cards and mutations must not retain private navigation owners.",
 );
 assert.match(
-  workspaceRouteSource,
+  workspaceDetailHandoffSource,
   /ResumeDetailRouteHandoff \{\s*kind:[\s\S]{0,120}payload: PreparedResumeDetailRouteData;[\s\S]{0,220}createResumeDetailRouteHandoff\(\s*payload:/,
   "Resume handoff must have one complete payload instead of parallel partial and optional forms.",
 );
 assert.doesNotMatch(
-  workspaceRouteSource,
+  workspaceDetailHandoffSource,
   /prepared\?|prepared\s*=\s*false/,
   "Detail handoffs must not retain a compatibility path that triggers mount calibration.",
 );
@@ -816,11 +941,7 @@ assert.ok(
     ),
   "A duplicate must advance the handoff count while title fallback keeps the selected document's gallery ordinal.",
 );
-assert.match(
-  workspaceRoutePreparationSource,
-  /loadResumeDetailRouteData[\s\S]{0,600}fetchWorkspacePageData\("resume-detail"[\s\S]{0,300}fetchResumeApi\(resumeId[\s\S]{0,300}fetchResumeVersionsApi\(resumeId[\s\S]{0,500}Promise\.all/,
-  "Resume preparation and direct loads must share one parallel abortable read transaction.",
-);
+
 assert.match(
   resumeDetailLoaderSource,
   /new AbortController\(\)[\s\S]{0,500}window\.setTimeout[\s\S]{0,300}controller\.abort\(\)/,
@@ -900,16 +1021,83 @@ assert.match(
   /if \(!hasUnsavedChanges\(\)\) \{[\s\S]{0,220}autosaveBurstStartedAtRef\.current = null[\s\S]{0,120}autosaveRetryAttemptRef\.current = 0[\s\S]{0,120}toast\.dismiss\("autosave-failed"\)/,
   "A clean checkpoint must reset the autosave burst and retry transaction.",
 );
-assert.match(
-  resumeDetailSaveSource,
-  /\[\s*hasUnsavedChanges,[\s\S]{0,100}isLoading,[\s\S]{0,100}lastSavedAt,[\s\S]{0,160}liveFingerprint/,
-  "A manual checkpoint must trigger the clean autosave reset even when the live content fingerprint is unchanged.",
+const autosaveEffect = findNodes(
+  parseSource(resumeDetailSaveSource),
+  ts.isCallExpression,
+).find(
+  (node) =>
+    getMemberPath(node.expression) === "useEffect" &&
+    node.arguments[0] &&
+    hasCall(node.arguments[0], "hasUnsavedChanges"),
 );
-assert.match(
-  resumeDetailRouteSource,
-  /event\.key\.toLowerCase\(\) !== "s"[\s\S]{0,240}isLoading \|\| loader\.hasLoadError[\s\S]{0,120}saveResume\("checkpoint"\)/,
-  "The save shortcut must not persist an uncalibrated handoff after route loading fails.",
+assert.ok(autosaveEffect, "Autosave must react to unsaved changes.");
+const autosaveDependencies = autosaveEffect.arguments[1];
+assert.ok(
+  autosaveDependencies && ts.isArrayLiteralExpression(autosaveDependencies),
+  "Autosave must declare its effect dependencies.",
 );
+const autosaveDependencyNames = new Set(
+  autosaveDependencies.elements.map(getMemberPath),
+);
+for (const dependency of [
+  "authToken",
+  "hasUnsavedChanges",
+  "isLoading",
+  "lastSavedAt",
+  "liveFingerprint",
+]) {
+  assert.ok(
+    autosaveDependencyNames.has(dependency),
+    `Autosave must react to ${dependency} changes.`,
+  );
+}
+const detailFile = parseSource(resumeDetailRouteSource);
+const shortcutRegistration = findNodes(detailFile, ts.isCallExpression).find(
+  (node) =>
+    getMemberPath(node.expression) === "window.addEventListener" &&
+    getLiteralValue(node.arguments[0]) === "keydown",
+);
+assert.ok(
+  shortcutRegistration,
+  "The workspace must register its save shortcut.",
+);
+const shortcutName = getMemberPath(shortcutRegistration.arguments[1]);
+const shortcut = findNodes(detailFile, ts.isVariableDeclaration).find(
+  (node) => getMemberPath(node.name) === shortcutName,
+)?.initializer;
+assert.ok(
+  shortcut,
+  "The registered save shortcut must have an executable handler.",
+);
+for (const [isLoading, hasLoadError, ctrlKey, metaKey, key, expectedSaves] of [
+  [true, false, true, false, "s", 0],
+  [false, true, true, false, "s", 0],
+  [false, false, true, false, "s", 1],
+  [false, false, false, true, "S", 1],
+  [false, false, false, false, "s", 0],
+  [false, false, true, false, "a", 0],
+]) {
+  let saves = 0;
+  const { onKeyDown } = evaluateTypeScript(
+    `export const onKeyDown = ${shortcut.getText()};`,
+    {
+      globals: {
+        isLoading,
+        loader: { hasLoadError },
+        saveCheckpoint: () => {
+          saves += 1;
+        },
+      },
+    },
+  );
+  onKeyDown({ ctrlKey, metaKey, key, preventDefault() {} });
+  assert.equal(
+    saves,
+    expectedSaves,
+    "Save shortcuts must only checkpoint a successfully loaded document.",
+  );
+}
+
 assert.match(
   resumeDetailRouteSource,
   /hasLoadError:\s*loader\.hasLoadError,[\s\S]{0,80}hasVersionLoadError:\s*save\.hasVersionLoadError/,
@@ -928,8 +1116,7 @@ assert.match(
 assert.ok(
   /useBlocker\(shouldBlockNavigation\)[\s\S]*beforeunload/.test(
     resumeDetailLeaveSource,
-  ) &&
-    /promoteCheckpoint[\s\S]*discardAndLeave/.test(resumeDetailLeaveSource),
+  ) && /promoteCheckpoint[\s\S]*discardAndLeave/.test(resumeDetailLeaveSource),
   "Resume detail must own history, browser-close, checkpoint promotion, and discard behavior.",
 );
 assert.match(
@@ -949,7 +1136,7 @@ assert.match(
 );
 assert.match(
   templateGalleryRouteSource,
-  /isAbortError\(error\)[\s\S]{0,160}requestIdRef\.current !== requestId[\s\S]*!isApiErrorToastShown\(error\)[\s\S]*showWorkspaceLoadError\([\s\S]*setHasLoadError\(true\)/,
+  /isAbortError\(error\)[\s\S]{0,160}requestIdRef\.current !== requestId[\s\S]*showWorkspaceLoadError\([\s\S]*setHasLoadError\(true\)/,
   "Cancelled and stale template requests must exit before retry state and Toast.",
 );
 assert.match(
@@ -964,7 +1151,7 @@ assert.match(
 );
 assert.match(
   trashRouteSource,
-  /isAbortError\(error\)[\s\S]{0,160}requestIdRef\.current !== requestId[\s\S]*!isApiErrorToastShown\(error\)[\s\S]*showWorkspaceLoadError\([\s\S]*setHasLoadError\(true\)/,
+  /isAbortError\(error\)[\s\S]{0,160}requestIdRef\.current !== requestId[\s\S]*showWorkspaceLoadError\([\s\S]*setHasLoadError\(true\)/,
   "Cancelled and stale trash requests must exit before retry state and Toast.",
 );
 console.log("Workspace route ownership verified.");

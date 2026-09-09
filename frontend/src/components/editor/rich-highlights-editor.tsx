@@ -2,16 +2,11 @@ import Placeholder from "@tiptap/extension-placeholder";
 import Underline from "@tiptap/extension-underline";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
-import {
-  List,
-  ListOrdered,
-  Redo2,
-  Undo2,
-} from "lucide-react";
+import { List, ListOrdered, Redo2, Undo2 } from "lucide-react";
 import { useEffect, type MouseEvent } from "react";
 
-import { InlineFormatControls } from './inline-format-controls';
-import { resumeTextMarks } from './resume-text-marks';
+import { InlineFormatControls } from "./inline-format-controls";
+import { resumeTextMarks } from "./resume-text-marks";
 
 import type { AppMessages } from "@/i18n";
 import {

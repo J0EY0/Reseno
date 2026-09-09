@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useBlocker } from "react-router-dom";
-import { toast } from "sonner";
 
 import type { AppMessages } from "@/i18n";
-import { isApiErrorToastShown } from "@/lib/api-client";
+import { notifyApiError } from "@/lib/api-error-notifier";
 
 interface PendingLeaveAction {
   cancel?: () => void;
@@ -25,8 +24,9 @@ export function useTemplateDetailLeave({
   save,
 }: TemplateDetailLeaveOptions) {
   const [isResolving, setIsResolving] = useState(false);
-  const [pendingAction, setPendingAction] =
-    useState<PendingLeaveAction | null>(null);
+  const [pendingAction, setPendingAction] = useState<PendingLeaveAction | null>(
+    null,
+  );
   const handledBlockedNavigationKeyRef = useRef<string | null>(null);
 
   const requestLeave = useCallback(
@@ -97,9 +97,7 @@ export function useTemplateDetailLeave({
       action();
     } catch (error) {
       console.error("Failed to save the template before leaving.", error);
-      if (!isApiErrorToastShown(error)) {
-        toast.error(messages.loadError, { closeButton: true });
-      }
+      notifyApiError(error, messages.loadError);
     } finally {
       setIsResolving(false);
     }
@@ -118,9 +116,7 @@ export function useTemplateDetailLeave({
       action();
     } catch (error) {
       console.error("Failed to discard template changes safely.", error);
-      if (!isApiErrorToastShown(error)) {
-        toast.error(messages.loadError, { closeButton: true });
-      }
+      notifyApiError(error, messages.loadError);
     } finally {
       setIsResolving(false);
     }

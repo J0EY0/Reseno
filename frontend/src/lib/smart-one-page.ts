@@ -77,7 +77,11 @@ function getNextSmallerFontSize(fontSize: number) {
   return smallerSizes.at(-1) ?? fontSize;
 }
 
-function compactNumber(current: number, target: number | undefined, min: number) {
+function compactNumber(
+  current: number,
+  target: number | undefined,
+  min: number,
+) {
   return Number(Math.max(min, Math.min(current, target ?? current)).toFixed(2));
 }
 
@@ -91,8 +95,14 @@ function createSettingsCandidate(
 ): ResumeTemplateSettings {
   return {
     ...settings,
-    pagePaddingTop: compactPagePadding(settings.pagePaddingTop, level.pagePaddingDelta),
-    pagePaddingX: compactPagePadding(settings.pagePaddingX, level.pagePaddingDelta),
+    pagePaddingTop: compactPagePadding(
+      settings.pagePaddingTop,
+      level.pagePaddingDelta,
+    ),
+    pagePaddingX: compactPagePadding(
+      settings.pagePaddingX,
+      level.pagePaddingDelta,
+    ),
     pagePaddingBottom: compactPagePadding(
       settings.pagePaddingBottom,
       level.pagePaddingDelta,
@@ -127,7 +137,8 @@ function areSnapshotsEqual(
   return (
     left.typography.fontFamily === right.typography.fontFamily &&
     left.typography.fontSize === right.typography.fontSize &&
-    JSON.stringify(left.templateSettings) === JSON.stringify(right.templateSettings)
+    JSON.stringify(left.templateSettings) ===
+      JSON.stringify(right.templateSettings)
   );
 }
 
@@ -159,8 +170,10 @@ function createCandidates(
     });
   }
 
-  return candidates.filter((candidate, index, allCandidates) =>
-    allCandidates.findIndex((item) => areSnapshotsEqual(item, candidate)) === index,
+  return candidates.filter(
+    (candidate, index, allCandidates) =>
+      allCandidates.findIndex((item) => areSnapshotsEqual(item, candidate)) ===
+      index,
   );
 }
 

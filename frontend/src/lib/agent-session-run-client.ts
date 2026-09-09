@@ -1,9 +1,8 @@
+import { apiRoutes, isApiErrorCode, requestApi } from "@/lib/api-client";
 import {
-  apiRoutes,
-  isApiErrorCode,
-  requestApi,
-} from "@/lib/api-client";
-import { projectAgentDraftReview, type AgentDraftConflictResolution } from "@/lib/agent-draft-review";
+  projectAgentDraftReview,
+  type AgentDraftConflictResolution,
+} from "@/lib/agent-draft-review";
 import type {
   AgentChatMessage,
   AgentCommittedDraft,
@@ -48,7 +47,10 @@ function getAgentDraftResponse(
   session: AgentSessionResponse,
   messageId: string,
 ): AgentChatMessage | null {
-  return session.messages.find((message) => message.id === messageId)?.response ?? null;
+  return (
+    session.messages.find((message) => message.id === messageId)?.response ??
+    null
+  );
 }
 
 function getAgentCommittedDraft(
@@ -90,11 +92,14 @@ export function loadAgentSessionRecovery(
   resumeId: string,
   options: { notifyOnError?: boolean; signal?: AbortSignal } = {},
 ) {
-  return requestApi<AgentSessionRecoveryResponse>(apiRoutes.agentResumeRecovery(resumeId), {
-    cacheTtlMs: 0,
-    notifyOnError: options.notifyOnError,
-    signal: options.signal,
-  });
+  return requestApi<AgentSessionRecoveryResponse>(
+    apiRoutes.agentResumeRecovery(resumeId),
+    {
+      cacheTtlMs: 0,
+      notifyOnError: options.notifyOnError,
+      signal: options.signal,
+    },
+  );
 }
 
 export function stopAgentRun(runId: string) {
@@ -107,23 +112,29 @@ export async function loadAgentSession(
   resumeId: string,
   options: { notifyOnError?: boolean; signal?: AbortSignal } = {},
 ) {
-  return requestApi<AgentSessionResponse>(apiRoutes.agentResumeSession(resumeId), {
-    // Session revisions are optimistic-concurrency tokens. Reusing even a
-    // short-lived GET cache can make an otherwise valid history edit stale.
-    cacheTtlMs: 0,
-    notifyOnError: options.notifyOnError,
-    signal: options.signal,
-  });
+  return requestApi<AgentSessionResponse>(
+    apiRoutes.agentResumeSession(resumeId),
+    {
+      // Session revisions are optimistic-concurrency tokens. Reusing even a
+      // short-lived GET cache can make an otherwise valid history edit stale.
+      cacheTtlMs: 0,
+      notifyOnError: options.notifyOnError,
+      signal: options.signal,
+    },
+  );
 }
 
 export async function replaceAgentSession(
   resumeId: string,
   request: AgentSessionReplaceRequest,
 ) {
-  return requestApi<AgentSessionResponse>(apiRoutes.agentResumeSession(resumeId), {
-    body: request,
-    method: "PUT",
-  });
+  return requestApi<AgentSessionResponse>(
+    apiRoutes.agentResumeSession(resumeId),
+    {
+      body: request,
+      method: "PUT",
+    },
+  );
 }
 
 async function updateAgentDraftDecision(
@@ -228,7 +239,9 @@ export async function resolveAgentDraftDecision(
           reviewItems: currentDraft.reviewItems,
         });
         if (projection.errors.length > 0) {
-          throw new Error("The selected Agent draft no longer applies cleanly.");
+          throw new Error(
+            "The selected Agent draft no longer applies cleanly.",
+          );
         }
         candidateResume = projection.resume;
       }
@@ -259,10 +272,7 @@ export async function resolveAgentDraftDecision(
         error,
         "AGENT_DRAFT_DECISION_CONFLICT",
       );
-      const isResumeConflict = isApiErrorCode(
-        error,
-        "RESUME_VERSION_CONFLICT",
-      );
+      const isResumeConflict = isApiErrorCode(error, "RESUME_VERSION_CONFLICT");
       if (!isRevisionConflict && !isDecisionConflict && !isResumeConflict) {
         throw error;
       }

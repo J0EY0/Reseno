@@ -67,7 +67,9 @@ function AccentSectionTitle({
   settings: ResumeTemplateSettings;
 }) {
   if (isSidebarLayout) {
-    return <RuledSectionTitle settings={settings}>{children}</RuledSectionTitle>;
+    return (
+      <RuledSectionTitle settings={settings}>{children}</RuledSectionTitle>
+    );
   }
 
   return (
@@ -128,10 +130,7 @@ function SectionBlock({
   const markerDiff = structuralDiff ?? titleDiff;
   const sectionClassName = getDiffClassName(structuralDiff);
   const renderedTitle = (
-    <ResumeDiffText
-      value={title}
-      diffs={titleDiff ? [titleDiff] : []}
-    />
+    <ResumeDiffText value={title} diffs={titleDiff ? [titleDiff] : []} />
   );
 
   if (layout.section === "boxed") {
@@ -249,7 +248,10 @@ function SectionBlock({
     >
       <ResumeDiffBadge diff={markerDiff} t={t} />
       {showTitle ? (
-        <div className="resume-section-header" data-resume-section-header="true">
+        <div
+          className="resume-section-header"
+          data-resume-section-header="true"
+        >
           {layout.section === "plain" || isUnderlined ? (
             <h2
               className={cn(
@@ -334,9 +336,11 @@ export const SectionsList = memo(function SectionsList({
       style={{ gap: `${settings.sectionGap}em` }}
     >
       {sections.map((section) => (
-        <Fragment key={`${section.section.id}-${section.showTitle ? "title" : "continue"}-${section.items
-          .map((item) => item.id)
-          .join("-")}`}>
+        <Fragment
+          key={`${section.section.id}-${section.showTitle ? "title" : "continue"}-${section.items
+            .map((item) => item.id)
+            .join("-")}`}
+        >
           {(deleted.beforeById.get(section.section.id) ?? []).map((diff) => (
             <ResumeDeletedDiffAnchor diff={diff} key={diff.id} t={t} />
           ))}

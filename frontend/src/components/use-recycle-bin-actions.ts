@@ -24,14 +24,18 @@ export function useRecycleBinActions({
   deletedResumes,
   deletedTemplates,
 }: RecycleBinActionOptions) {
-  const [requestedAction, setRequestedAction] = useState<PendingTrashAction>(null);
+  const [requestedAction, setRequestedAction] =
+    useState<PendingTrashAction>(null);
   const remainingIds = requestedAction?.ids.filter((id) =>
-    (requestedAction.type === "resume-item" ? deletedResumes : deletedTemplates)
-      .some((item) => item.id === id),
+    (requestedAction.type === "resume-item"
+      ? deletedResumes
+      : deletedTemplates
+    ).some((item) => item.id === id),
   );
-  const pendingAction = requestedAction && remainingIds?.length
-    ? { ...requestedAction, ids: remainingIds }
-    : null;
+  const pendingAction =
+    requestedAction && remainingIds?.length
+      ? { ...requestedAction, ids: remainingIds }
+      : null;
   const [runningActionKey, setRunningActionKey] =
     useState<TrashActionKey | null>(null);
   // Visible state drives feedback; the ref closes the same-render double-click gap.

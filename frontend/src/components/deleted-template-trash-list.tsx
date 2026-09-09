@@ -27,7 +27,10 @@ export function DeletedTemplateTrashList({
 }) {
   const items = controller.templates.items;
   const tableItems: RecycleBinTableItem[] = items.map((item) => {
-    const previewResume = getTemplatePreviewResume(templatePreviewResumes, item);
+    const previewResume = getTemplatePreviewResume(
+      templatePreviewResumes,
+      item,
+    );
 
     return {
       id: item.id,

@@ -1,13 +1,13 @@
-import type { EducationItem } from '@/types/resume'
+import type { EducationItem } from "@/types/resume";
 
-import { FormField } from './form-field'
-import { InlineTextInput } from './inline-text-input'
-import { ResumeItemEditorShell } from './resume-item-editor-shell'
+import { FormField } from "./form-field";
+import { InlineTextInput } from "./inline-text-input";
+import { ResumeItemEditorShell } from "./resume-item-editor-shell";
 import {
   HighlightsField,
   compactResumeFieldClassName,
-} from './resume-section-editor-fields'
-import type { TypedSectionEditorProps } from './resume-section-editor-types'
+} from "./resume-section-editor-fields";
+import type { TypedSectionEditorProps } from "./resume-section-editor-types";
 
 export function EducationSectionEditor({
   t,
@@ -16,18 +16,18 @@ export function EducationSectionEditor({
   onUpdateItem,
   onRemoveItem,
   onMoveItem,
-}: TypedSectionEditorProps<'education'>) {
+}: TypedSectionEditorProps<"education">) {
   function updateItem(
     item: EducationItem,
-    patch: Partial<Omit<EducationItem, 'id'>>,
+    patch: Partial<Omit<EducationItem, "id">>,
   ) {
     onUpdateItem({
-      type: 'item.update',
+      type: "item.update",
       sectionId: section.id,
-      sectionKind: 'education',
+      sectionKind: "education",
       itemId: item.id,
       patch,
-    })
+    });
   }
 
   return section.items.map((item, index) => (
@@ -43,8 +43,8 @@ export function EducationSectionEditor({
       moveDownLabel={t.moveItemDown}
       toggleLabel={t.toggleItem}
       onRemove={() => onRemoveItem(item.id)}
-      onMoveUp={() => onMoveItem(item.id, 'up')}
-      onMoveDown={() => onMoveItem(item.id, 'down')}
+      onMoveUp={() => onMoveItem(item.id, "up")}
+      onMoveDown={() => onMoveItem(item.id, "down")}
     >
       <div className="grid min-w-0 gap-3 md:grid-cols-2">
         <FormField label={t.fieldLabels.school}>
@@ -125,5 +125,5 @@ export function EducationSectionEditor({
         />
       </div>
     </ResumeItemEditorShell>
-  ))
+  ));
 }

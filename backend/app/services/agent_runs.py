@@ -7,7 +7,7 @@ from collections import deque
 from collections.abc import AsyncIterator
 from contextlib import closing
 from copy import deepcopy
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from sqlite3 import OperationalError
 from time import monotonic
@@ -59,7 +59,7 @@ logger = logging.getLogger("uvicorn.error")
 MAX_RETAINED_AGENT_RUNS: Final = 24
 MAX_ACTIVE_AGENT_RUNS: Final = 4
 MAX_BUFFERED_AGENT_EVENTS: Final = 512
-MAX_BUFFERED_AGENT_EVENT_BYTES: Final = 4 * 1024 * 1024
+AGENT_EVENT_COMPACTION_THRESHOLD_BYTES: Final = 4 * 1024 * 1024
 AGENT_SSE_HEARTBEAT_SECONDS: Final = 12.0
 AGENT_TERMINAL_RETRY_INITIAL_SECONDS: Final = 0.25
 AGENT_TERMINAL_RETRY_MAX_SECONDS: Final = 5.0
@@ -86,7 +86,7 @@ class BufferedAgentEvent:
 @dataclass
 class AgentRun:
     id: str
-    turn: AcceptedAgentTurn
+    turn: AcceptedAgentTurn | None
     resume_id: str | None
     status: AgentRunStatus = "active"
     events: list[BufferedAgentEvent] = field(default_factory=list)
@@ -105,11 +105,9 @@ class AgentRun:
     _base_resume: dict[str, Any] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        self._base_resume = DraftTransaction.from_request(self.request).base_resume
-
-    @property
-    def request(self) -> AgentChatRequest:
-        return self.turn.request
+        if self.turn is None:
+            raise ValueError("An Agent run requires an accepted turn.")
+        self._base_resume = DraftTransaction.from_request(self.turn.request).base_resume
 
     def response(self) -> AgentRunResponse:
         return AgentRunResponse(
@@ -615,13 +613,17 @@ class AgentRunManager:
         completion and must never retain that secret-bearing object.
         """
 
+        turn = run.turn
+        if turn is None:
+            raise RuntimeError("Cannot execute a released Agent run.")
+
         async def is_cancelled() -> bool:
             return run.cancel_event.is_set()
 
         metrics = _AgentRunMetrics(run_started_monotonic=run.started_monotonic)
         runtime = AgentRuntimeContext(
             is_aborted=is_cancelled,
-            conversation_state=run.turn.conversation_state,
+            conversation_state=turn.conversation_state,
             on_llm_attempt=metrics.record_model_attempt,
             on_llm_response=metrics.record_model_response,
             on_tool_loop_event=metrics.record_tool_loop_event,
@@ -630,7 +632,7 @@ class AgentRunManager:
         final_status: AgentRunStatus = "failed"
         try:
             iterator = async_iter_agent_events(
-                run.request,
+                turn.request,
                 resolved_config,
                 runtime,
             )
@@ -712,6 +714,7 @@ class AgentRunManager:
                 terminal_published = True
             finally:
                 if terminal_published:
+                    tool_states = _replay_tool_states(run.replay_message)
                     await self._release(run)
                     logger.info(
                         "Agent run summary %s",
@@ -747,7 +750,7 @@ class AgentRunManager:
                                 ),
                                 "edit_batch_outcomes": metrics.edit_batch_outcomes,
                                 "edit_batches": metrics.edit_batch_log_values,
-                                "tools": _replay_tool_states(run.replay_message),
+                                "tools": tool_states,
                             },
                             separators=(",", ":"),
                             sort_keys=True,
@@ -793,6 +796,10 @@ class AgentRunManager:
     ) -> None:
         """Publish the terminal cursor and status as one observable state change."""
 
+        turn = run.turn
+        if turn is None:
+            raise RuntimeError("Cannot finalize a released Agent run.")
+
         run.terminalizing = True
         execution_state = _execution_state(status)
         error_code = None if execution_state == "succeeded" else run.error_code
@@ -815,7 +822,7 @@ class AgentRunManager:
             error_code=error_code,
             assistant=durable_message,
             checkpoint=(
-                run.turn.conversation_state.active_checkpoint
+                turn.conversation_state.active_checkpoint
                 if execution_state == "succeeded"
                 else None
             ),
@@ -830,7 +837,7 @@ class AgentRunManager:
                 persistence_task = asyncio.create_task(
                     asyncio.to_thread(
                         _finish_agent_run_execution,
-                        run.turn,
+                        turn,
                         terminal_outcome,
                     ),
                 )
@@ -920,12 +927,9 @@ class AgentRunManager:
             run.condition.notify_all()
 
     async def _release(self, run: AgentRun) -> None:
-        run.turn = replace(
-            run.turn,
-            request=run.request.model_copy(
-                update={"messages": [], "draft_state": None}
-            ),
-        )
+        run.turn = None
+        run.completion = None
+        run.replay_message = {}
         async with self._lock:
             self._reserved_run_ids.discard(run.id)
             if run.resume_id and self._active_by_resume.get(run.resume_id) == run.id:
@@ -1282,7 +1286,7 @@ def _replay_snapshot_event(
 def _replay_buffer_exceeded(run: AgentRun) -> bool:
     return (
         len(run.events) > MAX_BUFFERED_AGENT_EVENTS
-        or run.buffered_event_bytes > MAX_BUFFERED_AGENT_EVENT_BYTES
+        or run.buffered_event_bytes > AGENT_EVENT_COMPACTION_THRESHOLD_BYTES
     )
 
 

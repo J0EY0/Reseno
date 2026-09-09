@@ -1,14 +1,14 @@
-import { ArrowDown, ArrowUp, ChevronDown, Trash2 } from 'lucide-react'
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { ArrowDown, ArrowUp, ChevronDown, Trash2 } from "lucide-react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
-import { Button } from '@/components/ui/button'
+import { Button } from "@/components/ui/button";
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
-} from '@/components/ui/collapsible'
-import { Separator } from '@/components/ui/separator'
-import { cn } from '@/lib/utils'
+} from "@/components/ui/collapsible";
+import { Separator } from "@/components/ui/separator";
+import { cn } from "@/lib/utils";
 
 export function ResumeItemEditorShell({
   index,
@@ -25,34 +25,34 @@ export function ResumeItemEditorShell({
   onMoveDown,
   children,
 }: {
-  index: number
-  itemLabel: string
-  initiallyOpen?: boolean
-  canMoveUp: boolean
-  canMoveDown: boolean
-  removeLabel: string
-  moveUpLabel: string
-  moveDownLabel: string
-  toggleLabel: string
-  onRemove: () => void
-  onMoveUp: () => void
-  onMoveDown: () => void
-  children: ReactNode
+  index: number;
+  itemLabel: string;
+  initiallyOpen?: boolean;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  removeLabel: string;
+  moveUpLabel: string;
+  moveDownLabel: string;
+  toggleLabel: string;
+  onRemove: () => void;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+  children: ReactNode;
 }) {
-  const [open, setOpen] = useState(initiallyOpen)
-  const contentRef = useRef<HTMLDivElement>(null)
+  const [open, setOpen] = useState(initiallyOpen);
+  const contentRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!initiallyOpen) {
-      return
+      return;
     }
 
     contentRef.current
       ?.querySelector<HTMLElement>(
         'input:not([type="hidden"]):not(:disabled), textarea:not(:disabled), [contenteditable="true"]',
       )
-      ?.focus()
-  }, [initiallyOpen])
+      ?.focus();
+  }, [initiallyOpen]);
 
   return (
     <>
@@ -107,8 +107,8 @@ export function ResumeItemEditorShell({
                   <ChevronDown
                     aria-hidden="true"
                     className={cn(
-                      'transition-transform',
-                      !open && '-rotate-90',
+                      "transition-transform",
+                      !open && "-rotate-90",
                     )}
                   />
                 </Button>
@@ -126,5 +126,5 @@ export function ResumeItemEditorShell({
         </Collapsible>
       </section>
     </>
-  )
+  );
 }

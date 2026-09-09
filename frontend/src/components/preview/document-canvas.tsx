@@ -86,7 +86,8 @@ function measureCanvasPageCount(
       if (signal.aborted || !element?.isConnected) {
         abort();
       } else if (
-        isCurrent() && element.dataset.resumePaginationReady === "true"
+        isCurrent() &&
+        element.dataset.resumePaginationReady === "true"
       ) {
         signal.removeEventListener("abort", abort);
         resolve(Number(element.dataset.resumePageCount));
@@ -104,183 +105,170 @@ function measureCanvasPageCount(
 }
 
 export const DocumentCanvas = memo(
-  forwardRef<DocumentCanvasHandle, DocumentCanvasProps>(function DocumentCanvas(
-    props,
-    ref,
-  ) {
-    const previewRef = useRef<HTMLElement | null>(null);
-    const committedMeasurementKey = useRef(props.measurementKey);
-    useLayoutEffect(() => {
-      committedMeasurementKey.current = props.measurementKey;
-    }, [props.measurementKey]);
-    const [pageCount, setPageCount] = useState(1);
-    const {
-      currentPage,
-      isFitToWidth,
-      onBlur: onViewportBlur,
-      onClick,
-      onKeyDown,
-      onPointer,
-      onScroll,
-      scale,
-      setScale,
-      viewportRef,
-    } = useDocumentCanvas();
-    const { onPaginationReadyChange, t, template } = props;
-    const handlePaginationReadyChange = useCallback(
-      (ready: boolean, total: number) => {
-        setPageCount(total);
-        onPaginationReadyChange?.(ready);
-      },
-      [onPaginationReadyChange],
-    );
+  forwardRef<DocumentCanvasHandle, DocumentCanvasProps>(
+    function DocumentCanvas(props, ref) {
+      const previewRef = useRef<HTMLElement | null>(null);
+      const committedMeasurementKey = useRef(props.measurementKey);
+      useLayoutEffect(() => {
+        committedMeasurementKey.current = props.measurementKey;
+      }, [props.measurementKey]);
+      const [pageCount, setPageCount] = useState(1);
+      const {
+        currentPage,
+        isFitToWidth,
+        onBlur: onViewportBlur,
+        onClick,
+        onKeyDown,
+        onPointer,
+        onScroll,
+        scale,
+        setScale,
+        viewportRef,
+      } = useDocumentCanvas();
+      const { onPaginationReadyChange, t, template } = props;
+      const handlePaginationReadyChange = useCallback(
+        (ready: boolean, total: number) => {
+          setPageCount(total);
+          onPaginationReadyChange?.(ready);
+        },
+        [onPaginationReadyChange],
+      );
 
-    useImperativeHandle(
-      ref,
-      () => ({
-        measurePageCount: (signal, measurementKey) =>
-          measureCanvasPageCount(
-            previewRef.current,
-            signal,
-            () => committedMeasurementKey.current === measurementKey,
-          ),
-      }),
-      [],
-    );
+      useImperativeHandle(
+        ref,
+        () => ({
+          measurePageCount: (signal, measurementKey) =>
+            measureCanvasPageCount(
+              previewRef.current,
+              signal,
+              () => committedMeasurementKey.current === measurementKey,
+            ),
+        }),
+        [],
+      );
 
-    useEffect(
-      () => () => onPaginationReadyChange?.(false),
-      [onPaginationReadyChange],
-    );
+      useEffect(
+        () => () => onPaginationReadyChange?.(false),
+        [onPaginationReadyChange],
+      );
 
-    const isTemplatePreview = props.variant === "template";
-    const draftReviewInteraction = useResumeDraftReviewInteraction({
-      diffs: !isTemplatePreview ? props.diffs : undefined,
-      presentation: !isTemplatePreview ? props.draftReview : undefined,
-      previewRef,
-      t,
-    });
-    const typography = isTemplatePreview
-      ? template.typography
-      : props.typography;
-    const fitToWidth = t.fitToWidth;
-    const canvasPage = t.canvasPage
-      .replace("{current}", String(Math.min(currentPage, pageCount)))
-      .replace("{total}", String(pageCount));
-    const canvasControls: CanvasControl[] = [
-      [
-        t.zoomOut,
-        "−",
-        scale - 0.1,
-        scale <= DOCUMENT_CANVAS_MIN_SCALE,
-      ],
-      [t.actualSize, `${Math.round(scale * 100)}%`, 1],
-      [
-        t.zoomIn,
-        "+",
-        scale + 0.1,
-        scale >= DOCUMENT_CANVAS_MAX_SCALE,
-      ],
-      [fitToWidth, fitToWidth, null, false, isFitToWidth],
-    ];
+      const isTemplatePreview = props.variant === "template";
+      const draftReviewInteraction = useResumeDraftReviewInteraction({
+        diffs: !isTemplatePreview ? props.diffs : undefined,
+        presentation: !isTemplatePreview ? props.draftReview : undefined,
+        previewRef,
+        t,
+      });
+      const typography = isTemplatePreview
+        ? template.typography
+        : props.typography;
+      const fitToWidth = t.fitToWidth;
+      const canvasPage = t.canvasPage
+        .replace("{current}", String(Math.min(currentPage, pageCount)))
+        .replace("{total}", String(pageCount));
+      const canvasControls: CanvasControl[] = [
+        [t.zoomOut, "−", scale - 0.1, scale <= DOCUMENT_CANVAS_MIN_SCALE],
+        [t.actualSize, `${Math.round(scale * 100)}%`, 1],
+        [t.zoomIn, "+", scale + 0.1, scale >= DOCUMENT_CANVAS_MAX_SCALE],
+        [fitToWidth, fitToWidth, null, false, isFitToWidth],
+      ];
 
-    return (
-      <section
-        className="resume-preview-card relative flex min-h-0 min-w-0 flex-col overflow-hidden rounded-(--radius-preview) border bg-card"
-        onKeyDown={onKeyDown}
-      >
-        <div
-          ref={viewportRef}
-          data-slot="document-canvas-viewport"
-          tabIndex={0}
-          role="region"
-          aria-label={t.preview}
-          className="document-canvas-viewport min-h-0 flex-1 cursor-default overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-          onAuxClick={onClick}
-          onClick={onClick}
-          onClickCapture={draftReviewInteraction.onClick}
-          onBlur={(event) => {
-            onViewportBlur(event);
-            draftReviewInteraction.onBlur(event);
-          }}
-          onFocus={draftReviewInteraction.onFocus}
-          onLostPointerCapture={onPointer}
-          onPointerDown={onPointer}
-          onPointerMove={onPointer}
-          onPointerOut={draftReviewInteraction.onPointerOut}
-          onPointerOver={draftReviewInteraction.onPointerOver}
-          onKeyDownCapture={draftReviewInteraction.onKeyDown}
-          onScroll={onScroll}
+      return (
+        <section
+          className="resume-preview-card relative flex min-h-0 min-w-0 flex-col overflow-hidden rounded-(--radius-preview) border bg-card"
+          onKeyDown={onKeyDown}
         >
-          <div className="document-canvas-stage flex min-h-full w-max min-w-full items-start justify-center p-6 pb-20">
-            <div
-              data-document-canvas-paper
-              className="document-canvas-scale-content my-auto w-[210mm] shrink-0 cursor-default [&_a]:cursor-default"
-            >
-              <ResumePreview
-                ref={previewRef}
-                t={props.documentT}
-                resume={props.resume}
-                fontFamily={typography.fontFamily}
-                fontSize={typography.fontSize}
-                template={template}
-                diffs={!isTemplatePreview ? props.diffs : undefined}
-                editableTemplateImages={
-                  isTemplatePreview &&
-                  !template.isBuiltIn &&
-                  Boolean(props.onMoveTemplateImage)
-                }
-                showEmptyTemplateImagePlaceholders={isTemplatePreview}
-                onPaginationReadyChange={handlePaginationReadyChange}
-                onMoveTemplateImage={
-                  isTemplatePreview
-                    ? props.onMoveTemplateImage
-                    : undefined
-                }
-              />
-            </div>
-          </div>
-        </div>
-
-        {draftReviewInteraction.popover}
-
-        <div className="absolute bottom-4 left-1/2 z-20 -translate-x-1/2 print:hidden">
-          <div className="relative">
-            <div
-              data-slot="document-canvas-controls"
-              className="flex cursor-default items-center gap-1 rounded-md border bg-background/95 p-1 shadow-lg"
-            >
-              <span
-                data-slot="document-canvas-page"
-                className="whitespace-nowrap px-3 text-center text-xs text-muted-foreground"
+          <div
+            ref={viewportRef}
+            data-slot="document-canvas-viewport"
+            tabIndex={0}
+            role="region"
+            aria-label={t.preview}
+            className="document-canvas-viewport min-h-0 flex-1 cursor-default overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+            onAuxClick={onClick}
+            onClick={onClick}
+            onClickCapture={draftReviewInteraction.onClick}
+            onBlur={(event) => {
+              onViewportBlur(event);
+              draftReviewInteraction.onBlur(event);
+            }}
+            onFocus={draftReviewInteraction.onFocus}
+            onLostPointerCapture={onPointer}
+            onPointerDown={onPointer}
+            onPointerMove={onPointer}
+            onPointerOut={draftReviewInteraction.onPointerOut}
+            onPointerOver={draftReviewInteraction.onPointerOver}
+            onKeyDownCapture={draftReviewInteraction.onKeyDown}
+            onScroll={onScroll}
+          >
+            <div className="document-canvas-stage flex min-h-full w-max min-w-full items-start justify-center p-6 pb-20">
+              <div
+                data-document-canvas-paper
+                className="document-canvas-scale-content my-auto w-[210mm] shrink-0 cursor-default [&_a]:cursor-default"
               >
-                {canvasPage}
-              </span>
-              {canvasControls.map(
-                ([label, text, nextScale, disabled, pressed]) => (
-                  <Button
-                    key={label}
-                    size="xs"
-                    variant="ghost"
-                    className="min-w-8 cursor-default px-2.5 tabular-nums aria-pressed:bg-accent aria-pressed:text-accent-foreground"
-                    aria-label={label}
-                    aria-pressed={pressed}
-                    disabled={disabled}
-                    onClick={() => setScale(nextScale)}
-                  >
-                    {text}
-                  </Button>
-                ),
-              )}
-            </div>
-            {props.toolbarTrailing ? (
-              <div className="absolute left-full top-0 ml-2">
-                {props.toolbarTrailing}
+                <ResumePreview
+                  ref={previewRef}
+                  t={props.documentT}
+                  resume={props.resume}
+                  fontFamily={typography.fontFamily}
+                  fontSize={typography.fontSize}
+                  template={template}
+                  diffs={!isTemplatePreview ? props.diffs : undefined}
+                  editableTemplateImages={
+                    isTemplatePreview &&
+                    !template.isBuiltIn &&
+                    Boolean(props.onMoveTemplateImage)
+                  }
+                  showEmptyTemplateImagePlaceholders={isTemplatePreview}
+                  onPaginationReadyChange={handlePaginationReadyChange}
+                  onMoveTemplateImage={
+                    isTemplatePreview ? props.onMoveTemplateImage : undefined
+                  }
+                />
               </div>
-            ) : null}
+            </div>
           </div>
-        </div>
-      </section>
-    );
-  }),
+
+          {draftReviewInteraction.popover}
+
+          <div className="absolute bottom-4 left-1/2 z-20 -translate-x-1/2 print:hidden">
+            <div className="relative">
+              <div
+                data-slot="document-canvas-controls"
+                className="flex cursor-default items-center gap-1 rounded-md border bg-background/95 p-1 shadow-lg"
+              >
+                <span
+                  data-slot="document-canvas-page"
+                  className="whitespace-nowrap px-3 text-center text-xs text-muted-foreground"
+                >
+                  {canvasPage}
+                </span>
+                {canvasControls.map(
+                  ([label, text, nextScale, disabled, pressed]) => (
+                    <Button
+                      key={label}
+                      size="xs"
+                      variant="ghost"
+                      className="min-w-8 cursor-default px-2.5 tabular-nums aria-pressed:bg-accent aria-pressed:text-accent-foreground"
+                      aria-label={label}
+                      aria-pressed={pressed}
+                      disabled={disabled}
+                      onClick={() => setScale(nextScale)}
+                    >
+                      {text}
+                    </Button>
+                  ),
+                )}
+              </div>
+              {props.toolbarTrailing ? (
+                <div className="absolute left-full top-0 ml-2">
+                  {props.toolbarTrailing}
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </section>
+      );
+    },
+  ),
 );

@@ -169,9 +169,7 @@ function ResumeDetailCompactActions({
                   <FileText />
                   {messages.exportPdf}
                 </DropdownMenuItem>
-                <DropdownMenuItem
-                  onSelect={() => void commands.exportImages()}
-                >
+                <DropdownMenuItem onSelect={() => void commands.exportImages()}>
                   <Images />
                   {messages.exportImages}
                 </DropdownMenuItem>
@@ -207,8 +205,7 @@ function ResumeDetailEditorActions({
         variant="outline"
         onClick={() => void commands.fitOnePage()}
         disabled={
-          state.document.isSmartFittingOnePage ||
-          !state.document.isPreviewReady
+          state.document.isSmartFittingOnePage || !state.document.isPreviewReady
         }
         title={messages.smartOnePage}
         aria-label={messages.smartOnePage}

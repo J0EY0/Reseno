@@ -17,6 +17,8 @@ import type {
   ResumeTrashResponse,
   TemplateDeleteResponse,
   TemplateDetailResponse,
+  TemplateEditingResponse,
+  TemplateSaveMode,
   TemplateArtifactItem,
   TemplateTrashResponse,
   UserSettingsSaveResponse,
@@ -72,10 +74,14 @@ export function saveDefaultTemplateApi(
   );
 }
 
-export function createResumeApi(request: ResumeCreateRequest) {
+export function createResumeApi(
+  request: ResumeCreateRequest,
+  options: Pick<ApiRequestOptions, "notifyOnError"> = {},
+) {
   return requestApi<ResumeDetailResponse>(apiRoutes.resumes, {
     body: request,
     method: "POST",
+    ...options,
   });
 }
 
@@ -165,16 +171,36 @@ export function createTemplateApi(
   });
 }
 
+export function fetchTemplateApi(
+  templateId: string,
+  options: Pick<ApiRequestOptions, "notifyOnError" | "signal"> = {},
+) {
+  return requestApi<TemplateEditingResponse>(apiRoutes.template(templateId), {
+    cacheTtlMs: 3000,
+    ...options,
+  });
+}
+
 export function saveTemplateApi(
   templateId: string,
   template: ResumeTemplateDefinition,
-  options: Pick<ApiRequestOptions, "notifyOnError"> = {},
+  options: Pick<ApiRequestOptions, "notifyOnError"> & {
+    saveMode?: TemplateSaveMode;
+  } = {},
 ) {
-  return requestApi<TemplateDetailResponse>(apiRoutes.template(templateId), {
-    body: { template: createTemplateSavePayload(template) },
+  const { saveMode = "checkpoint", ...requestOptions } = options;
+  return requestApi<TemplateEditingResponse>(apiRoutes.template(templateId), {
+    body: { template: createTemplateSavePayload(template), saveMode },
     method: "PUT",
-    ...options,
+    ...requestOptions,
   });
+}
+
+export function discardTemplateChangesApi(templateId: string) {
+  return requestApi<TemplateEditingResponse>(
+    `${apiRoutes.template(templateId)}/discard`,
+    { method: "POST" },
+  );
 }
 
 function createTemplateSavePayload(
@@ -194,10 +220,13 @@ export function moveTemplateToTrashApi(
   templateId: string,
   options: Pick<ApiRequestOptions, "notifyOnError"> = {},
 ) {
-  return requestApi<TemplateTrashResponse>(apiRoutes.templateTrash(templateId), {
-    method: "POST",
-    ...options,
-  });
+  return requestApi<TemplateTrashResponse>(
+    apiRoutes.templateTrash(templateId),
+    {
+      method: "POST",
+      ...options,
+    },
+  );
 }
 
 export function restoreTemplateApi(templateId: string) {

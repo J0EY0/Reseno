@@ -68,9 +68,7 @@ export function TemplateSliderField({
       )}
     >
       <div className="min-w-0">
-        <span className="text-sm font-medium">
-          {label}
-        </span>
+        <span className="text-sm font-medium">{label}</span>
         <span className="mt-0.5 block text-xs text-muted-foreground">
           {displayValue}
         </span>
@@ -112,10 +110,7 @@ export function TemplateColorField({
       )}
     >
       <div className="min-w-0">
-        <label
-          htmlFor={controlId}
-          className="block text-sm font-medium"
-        >
+        <label htmlFor={controlId} className="block text-sm font-medium">
           {label}
         </label>
         <span className="rounded-md border border-border/70 bg-background px-2 py-1 font-mono text-[11px] uppercase tracking-[0.08em] text-muted-foreground">

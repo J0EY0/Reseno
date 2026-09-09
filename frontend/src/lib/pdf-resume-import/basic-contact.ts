@@ -22,8 +22,7 @@ const PHONE_PATTERN = /(?:\+?\d[\d\s-]{6,}\d)/;
 const YEAR_RANGE_PATTERN =
   /^\d{4}(?:0[1-9]|1[0-2])?\s*[-–—]\s*\d{4}(?:0[1-9]|1[0-2])?$/;
 const DOMAIN_PATTERN = /\b[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:\/\S*)?\b/i;
-const WEB_CONTACT_PATTERN =
-  /^(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/\S*)?$/i;
+const WEB_CONTACT_PATTERN = /^(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/\S*)?$/i;
 export function hasMeaningfulResumeText(lines: TextLine[]) {
   const normalizedLines = lines
     .map((line) => normalizeMatchingText(line.text))
@@ -40,18 +39,16 @@ export function hasMeaningfulResumeText(lines: TextLine[]) {
 export function extractBasicInfo(
   lines: TextLine[],
   lexiconContext: ResumeImportLexiconContext,
+  includeSummary: boolean,
 ) {
   const rawTextLines = lines.map((line) => line.text);
   const name = inferName(rawTextLines, lexiconContext);
-  const bodyFontSize = median(lines.map((line) => line.fontSize).filter(Boolean));
+  const bodyFontSize = median(
+    lines.map((line) => line.fontSize).filter(Boolean),
+  );
   const semanticLines = lines.filter(
     (line) =>
-      !looksLikeBasicFieldLabel(
-        line,
-        name,
-        bodyFontSize,
-        lexiconContext,
-      ),
+      !looksLikeBasicFieldLabel(line, name, bodyFontSize, lexiconContext),
   );
   const textLines = semanticLines.map((line) => line.text);
   const joined = normalizeMatchingText(textLines.join(" "));
@@ -59,39 +56,88 @@ export function extractBasicInfo(
   const phone = extractPhone(
     textLines.slice(0, PDF_IMPORT_PROFILE.text.contactScanLineLimit),
   );
-  const location = extractLocation(
-    lines,
-    name,
-    bodyFontSize,
-    lexiconContext,
-  );
-  const nameIndex = textLines.findIndex((line) => line === name);
+  const location = extractLocation(lines, name, bodyFontSize, lexiconContext);
   const contactIndexes = textLines
     .map((line, index) => (looksLikeContactLine(line) ? index : -1))
     .filter((index) => index >= 0);
   const firstContactIndex = contactIndexes[0] ?? -1;
   const lastContactIndex = contactIndexes.at(-1) ?? -1;
-  const headline =
-    firstContactIndex > nameIndex + 1
-      ? joinWrappedLines(textLines.slice(nameIndex + 1, firstContactIndex))
-      : "";
-  const summaryLines =
-    lastContactIndex >= 0 ? textLines.slice(lastContactIndex + 1) : [];
-  const locationIndex = summaryLines.findIndex((line) => line === location);
-  if (locationIndex >= 0) {
-    summaryLines.splice(locationIndex, 1);
-  }
-  const summary = joinWrappedLines(summaryLines);
+  const nameIndex = textLines.findIndex(
+    (line) => normalizeMatchingText(line) === name,
+  );
+  const contentWithoutContacts = rawTextLines.filter(
+    (line) =>
+      normalizeMatchingText(line) !== name &&
+      !lexiconContext.documentTitleTerms.has(normalizeLexiconTerm(line)),
+  );
+  const headlineLines =
+    firstContactIndex >= 0
+      ? textLines.slice(nameIndex + 1, firstContactIndex)
+      : contentWithoutContacts.slice(0, 1);
+  const summaryLines = includeSummary
+    ? (lastContactIndex >= 0
+        ? textLines.slice(lastContactIndex + 1)
+        : contentWithoutContacts.slice(1)
+      ).filter((line) => line !== location)
+    : [];
+  const customFields = extractCustomContactFields(textLines);
+  const representedLines = new Set(
+    [...headlineLines, ...summaryLines, name, location].map(
+      normalizeMatchingText,
+    ),
+  );
+  const contactValues = new Set(
+    [name, email, phone, location, ...customFields.map((field) => field.value)]
+      .map(normalizeMatchingText)
+      .filter(Boolean),
+  );
+  const unclassifiedLines = lines.flatMap((line) => {
+    if (
+      representedLines.has(normalizeMatchingText(line.text)) ||
+      lexiconContext.documentTitleTerms.has(normalizeLexiconTerm(line.text))
+    ) {
+      return [];
+    }
+    if (looksLikeContactLine(line.text)) {
+      const remaining = line.text
+        .split(CONTACT_TOKEN_SEPARATOR)
+        .map((token) => {
+          let value = normalizeMatchingText(stripLeadingContactLabel(token));
+          for (const contact of contactValues) {
+            const escaped = contact.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            value = value.replace(
+              new RegExp(
+                `(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`,
+                "giu",
+              ),
+              "",
+            );
+          }
+          return normalizeWhitespace(value);
+        })
+        .filter(
+          (value) =>
+            /[\p{L}\p{N}]/u.test(value) &&
+            !/^[\p{L}\p{M}\s]+[:：]$/u.test(value),
+        );
+      const text = remaining.join(" | ");
+      return text ? [{ ...line, text }] : [];
+    }
+    return [line];
+  });
 
   return {
-    name,
-    headline,
-    phone,
-    email,
-    location,
-    avatar: "",
-    summary,
-    customFields: extractCustomContactFields(textLines),
+    basic: {
+      name,
+      headline: joinWrappedLines(headlineLines),
+      phone,
+      email,
+      location,
+      avatar: "",
+      summary: joinWrappedLines(summaryLines),
+      customFields,
+    },
+    unclassifiedLines,
   };
 }
 
@@ -135,8 +181,8 @@ function extractCustomContactFields(lines: string[]) {
           );
       const label = isBareWebContact
         ? deriveWebContactLabel(token)
-        : labeledValue?.label ?? "";
-      const value = isBareWebContact ? token : labeledValue?.value ?? "";
+        : (labeledValue?.label ?? "");
+      const value = isBareWebContact ? token : (labeledValue?.value ?? "");
       const normalizedValue = normalizeMatchingText(value);
       const dedupeKey = normalizedValue.toLowerCase();
       if (
@@ -184,9 +230,7 @@ function deriveWebContactLabel(value: string) {
   const normalized = normalizeMatchingText(value);
   try {
     const url = new URL(
-      /^https?:\/\//i.test(normalized)
-        ? normalized
-        : `https://${normalized}`,
+      /^https?:\/\//i.test(normalized) ? normalized : `https://${normalized}`,
     );
     return url.hostname.replace(/^www\./i, "") || normalized;
   } catch {
@@ -405,10 +449,7 @@ function inferName(
   lines: string[],
   lexiconContext: ResumeImportLexiconContext,
 ) {
-  for (const line of lines.slice(
-    0,
-    PDF_IMPORT_PROFILE.text.maxNameScanLines,
-  )) {
+  for (const line of lines.slice(0, PDF_IMPORT_PROFILE.text.maxNameScanLines)) {
     const normalized = normalizeMatchingText(
       line
         .replace(/[|｜·•].*$/, "")
@@ -429,4 +470,3 @@ function inferName(
 
   return "";
 }
-

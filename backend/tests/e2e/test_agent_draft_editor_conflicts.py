@@ -410,6 +410,7 @@ def test_draft_resolution_respects_previously_applied_and_discarded_reviews(
         expect(page.get_by_text("第 2/2 项", exact=True)).to_be_visible()
         page.get_by_role("button", name="放弃此项", exact=True).click()
         expect(page.get_by_text("第 1/1 项", exact=True)).to_be_visible()
+        expect(page.get_by_role("button", name="应用此项", exact=True)).to_be_enabled()
         work_id = f"review-edit-work-{resume_id}"
         summary_id = f"review-edit-summary-{resume_id}"
         headline_id = f"review-edit-headline-{resume_id}"

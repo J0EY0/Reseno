@@ -1,8 +1,5 @@
 import type { RenderableSectionItem } from "@/lib/resume-sections";
-import type {
-  ResumeDraftDiff,
-  SectionKind,
-} from "@/types/resume";
+import type { ResumeDraftDiff, SectionKind } from "@/types/resume";
 
 export type RenderableItemField = Exclude<
   keyof RenderableSectionItem,

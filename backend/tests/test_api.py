@@ -4,6 +4,7 @@ import re
 import sqlite3
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Barrier, Event, Lock
@@ -1124,7 +1125,7 @@ def test_workspace_page_openapi_uses_exact_response_contract(
     properties: set[str],
     required: set[str],
 ) -> None:
-    document = client.get("/openapi.json").json()
+    document = client.app.openapi()
     response_schema = document["paths"][endpoint]["get"]["responses"]["200"]["content"][
         "application/json"
     ]["schema"]
@@ -1166,7 +1167,7 @@ def test_workspace_page_openapi_uses_typed_collection_items(
     property_name: str,
     item_schema_name: str,
 ) -> None:
-    schemas = client.get("/openapi.json").json()["components"]["schemas"]
+    schemas = client.app.openapi()["components"]["schemas"]
     item_ref = schemas[page_schema_name]["properties"][property_name]["items"]["$ref"]
 
     assert item_ref == f"#/components/schemas/{item_schema_name}"
@@ -1176,7 +1177,7 @@ def test_workspace_page_openapi_uses_typed_collection_items(
 def test_resume_workspace_contract_requires_current_appearance_fields(
     client: TestClient,
 ) -> None:
-    schemas = client.get("/openapi.json").json()["components"]["schemas"]
+    schemas = client.app.openapi()["components"]["schemas"]
     create_required = set(schemas["ResumeCreateRequest"]["required"])
     workspace_required = set(schemas["ResumeWorkspaceItemResponse"]["required"])
     save_required = set(schemas["ResumeSaveRequest"]["required"])
@@ -1854,7 +1855,7 @@ def test_concurrent_duplicate_resume_requests_allocate_distinct_titles(
         start_together.wait(timeout=2)
         return test_client.post(f"/api/resumes/{source['id']}/duplicate")
 
-    with TestClient(client.app) as second_client:
+    with closing(TestClient(client.app)) as second_client:
         second_client.headers.update(client.headers)
         with ThreadPoolExecutor(max_workers=2) as executor:
             responses = [
@@ -3130,7 +3131,7 @@ def test_default_env_stays_separate_from_runtime_data(
     monkeypatch.setenv("APP_DATA_DIR", str(data_dir))
     get_settings.cache_clear()
 
-    settings = get_settings()
+    settings = config.initialize_settings()
 
     assert settings.env_file_path == default_env
     assert settings.data_dir == data_dir
@@ -3225,7 +3226,7 @@ def test_ensure_database_schema_rejects_unversioned_nonempty_database(
         ).fetchone()[0]
 
     assert str(db_path) in str(exc_info.value)
-    assert "move or delete" in str(exc_info.value).lower()
+    assert "data was left unchanged" in str(exc_info.value).lower()
     assert user_version == 0
     assert default_template_id == "classic"
     get_settings.cache_clear()
@@ -3729,7 +3730,7 @@ def test_local_model_config_stores_manual_capabilities(
 def test_model_config_api_keeps_thinking_capability_without_obsolete_toggle(
     client: TestClient,
 ) -> None:
-    schemas = client.get("/openapi.json").json()["components"]["schemas"]
+    schemas = client.app.openapi()["components"]["schemas"]
     request_properties = schemas["ModelConfigUpsertRequest"]["properties"]
     response_properties = schemas["ModelConfigResponse"]["properties"]
     assert "supportsThinking" in request_properties
@@ -4412,7 +4413,7 @@ def test_agent_session_replace_rejects_stale_revision_without_pruning_files(
     assert winner_response.status_code == 200
     assert winner_response.json()["data"]["revision"] != initial_revision
     assert stale_response.status_code == 409
-    assert stale_response.json()["detail"]["code"] == (
+    assert stale_response.json()["message"] == (
         "AGENT_SESSION_REVISION_CONFLICT"
     )
 
@@ -4484,7 +4485,7 @@ def test_agent_session_replace_serializes_two_concurrent_clients(
             },
         )
 
-    with TestClient(client.app) as second_client:
+    with closing(TestClient(client.app)) as second_client:
         second_client.headers.update(client.headers)
         first_client_revision = client.get(
             f"/api/agent/resumes/{resume_id}/session",
@@ -4511,7 +4512,7 @@ def test_agent_session_replace_serializes_two_concurrent_clients(
 
     assert sorted(response.status_code for response in responses) == [200, 409]
     conflict = next(response for response in responses if response.status_code == 409)
-    assert conflict.json()["detail"]["code"] == "AGENT_SESSION_REVISION_CONFLICT"
+    assert conflict.json()["message"] == "AGENT_SESSION_REVISION_CONFLICT"
 
     persisted = client.get(f"/api/agent/resumes/{resume_id}/session")
     persisted_ids = [message["id"] for message in persisted.json()["data"]["messages"]]

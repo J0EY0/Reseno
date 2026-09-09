@@ -7,8 +7,7 @@ const AGENT_AUTO_EXPAND_MEDIA_QUERY = "(min-width: 1536px)";
 /** Owns the single collapsed state for the inline Agent panel. */
 export function useResumeDetailAgentLayout(resumeId: string | undefined) {
   const [isPanelCollapsed, setIsPanelCollapsed] = useState(
-    () =>
-      !window.matchMedia(AGENT_AUTO_EXPAND_MEDIA_QUERY).matches,
+    () => !window.matchMedia(AGENT_AUTO_EXPAND_MEDIA_QUERY).matches,
   );
   const [reportedStatus, setReportedStatus] = useState<{
     resumeId: string | undefined;

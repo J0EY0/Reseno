@@ -129,7 +129,8 @@ def workspace_servers() -> Iterator[tuple[str, str]]:
                     sys.executable,
                     "-m",
                     "uvicorn",
-                    "app.main:app",
+                    "app.main:create_app",
+                    "--factory",
                     "--host",
                     "127.0.0.1",
                     "--port",
@@ -161,7 +162,6 @@ def workspace_servers() -> Iterator[tuple[str, str]]:
             access_token = str(setup_payload["accessToken"])
             browser_session.update({
                 "username": str(setup_payload["username"]),
-                "authenticatedAt": "2026-08-09T00:00:00.000Z",
                 "accessToken": access_token,
                 "expiresAt": str(setup_payload["expiresAt"]),
             })

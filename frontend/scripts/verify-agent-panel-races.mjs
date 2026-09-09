@@ -1,16 +1,17 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import * as ts from "typescript";
+import {
+  findNodes,
+  getMemberPath,
+  hasCall,
+  parseSource,
+} from "./source-analysis.mjs";
 
 import { evaluateTypeScript } from "./typescript-module.mjs";
 
 const frontendRoot = new URL("..", import.meta.url).pathname;
-const copilotRoot = join(
-  frontendRoot,
-  "src",
-  "components",
-  "copilot",
-);
+const copilotRoot = join(frontendRoot, "src", "components", "copilot");
 const runtimePath = join(copilotRoot, "agent-conversation-runtime.ts");
 const sendControllerPath = join(copilotRoot, "use-agent-send-controller.ts");
 const promptFormPath = join(
@@ -26,7 +27,6 @@ const [
   sendControllerSource,
   runStreamSource,
   promptFormSource,
-  promptActionsSource,
   hydrationSource,
   conversationViewSource,
   composerSource,
@@ -39,81 +39,79 @@ const [
   workspaceHeaderSource,
   headerActionsSource,
   appStylesSource,
-] =
-  await Promise.all([
-    readFile(runtimePath, "utf8"),
-    readFile(join(copilotRoot, "use-agent-conversation.ts"), "utf8"),
-    readFile(sendControllerPath, "utf8"),
-    readFile(join(copilotRoot, "use-agent-run-stream.ts"), "utf8"),
-    readFile(promptFormPath, "utf8"),
-    readFile(join(copilotRoot, "use-agent-prompt-actions.ts"), "utf8"),
-    readFile(join(copilotRoot, "use-agent-session-hydration.ts"), "utf8"),
-    readFile(join(copilotRoot, "copilot-conversation-view.tsx"), "utf8"),
-    readFile(join(copilotRoot, "copilot-composer.tsx"), "utf8"),
-    readFile(join(copilotRoot, "copilot-panel.tsx"), "utf8"),
-    readFile(join(copilotRoot, "copilot-panel-types.ts"), "utf8"),
-    readFile(
-      join(
-        frontendRoot,
-        "src",
-        "components",
-        "workspace",
-        "resume-detail-agent-host.tsx",
-      ),
-      "utf8",
+] = await Promise.all([
+  readFile(runtimePath, "utf8"),
+  readFile(join(copilotRoot, "use-agent-conversation.ts"), "utf8"),
+  readFile(sendControllerPath, "utf8"),
+  readFile(join(copilotRoot, "use-agent-run-stream.ts"), "utf8"),
+  readFile(promptFormPath, "utf8"),
+  readFile(join(copilotRoot, "use-agent-session-hydration.ts"), "utf8"),
+  readFile(join(copilotRoot, "copilot-conversation-view.tsx"), "utf8"),
+  readFile(join(copilotRoot, "copilot-composer.tsx"), "utf8"),
+  readFile(join(copilotRoot, "copilot-panel.tsx"), "utf8"),
+  readFile(join(copilotRoot, "copilot-panel-types.ts"), "utf8"),
+  readFile(
+    join(
+      frontendRoot,
+      "src",
+      "components",
+      "workspace",
+      "resume-detail-agent-host.tsx",
     ),
-    readFile(
-      join(
-        frontendRoot,
-        "src",
-        "components",
-        "workspace",
-        "resume-detail-agent-motion.css",
-      ),
-      "utf8",
+    "utf8",
+  ),
+  readFile(
+    join(
+      frontendRoot,
+      "src",
+      "components",
+      "workspace",
+      "resume-detail-agent-motion.css",
     ),
-    readFile(
-      join(
-        frontendRoot,
-        "src",
-        "components",
-        "workspace",
-        "use-resume-detail-agent-layout.ts",
-      ),
-      "utf8",
+    "utf8",
+  ),
+  readFile(
+    join(
+      frontendRoot,
+      "src",
+      "components",
+      "workspace",
+      "use-resume-detail-agent-layout.ts",
     ),
-    readFile(
-      join(
-        frontendRoot,
-        "src",
-        "components",
-        "workspace",
-        "resume-detail-workspace-view.tsx",
-      ),
-      "utf8",
+    "utf8",
+  ),
+  readFile(
+    join(
+      frontendRoot,
+      "src",
+      "components",
+      "workspace",
+      "resume-detail-workspace-view.tsx",
     ),
-    readFile(
-      join(
-        frontendRoot,
-        "src",
-        "components",
-        "workspace",
-        "resume-detail-workspace-header.tsx",
-      ),
-      "utf8",
+    "utf8",
+  ),
+  readFile(
+    join(
+      frontendRoot,
+      "src",
+      "components",
+      "workspace",
+      "resume-detail-workspace-header.tsx",
     ),
-    readFile(
-      join(
-        frontendRoot,
-        "src",
-        "components",
-        "workspace",
-        "resume-detail-header-actions.tsx",
-      ),
-      "utf8",
+    "utf8",
+  ),
+  readFile(
+    join(
+      frontendRoot,
+      "src",
+      "components",
+      "workspace",
+      "resume-detail-header-actions.tsx",
     ),
-    readFile(join(frontendRoot, "src", "index.css"), "utf8"),
-  ]);
+    "utf8",
+  ),
+  readFile(join(frontendRoot, "src", "index.css"), "utf8"),
+]);
 const sourceFile = ts.createSourceFile(
   runtimePath,
   runtimeSource,
@@ -146,10 +144,7 @@ function findFunctionDeclaration(source, name) {
   let match;
 
   function visit(node) {
-    if (
-      ts.isFunctionDeclaration(node) &&
-      node.name?.text === name
-    ) {
+    if (ts.isFunctionDeclaration(node) && node.name?.text === name) {
       match = node;
       return;
     }
@@ -200,7 +195,10 @@ function extractBetween(source, start, end) {
   const startIndex = source.indexOf(start);
   const endIndex = source.indexOf(end, startIndex + start.length);
 
-  assert(startIndex >= 0 && endIndex > startIndex, `Missing source range: ${start}`);
+  assert(
+    startIndex >= 0 && endIndex > startIndex,
+    `Missing source range: ${start}`,
+  );
   return source.slice(startIndex, endIndex);
 }
 
@@ -212,18 +210,41 @@ assert(
   ownershipDeclaration,
   "The Agent panel must define a single ownership check for provisional messages.",
 );
-assert(
-  runtimeSource.includes(
-    "export type AgentRequestPhase = 'idle' | 'preparing' | 'responding'",
-  ) &&
-    runtimeSource.includes(
-      "setRequestPhase: (value: AgentRequestPhase) => void",
-    ) &&
-    /export function setAgentRequestPhase\([\s\S]{0,300}runtime\.requestPhase = phase\s*updates\.setRequestPhase\(phase\)/.test(
-      runtimeSource,
+const { setAgentRequestPhase } = compileFunctions(
+  ts.createSourceFile(
+    "runtime.ts",
+    runtimeSource,
+    ts.ScriptTarget.Latest,
+    true,
+  ),
+  [
+    findFunctionDeclaration(
+      ts.createSourceFile(
+        "runtime.ts",
+        runtimeSource,
+        ts.ScriptTarget.Latest,
+        true,
+      ),
+      "setAgentRequestPhase",
     ),
-  "The Agent request phase must keep its synchronous gate and React state in lockstep.",
+  ],
+  ["setAgentRequestPhase"],
 );
+for (const phase of ["idle", "preparing", "responding"]) {
+  const runtime = { requestPhase: "idle" };
+  const published = [];
+  setAgentRequestPhase(
+    runtime,
+    {
+      setRequestPhase: (value) => published.push([runtime.requestPhase, value]),
+    },
+    phase,
+  );
+  assert(
+    JSON.stringify(published) === JSON.stringify([[phase, phase]]),
+    "The synchronous request gate must update before publishing the rendered phase.",
+  );
+}
 
 const ownershipSource = ownershipDeclaration.getText(sourceFile);
 const { isPendingSendOwner } = evaluateTypeScript(
@@ -267,10 +288,7 @@ cancelledPreflight.abort();
 activePreflight = null;
 const canPostAfterStop =
   (await preflightResult) &&
-  preflightBehavior.ownsAgentSendPreflight(
-    activePreflight,
-    cancelledPreflight,
-  );
+  preflightBehavior.ownsAgentSendPreflight(activePreflight, cancelledPreflight);
 let postCount = 0;
 if (canPostAfterStop) {
   postCount += 1;
@@ -383,21 +401,52 @@ assert(
   sendControllerSource.includes("accepted: acceptedPromise"),
   "The send interface must expose server acceptance separately from completion.",
 );
-assert(
-  /preflightAbortRef\.current\s*=\s*preflightAbortController[\s\S]{0,500}await waitForAgentSendPreflight\([\s\S]{0,500}ownsAgentSendPreflight\(/.test(
-    sendSource,
-  ) &&
-    /await runtime\.sessionReadyPromise\s*\n\s*if \(\s*!ownsAgentSendPreflight\(/.test(
-      sendSource,
-    ) &&
-    /await refreshAgentSession\(resumeId, true\)[\s\S]{0,240}!ownsAgentSendPreflight\(/.test(
-      sendSource,
-    ) &&
-    /return \(\) => \{[\s\S]*cancelAgentSendPreflight\(\)[\s\S]*runtime\.activeRequestAbort\?\.abort\(\)/.test(
-      sendControllerSource,
-    ),
-  "Preference preflight ownership must be registered before awaits and rechecked until debounce owns cancellation.",
+const parsedSend = parseSource(sendSource);
+const preflightAwaits = [
+  "waitForAgentSendPreflight",
+  "runtime.sessionReadyPromise",
+  "refreshAgentSession",
+].map((name) => {
+  const expression = findNodes(parsedSend, ts.isAwaitExpression).find(
+    (node) =>
+      getMemberPath(
+        ts.isCallExpression(node.expression)
+          ? node.expression.expression
+          : node.expression,
+      ) === name,
+  );
+  assert(expression, `Agent sending must await ${name}.`);
+  let statement = expression;
+  while (statement.parent && !ts.isBlock(statement.parent))
+    statement = statement.parent;
+  const block = statement.parent;
+  const next = block?.statements?.[block.statements.indexOf(statement) + 1];
+  assert(
+    next &&
+      ts.isIfStatement(next) &&
+      hasCall(next.expression, "ownsAgentSendPreflight"),
+    `The send must check ownership after ${name} resolves.`,
+  );
+  return expression;
+});
+const claim = findNodes(parsedSend, ts.isBinaryExpression).find(
+  (node) =>
+    getMemberPath(node.left) === "preflightAbortRef.current" &&
+    getMemberPath(node.right) === "preflightAbortController",
 );
+assert(
+  claim && claim.pos < preflightAwaits[0].pos,
+  "Preflight ownership must be registered before asynchronous work starts.",
+);
+assert(
+  hasCall(parseSource(sendControllerSource), "cancelAgentSendPreflight") &&
+    hasCall(
+      parseSource(sendControllerSource),
+      "runtime.activeRequestAbort.abort",
+    ),
+  "Send cleanup must cancel preflight and its active transport.",
+);
+
 assert(
   /setAgentRequestPhase\(runtime, updates, ['"]preparing['"]\)[\s\S]{0,240}await waitForAgentSendPreflight\(/.test(
     sendSource,
@@ -443,9 +492,7 @@ assert(
     /if \(result instanceof Promise\) \{\s*await result;\s*\}\s*for \(const \{ id \} of activeFiles\)/.test(
       promptFormSource,
     ) &&
-    !/await result;\s*\}\s*if \(!mountedRef\.current\)/.test(
-      promptFormSource,
-    ),
+    !/await result;\s*\}\s*if \(!mountedRef\.current\)/.test(promptFormSource),
   "Unmounting must block a stale submit before request start but preserve captured cleanup after server acceptance.",
 );
 assert(
@@ -511,7 +558,7 @@ const panelMotionRule =
   )?.[1] ?? "";
 const hiddenPanelMotionRule =
   agentMotionStylesSource.match(
-    /\.agent-panel-dock\[aria-hidden='true'\]\s+\.agent-panel-motion-layer\s*\{([^}]*)\}/,
+    /\.agent-panel-dock\[aria-hidden=["']true["']\]\s+\.agent-panel-motion-layer\s*\{([^}]*)\}/,
   )?.[1] ?? "";
 
 assert(
@@ -532,8 +579,10 @@ assert(
   "The desktop Agent motion layer must keep its final 360px width while the grid track clips it.",
 );
 assert(
-  /className=\{cn\([\s\S]{0,180}agent-panel-dock[^\n]*overflow-hidden/.test(
-    agentHostSource,
+  findNodes(parseSource(agentHostSource), ts.isStringLiteral).some(
+    (node) =>
+      node.text.split(/\s+/).includes("agent-panel-dock") &&
+      node.text.split(/\s+/).includes("overflow-hidden"),
   ) &&
     /position:\s*absolute/.test(panelMotionRule) &&
     /left:\s*0/.test(panelMotionRule) &&
@@ -583,28 +632,43 @@ assert(
     panelSource.includes("key={conversation.sessionResetVersion}"),
   "Hydrated Agent history must render its newest messages first and progressively prepend older rows without trimming controller state.",
 );
-assert(
-  /export type AgentPanelStatus\s*=\s*['"]loading['"]\s*\|\s*['"]ready['"]\s*\|\s*['"]responding['"]\s*\|\s*['"]error['"]/.test(
-    panelTypesSource,
-  ) &&
-    conversationSource.includes(
-      "const isRequestBusy = requestPhase !== 'idle'",
-    ) &&
-    /:\s*isRequestBusy\s*\?\s*['"]responding['"]\s*:\s*['"]ready['"]/.test(
-      conversationSource,
-    ),
-  "Preparing and responding must remain internal phases that both map to the external responding panel status.",
-);
+const conversationFile = parseSource(conversationSource);
+const getInitializer = (name) =>
+  findNodes(conversationFile, ts.isVariableDeclaration).find(
+    (node) => getMemberPath(node.name) === name,
+  )?.initializer;
+const busyExpression = getInitializer("isRequestBusy");
+const statusExpression = getInitializer("status");
+assert(busyExpression && statusExpression);
+const { getStatus } =
+  evaluateTypeScript(`export function getStatus(requestPhase, isSessionReady, sessionLoadError) {
+  const isRequestBusy = ${busyExpression.getText()};
+  return ${statusExpression.getText()};
+}`);
+for (const phase of ["idle", "preparing", "responding"]) {
+  assert(getStatus(phase, false, false) === "loading");
+  assert(getStatus(phase, true, true) === "error");
+  assert(
+    getStatus(phase, true, false) ===
+      (phase === "idle" ? "ready" : "responding"),
+    "Preparing and streaming requests must share the public responding status.",
+  );
+}
+
 assert(
   panelTypesSource.includes("export type AgentPanelStatus") &&
-    panelTypesSource.includes("onStatusChange: (status: AgentPanelStatus) => void") &&
+    panelTypesSource.includes(
+      "onStatusChange: (status: AgentPanelStatus) => void",
+    ) &&
     conversationSource.includes("status,") &&
     /onStatusChange\(conversation\.status\)/.test(panelSource) &&
     agentHostSource.includes('data-agent-status={panelStatus ?? "idle"}') &&
     agentHostSource.includes('className="sr-only" role="status"') &&
     !agentHostSource.includes("agent-panel-toggle-status") &&
     !agentHostSource.includes('data-slot="agent-status-indicator"') &&
-    agentLayoutSource.includes("reportedStatus && reportedStatus.resumeId === resumeId"),
+    agentLayoutSource.includes(
+      "reportedStatus && reportedStatus.resumeId === resumeId",
+    ),
   "A retained conversation must report its low-frequency status accessibly without rendering a desktop status dot or leaking across resumes.",
 );
 assert(
@@ -664,18 +728,14 @@ assert(
   ) &&
     workspaceViewSource.includes("<ResumeDetailAgentToggle") &&
     workspaceViewSource.includes("toolbarTrailing={") &&
-    workspaceViewSource.includes(
-      'minmax(0,1fr) var(--agent-panel-width)',
-    ) &&
+    workspaceViewSource.includes("minmax(0,1fr) var(--agent-panel-width)") &&
     /@media \(min-width: 1280px\) \{[\s\S]{0,2400}\.resume-workspace\s*\{[\s\S]{0,400}grid-template-columns:\s*var\(\s*--resume-workspace-columns/.test(
       appStylesSource,
     ),
   "Desktop layouts must compose the editor, canvas, and inline Agent as three tracks with the toggle inside the canvas toolbar.",
 );
 assert(
-  appStylesSource.includes(
-    "grid-template-columns: minmax(0, 1fr);",
-  ) &&
+  appStylesSource.includes("grid-template-columns: minmax(0, 1fr);") &&
     appStylesSource.includes(
       ".resume-workspace > .agent-panel-dock {\n    grid-column: 1;\n    grid-row: 2;",
     ) &&
@@ -789,11 +849,11 @@ for (const outcome of ["failed", "cancelled", "completed"]) {
             .find((message) => message.response?.draft);
           return sourceMessage
             ? {
-              ...sourceMessage.response.draft,
-              edits: sourceMessage.response.edits ?? [],
-              sourceMessageId: sourceMessage.id,
-              transactionState: sourceMessage.response.transactionState,
-            }
+                ...sourceMessage.response.draft,
+                edits: sourceMessage.response.edits ?? [],
+                sourceMessageId: sourceMessage.id,
+                transactionState: sourceMessage.response.transactionState,
+              }
             : null;
         },
       },
@@ -851,8 +911,11 @@ for (const outcome of ["failed", "cancelled", "completed"]) {
 
   await flushAsyncWork();
   assert(
-    !messageWrites.some((value) => value[0]?.id === "assistant-authoritative") &&
-    reconciledDrafts.length === 0 && runtime.sessionRevision === null,
+    !messageWrites.some(
+      (value) => value[0]?.id === "assistant-authoritative",
+    ) &&
+      reconciledDrafts.length === 0 &&
+      runtime.sessionRevision === null,
     "Pending recovery must not commit history, revision, or a draft preview.",
   );
 
@@ -868,15 +931,23 @@ for (const outcome of ["failed", "cancelled", "completed"]) {
     (value) => value[0]?.id === "assistant-authoritative",
   );
   if (outcome === "completed") {
-    assert(adopted && runtime.sessionRevision === "authoritative-revision" &&
-      reconciledDrafts.length === 1,
-      "A recovery snapshot with a completed response must restore its message and draft.");
+    assert(
+      adopted &&
+        runtime.sessionRevision === "authoritative-revision" &&
+        reconciledDrafts.length === 1,
+      "A recovery snapshot with a completed response must restore its message and draft.",
+    );
   } else {
-    assert(!adopted && reconciledDrafts.length === 0 &&
-      runtime.sessionRevision === null,
-      "Failed or cancelled recovery must not publish history or a stale draft.");
-    assert(loadErrorWrites.at(-1) === (outcome === "failed"),
-      "Only an uncancelled recovery failure should show a loading error.");
+    assert(
+      !adopted &&
+        reconciledDrafts.length === 0 &&
+        runtime.sessionRevision === null,
+      "Failed or cancelled recovery must not publish history or a stale draft.",
+    );
+    assert(
+      loadErrorWrites.at(-1) === (outcome === "failed"),
+      "Only an uncancelled recovery failure should show a loading error.",
+    );
   }
 
   cleanup();

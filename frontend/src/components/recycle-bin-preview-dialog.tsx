@@ -56,11 +56,7 @@ export function RecycleBinPreviewDialog({
             restoreFocus();
           }}
         >
-          <DialogTitle
-            ref={initialFocusRef}
-            className="sr-only"
-            tabIndex={-1}
-          >
+          <DialogTitle ref={initialFocusRef} className="sr-only" tabIndex={-1}>
             {t.preview}: {target.title}
           </DialogTitle>
           <DialogDescription className="sr-only">

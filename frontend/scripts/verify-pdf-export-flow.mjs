@@ -8,16 +8,23 @@ async function readText(path) {
   return readFile(new URL(path, frontendRoot), "utf8");
 }
 
-const [exportSource, saveSource, rendererSource, exportApiSource, appSource, zhSource, enSource] =
-  await Promise.all([
-    readText("src/components/workspace/use-resume-detail-export.ts"),
-    readText("src/components/workspace/use-resume-detail-save.ts"),
-    readText("src/components/pdf-export-renderer.tsx"),
-    readText("src/lib/export-api.ts"),
-    readText("src/App.tsx"),
-    readText("src/i18n/locales/zh.json"),
-    readText("src/i18n/locales/en.json"),
-  ]);
+const [
+  exportSource,
+  saveSource,
+  rendererSource,
+  exportApiSource,
+  appSource,
+  zhSource,
+  enSource,
+] = await Promise.all([
+  readText("src/components/workspace/use-resume-detail-export.ts"),
+  readText("src/components/workspace/use-resume-detail-save.ts"),
+  readText("src/components/pdf-export-renderer.tsx"),
+  readText("src/lib/export-api.ts"),
+  readText("src/App.tsx"),
+  readText("src/i18n/locales/zh.json"),
+  readText("src/i18n/locales/en.json"),
+]);
 
 const exportFile = ts.createSourceFile(
   "use-resume-detail-export.ts",
@@ -40,7 +47,10 @@ function findCallbackDeclaration(name) {
       node.initializer.expression.getText(exportFile) === "useCallback"
     ) {
       const callback = node.initializer.arguments[0];
-      if (callback && (ts.isArrowFunction(callback) || ts.isFunctionExpression(callback))) {
+      if (
+        callback &&
+        (ts.isArrowFunction(callback) || ts.isFunctionExpression(callback))
+      ) {
         match = callback;
         return;
       }
@@ -75,16 +85,21 @@ function findCalls(root, name) {
 
 const runExport = findCallbackDeclaration("runExport");
 const exportPdf = findCallbackDeclaration("exportPdf");
-assert.ok(runExport, "The resume detail export hook must define its serialized export action.");
-assert.ok(exportPdf, "The resume detail export hook must define its PDF export action.");
+assert.ok(
+  runExport,
+  "The resume detail export hook must define its serialized export action.",
+);
+assert.ok(
+  exportPdf,
+  "The resume detail export hook must define its PDF export action.",
+);
 
-const exportPdfSource = exportPdf.getText(exportFile);
 const saveCalls = findCalls(runExport, "save");
 const operationCalls = findCalls(runExport, "operation");
-const requestCalls = findCalls(exportPdf, "requestResumePdfExport");
-const downloadCalls = findCalls(exportPdf, "downloadExportedPdf");
+const requestCalls = findCalls(exportPdf, "exportApi.requestResumePdfExport");
+const downloadCalls = findCalls(exportPdf, "exportApi.downloadExportedPdf");
 const successToastCalls = findCalls(exportPdf, "toast.success");
-const errorToastCalls = findCalls(exportPdf, "toast.error");
+const errorNotificationCalls = findCalls(exportPdf, "notifyApiError");
 
 assert.equal(
   saveCalls.length,
@@ -96,9 +111,46 @@ assert.equal(
   1,
   "The export transaction must run exactly one operation after saving.",
 );
+const preparations = saveCalls[0].parent;
 assert.ok(
-  saveCalls[0].parent && ts.isAwaitExpression(saveCalls[0].parent),
-  "PDF export must wait for the current resume save to finish.",
+  ts.isArrayLiteralExpression(preparations),
+  "Export preparation must include the current resume save.",
+);
+const preparedTogether = preparations.parent;
+assert.ok(
+  ts.isCallExpression(preparedTogether) &&
+    preparedTogether.expression.getText(exportFile) === "Promise.all" &&
+    preparedTogether.arguments[0] === preparations &&
+    ts.isAwaitExpression(preparedTogether.parent),
+  "PDF export must await saving and module loading before running the artifact operation.",
+);
+const preparedDeclaration = preparedTogether.parent.parent;
+assert.ok(
+  ts.isVariableDeclaration(preparedDeclaration) &&
+    ts.isArrayBindingPattern(preparedDeclaration.name),
+  "The export transaction must use the results of its completed preparation.",
+);
+const savedResult =
+  preparedDeclaration.name.elements[
+    preparations.elements.indexOf(saveCalls[0])
+  ];
+assert.ok(ts.isBindingElement(savedResult));
+assert.equal(savedResult.name.getText(exportFile), "savedVersion");
+const moduleIndex = preparations.elements.findIndex(
+  (element) =>
+    ts.isCallExpression(element) &&
+    element.expression.kind === ts.SyntaxKind.ImportKeyword &&
+    ts.isStringLiteral(element.arguments[0]) &&
+    element.arguments[0].text === "@/lib/export-api",
+);
+assert.ok(moduleIndex >= 0, "Export operations must load their API on demand.");
+const loadedApi = preparedDeclaration.name.elements[moduleIndex];
+assert.ok(ts.isBindingElement(loadedApi));
+assert.equal(loadedApi.name.getText(exportFile), "exportApi");
+assert.deepEqual(
+  operationCalls[0].arguments.map((argument) => argument.getText(exportFile)),
+  ["savedVersion.resume", "savedVersion", "exportApi"],
+  "The artifact operation must receive the completed saved version and loaded API.",
 );
 assert.ok(
   operationCalls[0].parent && ts.isAwaitExpression(operationCalls[0].parent),
@@ -152,7 +204,12 @@ const requestFields = new Map(
       return [[property.name.text, property.name.text]];
     }
     if (ts.isPropertyAssignment(property)) {
-      return [[property.name.getText(exportFile), property.initializer.getText(exportFile)]];
+      return [
+        [
+          property.name.getText(exportFile),
+          property.initializer.getText(exportFile),
+        ],
+      ];
     }
     return [];
   }),
@@ -191,14 +248,20 @@ assert.doesNotMatch(
 );
 
 assert.equal(
-  errorToastCalls.length,
+  errorNotificationCalls.length,
   1,
-  "The PDF action must have only one local fallback error Toast.",
+  "PDF failures must use the shared error notifier exactly once.",
 );
-assert.match(
-  exportPdfSource,
-  /if\s*\(\s*!isApiErrorToastShown\(error\)\s*\)\s*\{[\s\S]*?toast\.error\(/,
-  "The PDF action must not duplicate an error Toast already shown by the API client.",
+assert.equal(
+  findCalls(exportPdf, "toast.error").length,
+  0,
+  "The PDF action must not create a second local error notification.",
+);
+assert.deepEqual(
+  errorNotificationCalls[0].arguments.map((argument) =>
+    argument.getText(exportFile),
+  ),
+  ["error", "messages.exportFailed"],
 );
 
 assert.match(

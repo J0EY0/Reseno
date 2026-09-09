@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import type { AppMessages } from "@/i18n";
+import { useAuthSessionToken } from "@/hooks/use-auth-session-token";
 import type { AgentDraftConflictResolution } from "@/lib/agent-draft-review";
 import {
   resolveAgentDraftDecision,
@@ -37,7 +38,16 @@ interface ActiveResumeSave {
   resumeId: string;
 }
 
+interface PersistedResumeState {
+  resume: ResumeWorkspaceItem | null;
+  fingerprint: string;
+  savedAt: string | null;
+  versionId: string | null;
+  saveMode: ResumeSaveMode;
+}
+
 interface ResumeDetailSaveOptions {
+  getFingerprint: () => string;
   getSnapshot: (updatedAt: string) => ResumeWorkspaceItem | null;
   initialCheckpoint?: { savedAt: string; versionId: string };
   initialResume: ResumeWorkspaceItem | null;
@@ -55,6 +65,7 @@ interface ResumeDetailSaveOptions {
 
 /** Owns resume persistence, history metadata, and the autosave transaction. */
 export function useResumeDetailSave({
+  getFingerprint,
   getSnapshot,
   initialCheckpoint,
   initialResume,
@@ -66,10 +77,19 @@ export function useResumeDetailSave({
   onHydrateResume,
   resumeId,
 }: ResumeDetailSaveOptions) {
-  const initialSavedAt = initialCheckpoint?.savedAt ?? initialResume?.updatedAt ?? null;
-  const [lastSavedAt, setLastSavedAt] = useState<string | null>(initialSavedAt);
-  const [activeVersionId, setActiveVersionId] = useState<string | null>(
-    initialCheckpoint?.versionId ?? null,
+  const authToken = useAuthSessionToken();
+  const [persisted, setPersisted] = useState<PersistedResumeState>(() => ({
+    resume: initialResume,
+    fingerprint: createResumeFingerprint(initialResume),
+    savedAt: initialCheckpoint?.savedAt ?? initialResume?.updatedAt ?? null,
+    versionId: initialCheckpoint?.versionId ?? null,
+    saveMode: "checkpoint",
+  }));
+  const persistedRef = useRef(persisted);
+  const { savedAt: lastSavedAt, versionId: activeVersionId } = persisted;
+  const changeCount = useMemo(
+    () => countResumeChanges(persisted.resume, liveResume),
+    [persisted.resume, liveResume],
   );
   const [versions, setVersions] = useState<WorkspaceVersionSummary[]>(
     initialCheckpoint ? [initialCheckpoint] : [],
@@ -79,14 +99,7 @@ export function useResumeDetailSave({
   );
   const [isVersionLoading, setIsVersionLoading] = useState(false);
   const [hasVersionLoadError, setHasVersionLoadError] = useState(false);
-  const [persistedResume, setPersistedResume] =
-    useState<ResumeWorkspaceItem | null>(initialResume);
   const activeRequestRef = useRef<ActiveResumeSave | null>(null);
-  const activeVersionIdRef = useRef(activeVersionId);
-  const lastSavedAtRef = useRef(lastSavedAt);
-  const lastSaveModeRef = useRef<ResumeSaveMode>("checkpoint");
-  const persistedFingerprintRef = useRef(createResumeFingerprint(initialResume));
-  const persistedResumeRef = useRef<ResumeWorkspaceItem | null>(initialResume);
   const recentlySavedFingerprintsRef = useRef<Set<string>>(new Set());
   const autosaveBurstStartedAtRef = useRef<number | null>(null);
   const autosaveGenerationRef = useRef(0);
@@ -110,15 +123,10 @@ export function useResumeDetailSave({
   const adoptPersistedBaseline = useCallback(
     (detail: ResumeDetailResponse, saveMode: ResumeSaveMode) => {
       const fingerprint = createResumeFingerprint(detail.resume);
-      persistedResumeRef.current = detail.resume;
-      persistedFingerprintRef.current = fingerprint;
-      lastSaveModeRef.current = saveMode;
+      const baseline = { ...detail, fingerprint, saveMode };
+      persistedRef.current = baseline;
+      setPersisted(baseline);
       skipCheckpointPromotionRef.current = false;
-      lastSavedAtRef.current = detail.savedAt;
-      activeVersionIdRef.current = detail.versionId;
-      setPersistedResume(detail.resume);
-      setLastSavedAt(detail.savedAt);
-      setActiveVersionId(detail.versionId);
       setSaveState("saved");
       return fingerprint;
     },
@@ -141,21 +149,15 @@ export function useResumeDetailSave({
     [adoptPersistedBaseline, onAdoptSavedResume],
   );
 
-  const hasUnsavedChanges = useCallback(
-    () => {
-      const snapshot = getSnapshot(lastSavedAtRef.current ?? "");
-      return Boolean(
-        snapshot && createResumeFingerprint(snapshot) !== persistedFingerprintRef.current,
-      );
-    },
-    [getSnapshot],
-  );
+  const hasUnsavedChanges = useCallback(() => {
+    const fingerprint = getFingerprint();
+    return Boolean(
+      fingerprint && fingerprint !== persistedRef.current.fingerprint,
+    );
+  }, [getFingerprint]);
 
   const hydratePersistedResume = useCallback(
-    (
-      detail: ResumeDetailResponse,
-      nextVersions: WorkspaceVersionSummary[],
-    ) => {
+    (detail: ResumeDetailResponse, nextVersions: WorkspaceVersionSummary[]) => {
       autosaveGenerationRef.current += 1;
       const saveMode = nextVersions.some(
         (version) => version.versionId === detail.versionId,
@@ -190,29 +192,30 @@ export function useResumeDetailSave({
       }
 
       const effectiveLastSavedAt =
-        latestCompletedSave?.savedAt ?? lastSavedAtRef.current;
+        latestCompletedSave?.savedAt ?? persistedRef.current.savedAt;
       const effectiveVersionId =
         latestCompletedSave?.versionId ??
-        activeVersionIdRef.current ??
+        persistedRef.current.versionId ??
         undefined;
       const stableResume = getSnapshot(effectiveLastSavedAt ?? "");
       if (!stableResume || stableResume.id !== resumeId) {
         throw new Error("No active resume is available to save.");
       }
-      const stableFingerprint = createResumeFingerprint(stableResume);
+      const stableFingerprint = getFingerprint();
       const requiresCheckpointPromotion =
-        saveMode === "checkpoint" && lastSaveModeRef.current === "autosave";
+        saveMode === "checkpoint" &&
+        persistedRef.current.saveMode === "autosave";
 
       if (
-        stableFingerprint === persistedFingerprintRef.current &&
+        stableFingerprint === persistedRef.current.fingerprint &&
         !requiresCheckpointPromotion &&
         effectiveLastSavedAt &&
         effectiveVersionId &&
-        persistedResumeRef.current
+        persistedRef.current.resume
       ) {
         setSaveState("saved");
         return {
-          resume: persistedResumeRef.current,
+          resume: persistedRef.current.resume,
           savedAt: effectiveLastSavedAt,
           versionId: effectiveVersionId,
         };
@@ -243,7 +246,10 @@ export function useResumeDetailSave({
               const payload = await fetchResumeVersionsApi(saved.resume.id);
               setVersions(payload.versions);
             } catch (versionsError) {
-              console.error("Failed to refresh resume versions.", versionsError);
+              console.error(
+                "Failed to refresh resume versions.",
+                versionsError,
+              );
             }
           }
 
@@ -264,7 +270,7 @@ export function useResumeDetailSave({
         }
       }
     },
-    [adoptPersistedSave, getSnapshot, resumeId],
+    [adoptPersistedSave, getFingerprint, getSnapshot, resumeId],
   );
 
   const resolveAgentDraftReview = useCallback(
@@ -312,7 +318,7 @@ export function useResumeDetailSave({
               ? {
                   conflictResolution,
                   currentResume,
-                  currentVersionId: activeVersionIdRef.current,
+                  currentVersionId: persistedRef.current.versionId,
                   rebaseOnLatest: !hasLocalChanges,
                   reviewItemIds,
                   status,
@@ -324,15 +330,9 @@ export function useResumeDetailSave({
             (status === "applied" &&
               resolution.committed &&
               resolution.resolvedAsRequested);
-          const adoptedResume = canAdoptFormalResume
-            ? resolution.resume
-            : null;
+          const adoptedResume = canAdoptFormalResume ? resolution.resume : null;
           if (adoptedResume) {
-            adoptPersistedSave(
-              adoptedResume,
-              adoptedResume.resume,
-              "autosave",
-            );
+            adoptPersistedSave(adoptedResume, adoptedResume.resume, "autosave");
           } else if (status === "applied") {
             setSaveState("idle");
           }
@@ -346,9 +346,12 @@ export function useResumeDetailSave({
       })();
       const trackedRequest: ActiveResumeSave = {
         promise: resolutionPromise.then((resolution) => ({
-          savedAt: resolution.resume?.savedAt ?? lastSavedAtRef.current ?? "",
+          savedAt:
+            resolution.resume?.savedAt ?? persistedRef.current.savedAt ?? "",
           versionId:
-            resolution.resume?.versionId ?? activeVersionIdRef.current ?? undefined,
+            resolution.resume?.versionId ??
+            persistedRef.current.versionId ??
+            undefined,
         })),
         resumeId,
       };
@@ -366,7 +369,7 @@ export function useResumeDetailSave({
   );
 
   const discard = useCallback(async () => {
-    const persistedResume = persistedResumeRef.current;
+    const persistedResume = persistedRef.current.resume;
     if (!persistedResume) {
       return;
     }
@@ -374,7 +377,7 @@ export function useResumeDetailSave({
     const activeRequest = activeRequestRef.current;
     const hasActiveSave = activeRequest?.resumeId === persistedResume.id;
     const shouldCheckpoint =
-      hasActiveSave || lastSaveModeRef.current === "autosave";
+      hasActiveSave || persistedRef.current.saveMode === "autosave";
 
     autosaveGenerationRef.current += 1;
     onHydrateResume(persistedResume);
@@ -414,7 +417,7 @@ export function useResumeDetailSave({
       const owner = ownerLifecycleRef.current;
       if (
         !owner ||
-        versionId === activeVersionIdRef.current ||
+        versionId === persistedRef.current.versionId ||
         versionLoadRequestRef.current ||
         activeRequestRef.current
       ) {
@@ -423,9 +426,7 @@ export function useResumeDetailSave({
 
       const controller = new AbortController();
       versionLoadRequestRef.current = controller;
-      const requestedFingerprint = createResumeFingerprint(
-        getSnapshot(lastSavedAtRef.current ?? ""),
-      );
+      const requestedFingerprint = getFingerprint();
       setIsVersionLoading(true);
       setHasVersionLoadError(false);
       try {
@@ -435,8 +436,7 @@ export function useResumeDetailSave({
         if (
           controller.signal.aborted ||
           ownerLifecycleRef.current !== owner ||
-          createResumeFingerprint(getSnapshot(lastSavedAtRef.current ?? "")) !==
-          requestedFingerprint
+          getFingerprint() !== requestedFingerprint
         ) {
           return;
         }
@@ -456,7 +456,13 @@ export function useResumeDetailSave({
         }
       }
     },
-    [getSnapshot, hydratePersistedResume, onHydrateResume, resumeId, versions],
+    [
+      getFingerprint,
+      hydratePersistedResume,
+      onHydrateResume,
+      resumeId,
+      versions,
+    ],
   );
 
   useEffect(() => {
@@ -464,10 +470,10 @@ export function useResumeDetailSave({
     autosaveBurstStartedAtRef.current = null;
     autosaveRetryAttemptRef.current = 0;
     toast.dismiss("autosave-failed");
-  }, [resumeId]);
+  }, [resumeId, authToken]);
 
   useEffect(() => {
-    if (isLoading) {
+    if (!authToken || isLoading) {
       return;
     }
     if (!hasUnsavedChanges()) {
@@ -540,6 +546,7 @@ export function useResumeDetailSave({
       }
     };
   }, [
+    authToken,
     hasUnsavedChanges,
     isLoading,
     lastSavedAt,
@@ -552,7 +559,7 @@ export function useResumeDetailSave({
     if (isLoading || saveState === "saving") {
       return;
     }
-    if (liveFingerprint === persistedFingerprintRef.current) {
+    if (liveFingerprint === persistedRef.current.fingerprint) {
       return;
     }
     if (
@@ -574,7 +581,7 @@ export function useResumeDetailSave({
 
   return {
     activeVersionId,
-    changeCount: countResumeChanges(persistedResume, liveResume),
+    changeCount,
     discard,
     hasUnsavedChanges,
     hasVersionLoadError,
@@ -585,7 +592,7 @@ export function useResumeDetailSave({
       skipCheckpointPromotionRef.current = true;
     },
     requiresCheckpointPromotion: () =>
-      lastSaveModeRef.current === "autosave" &&
+      persistedRef.current.saveMode === "autosave" &&
       !skipCheckpointPromotionRef.current,
     save,
     saveState,
@@ -595,6 +602,4 @@ export function useResumeDetailSave({
   };
 }
 
-export type ResumeDetailSaveController = ReturnType<
-  typeof useResumeDetailSave
->;
+export type ResumeDetailSaveController = ReturnType<typeof useResumeDetailSave>;

@@ -17,7 +17,9 @@ export function TrashWorkspacePage() {
   );
 
   if (trash.hasLoadError) {
-    return <WorkspaceRouteError messages={messages} onRetry={trash.retryLoad} />;
+    return (
+      <WorkspaceRouteError messages={messages} onRetry={trash.retryLoad} />
+    );
   }
 
   if (!trash.hasLoaded) {

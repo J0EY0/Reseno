@@ -250,7 +250,9 @@ export const ResumeEditorPane = memo(function ResumeEditorPane({
                 onMutation={mutateResumeSection}
                 onRemoveSection={removeSection}
                 onMoveSectionUp={(sectionId) => moveSection(sectionId, "up")}
-                onMoveSectionDown={(sectionId) => moveSection(sectionId, "down")}
+                onMoveSectionDown={(sectionId) =>
+                  moveSection(sectionId, "down")
+                }
               />
             ))}
 

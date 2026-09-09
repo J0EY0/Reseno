@@ -1,9 +1,9 @@
+import { PdfImportError } from "./errors";
 const GRAPHEME_SEGMENTER =
   typeof Intl.Segmenter === "function"
     ? new Intl.Segmenter(undefined, { granularity: "grapheme" })
     : null;
-const CJK_COMPATIBILITY_CHARACTER_PATTERN =
-  /[\u2e80-\u2fff\uf900-\ufaff]/gu;
+const CJK_COMPATIBILITY_CHARACTER_PATTERN = /[\u2e80-\u2fff\uf900-\ufaff]/gu;
 const CJK_RADICAL_TEXT_EQUIVALENTS: Readonly<Record<string, string>> = {
   // U+2EDA has no NFKC mapping, but Type3 fonts can expose it for the
   // simplified character "页". Treat this as text decoding, not vocabulary.
@@ -24,8 +24,7 @@ export function joinWrappedLines(lines: string[]) {
     // Chinese PDF text commonly wraps without an explicit separator. English
     // prose still needs a space when two physical lines are joined.
     const separator =
-      /[\p{Script=Han}]$/u.test(result) &&
-      /^[\p{Script=Han}]/u.test(normalized)
+      /[\p{Script=Han}]$/u.test(result) && /^[\p{Script=Han}]/u.test(normalized)
         ? ""
         : " ";
     return `${result}${separator}${normalized}`;
@@ -38,10 +37,7 @@ export function splitInlineList(value: string) {
     .filter(Boolean);
 }
 
-export function splitLabeledValue(
-  input: string,
-  maxLabelGraphemes: number,
-) {
+export function splitLabeledValue(input: string, maxLabelGraphemes: number) {
   const match = input.match(/^([^：:]+?)[：:]\s*(.+)$/);
   if (!match) {
     return null;
@@ -49,11 +45,7 @@ export function splitLabeledValue(
 
   const label = normalizeWhitespace(match[1] ?? "");
   const value = normalizeWhitespace(match[2] ?? "");
-  if (
-    !label ||
-    !value ||
-    countTextGraphemes(label) > maxLabelGraphemes
-  ) {
+  if (!label || !value || countTextGraphemes(label) > maxLabelGraphemes) {
     return null;
   }
 
@@ -74,7 +66,7 @@ function splitTextGraphemes(value: string) {
     // Grapheme-based thresholds keep parsing behavior consistent across
     // languages. A code-unit/code-point fallback would silently change those
     // semantics for combining marks and joined emoji in older runtimes.
-    throw new Error("PDF_IMPORT_UNSUPPORTED_GRAPHEME_SEGMENTATION");
+    throw new PdfImportError("PDF_IMPORT_UNSUPPORTED_GRAPHEME_SEGMENTATION");
   }
 
   return Array.from(
@@ -92,9 +84,7 @@ export function isSingleHanGrapheme(value: string) {
 }
 
 export function normalizeWhitespace(value: string) {
-  return normalizePdfCompatibilityCharacters(value)
-    .replace(/\s+/g, " ")
-    .trim();
+  return normalizePdfCompatibilityCharacters(value).replace(/\s+/g, " ").trim();
 }
 
 export function normalizeMatchingText(value: string) {
@@ -110,9 +100,7 @@ export function normalizeLexiconTerm(value: string) {
 export function normalizePdfCompatibilityCharacters(value: string) {
   return value.replace(CJK_COMPATIBILITY_CHARACTER_PATTERN, (character) => {
     return (
-      CJK_RADICAL_TEXT_EQUIVALENTS[character] ??
-      character.normalize("NFKC")
+      CJK_RADICAL_TEXT_EQUIVALENTS[character] ?? character.normalize("NFKC")
     );
   });
 }
-

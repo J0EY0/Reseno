@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
 import { createElement } from "react";
-import {
-  renderToReadableStream,
-  renderToStaticMarkup,
-} from "react-dom/server";
+import { renderToReadableStream, renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
 
 import { createViteTestCacheDir } from "./vite-test-cache.mjs";
@@ -39,12 +36,8 @@ try {
   const { AgentAssistantMessageRow } = await server.ssrLoadModule(
     "/src/components/copilot/copilot-message-presentation.tsx",
   );
-  const {
-    createAgentMarkdownComponents,
-    getAgentMarkdownFallbackText,
-  } = await server.ssrLoadModule(
-    "/src/lib/agent-markdown-presentation.tsx",
-  );
+  const { createAgentMarkdownComponents, getAgentMarkdownFallbackText } =
+    await server.ssrLoadModule("/src/lib/agent-markdown-presentation.tsx");
   const { getAgentDisplayFieldLabels } = await server.ssrLoadModule(
     "/src/lib/agent-message-rendering.ts",
   );

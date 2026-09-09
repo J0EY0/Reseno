@@ -1,9 +1,6 @@
 import { useState } from "react";
 
-import {
-  Field,
-  FieldLabel,
-} from "@/components/ui/field";
+import { Field, FieldLabel } from "@/components/ui/field";
 import {
   InputGroup,
   InputGroupAddon,
@@ -90,10 +87,7 @@ export function TemplateImageNumberField({
   return (
     <Field
       orientation={orientation}
-      className={cn(
-        "gap-1.5",
-        orientation === "horizontal" && "min-w-0 gap-2",
-      )}
+      className={cn("gap-1.5", orientation === "horizontal" && "min-w-0 gap-2")}
       data-disabled={disabled || undefined}
     >
       <FieldLabel
@@ -187,12 +181,8 @@ export function TemplateImageSliderField({
 
     if (nextDraft.trim() !== "" && Number.isFinite(parsed)) {
       onChange(
-        clampTemplateImageValue(
-          parsed,
-          minPercent,
-          maxPercent,
-          stepPercent,
-        ) / 100,
+        clampTemplateImageValue(parsed, minPercent, maxPercent, stepPercent) /
+          100,
       );
     }
   }
@@ -202,12 +192,7 @@ export function TemplateImageSliderField({
     const parsed = Number(currentDraft);
     const nextPercent =
       currentDraft.trim() !== "" && Number.isFinite(parsed)
-        ? clampTemplateImageValue(
-            parsed,
-            minPercent,
-            maxPercent,
-            stepPercent,
-          )
+        ? clampTemplateImageValue(parsed, minPercent, maxPercent, stepPercent)
         : percentValue;
 
     onChange(nextPercent / 100);

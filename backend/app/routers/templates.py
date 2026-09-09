@@ -5,15 +5,19 @@ from fastapi import APIRouter, Query
 from app.schemas.common import ApiResponse, ok_response
 from app.schemas.templates import (
     TemplateDeleteResponse,
+    TemplateEditingResponse,
     TemplateListResponse,
     TemplateResponse,
     TemplateSaveRequest,
     TemplateTrashEmptyResponse,
+    TemplateUpdateRequest,
 )
 from app.services.templates import (
     create_template,
     delete_template_forever,
+    discard_template_changes,
     empty_template_trash,
+    get_template_detail,
     list_templates,
     restore_template,
     trash_template,
@@ -57,20 +61,41 @@ def delete_template_trash() -> ApiResponse[TemplateTrashEmptyResponse]:
     )
 
 
-@router.put("/{template_id}", response_model=ApiResponse[TemplateResponse])
-def put_template(
-    template_id: str,
-    request: TemplateSaveRequest,
-) -> ApiResponse[TemplateResponse]:
-    """Replace one active custom template."""
+@router.get("/{template_id}", response_model=ApiResponse[TemplateEditingResponse])
+def get_template(template_id: str) -> ApiResponse[TemplateEditingResponse]:
+    """Read one custom template with its pending-edit checkpoint."""
 
     return ok_response(
-        TemplateResponse.model_validate(
+        TemplateEditingResponse.model_validate(get_template_detail(template_id))
+    )
+
+
+@router.put("/{template_id}", response_model=ApiResponse[TemplateEditingResponse])
+def put_template(
+    template_id: str,
+    request: TemplateUpdateRequest,
+) -> ApiResponse[TemplateEditingResponse]:
+    """Save a custom template draft or confirm an explicit save."""
+
+    return ok_response(
+        TemplateEditingResponse.model_validate(
             update_template(
                 template_id,
                 request.template.model_dump(by_alias=True),
+                save_mode=request.save_mode,
             )
         )
+    )
+
+
+@router.post(
+    "/{template_id}/discard", response_model=ApiResponse[TemplateEditingResponse]
+)
+def post_template_discard(template_id: str) -> ApiResponse[TemplateEditingResponse]:
+    """Discard the current draft and restore the last explicit template save."""
+
+    return ok_response(
+        TemplateEditingResponse.model_validate(discard_template_changes(template_id))
     )
 
 

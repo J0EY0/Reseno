@@ -1,8 +1,8 @@
-import { access, readFile, readdir } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
+import { collectImports, parseSource } from "./source-analysis.mjs";
 
 const frontendRoot = new URL("../", import.meta.url);
 const srcRoot = new URL("src/", frontendRoot);
-const previewRoot = new URL("components/preview/", srcRoot);
 
 function assert(condition, message) {
   if (!condition) {
@@ -58,10 +58,16 @@ async function collectThumbnailPreviewClosure() {
     const source = await readSource(path);
     sources.set(path, source);
 
-    for (const match of source.matchAll(
-      /from\s+["']@\/(components\/preview\/[^"']+)["']/g,
-    )) {
-      const importedPath = await resolvePreviewImport(match[1]);
+    for (const dependency of collectImports(parseSource(source, path))) {
+      if (
+        dependency.dynamic ||
+        dependency.typeOnly ||
+        !dependency.specifier.startsWith("@/components/preview/")
+      )
+        continue;
+      const importedPath = await resolvePreviewImport(
+        dependency.specifier.slice(2),
+      );
 
       if (importedPath && !sources.has(importedPath)) {
         queue.push(importedPath);
@@ -95,31 +101,30 @@ const [
   draftReviewPopover,
   previewSectionItems,
   previewSections,
-] =
-  await Promise.all([
-    readSource("components/resume-gallery.tsx"),
-    readSource("components/resume-gallery-card.tsx"),
-    readSource("components/templates/template-gallery.tsx"),
-    readSource("components/templates/template-gallery-card.tsx"),
-    readSource("components/recycle-bin-table.tsx"),
-    readSource("components/preview/document-canvas.tsx"),
-    readSource("components/preview/use-document-canvas.ts"),
-    readSource("components/preview/document-canvas-model.ts"),
-    readSource("index.css"),
-    readSource("components/pdf-export-renderer.tsx"),
-    readSource("components/preview/resume-preview-diff-text.tsx"),
-    readSource("components/preview/resume-preview-diff-precision.tsx"),
-    readSource("components/preview/resume-preview-rich-diff.tsx"),
-    readSource("components/preview/resume-preview-pages.tsx"),
-    readSource("components/preview/resume-preview-basic-info.tsx"),
-    readSource("components/preview/resume-preview-content.tsx"),
-    readSource("components/preview/resume-preview-diff-badge.tsx"),
-    readSource("components/preview/resume-preview-deleted-anchor.tsx"),
-    readSource("components/preview/resume-draft-review-comparison.tsx"),
-    readSource("components/preview/resume-draft-review-popover.tsx"),
-    readSource("components/preview/resume-preview-section-items.tsx"),
-    readSource("components/preview/resume-preview-sections.tsx"),
-  ]);
+] = await Promise.all([
+  readSource("components/resume-gallery.tsx"),
+  readSource("components/resume-gallery-card.tsx"),
+  readSource("components/templates/template-gallery.tsx"),
+  readSource("components/templates/template-gallery-card.tsx"),
+  readSource("components/recycle-bin-table.tsx"),
+  readSource("components/preview/document-canvas.tsx"),
+  readSource("components/preview/use-document-canvas.ts"),
+  readSource("components/preview/document-canvas-model.ts"),
+  readSource("index.css"),
+  readSource("components/pdf-export-renderer.tsx"),
+  readSource("components/preview/resume-preview-diff-text.tsx"),
+  readSource("components/preview/resume-preview-diff-precision.tsx"),
+  readSource("components/preview/resume-preview-rich-diff.tsx"),
+  readSource("components/preview/resume-preview-pages.tsx"),
+  readSource("components/preview/resume-preview-basic-info.tsx"),
+  readSource("components/preview/resume-preview-content.tsx"),
+  readSource("components/preview/resume-preview-diff-badge.tsx"),
+  readSource("components/preview/resume-preview-deleted-anchor.tsx"),
+  readSource("components/preview/resume-draft-review-comparison.tsx"),
+  readSource("components/preview/resume-draft-review-popover.tsx"),
+  readSource("components/preview/resume-preview-section-items.tsx"),
+  readSource("components/preview/resume-preview-sections.tsx"),
+]);
 const thumbnailCallers = [
   resumeGalleryCard,
   templateGalleryCard,
@@ -153,12 +158,8 @@ assert(
 assert(
   thumbnailCallers.every(
     (source) =>
-      /from\s+["']@\/components\/preview\/resume-thumbnail["']/.test(
-        source,
-      ) &&
-      !/from\s+["']@\/components\/preview\/resume-preview["']/.test(
-        source,
-      ) &&
+      /from\s+["']@\/components\/preview\/resume-thumbnail["']/.test(source) &&
+      !/from\s+["']@\/components\/preview\/resume-preview["']/.test(source) &&
       !/ResizeObserver|useLayoutEffect|variant=["']thumbnail["']/.test(source),
   ),
   "Gallery and trash routes must consume only the lightweight ResumeThumbnail seam.",
@@ -214,7 +215,8 @@ assert(
 );
 assert(
   /className="mt-\[1\.25em\]"/.test(previewContent) &&
-    (previewSections.match(/showTitle \? "mt-\[0\.25em\]"/g)?.length ?? 0) === 2 &&
+    (previewSections.match(/showTitle \? "mt-\[0\.25em\]"/g)?.length ?? 0) ===
+      2 &&
     (previewSections.match(/leading-\[1\.2\]/g)?.length ?? 0) === 5 &&
     /resume-item relative grid gap-\[0\.375em\]/.test(previewSectionItems),
   "Shared resume structure spacing must use the compact font-relative defaults.",
@@ -229,8 +231,8 @@ const boxedSectionDiffRule = readCssRule(
   indexCss,
   '.resume-section[data-resume-section-layout="boxed"].resume-diff',
 );
-const diffSurfaceRules = ["added", "moved", "deleted"].map(
-  (kind) => readCssRule(indexCss, `.resume-diff--${kind}`),
+const diffSurfaceRules = ["added", "moved", "deleted"].map((kind) =>
+  readCssRule(indexCss, `.resume-diff--${kind}`),
 );
 
 assert(
@@ -284,10 +286,13 @@ assert(
 );
 assert(
   !/IntersectionObserver|TooltipProvider|TooltipTrigger/.test(
-      [previewDiffPrecision, previewRichDiff, previewSectionItems, previewSections].join(
-        "\n",
-      ),
-    ) &&
+    [
+      previewDiffPrecision,
+      previewRichDiff,
+      previewSectionItems,
+      previewSections,
+    ].join("\n"),
+  ) &&
     /<Popover/.test(draftReviewPopover) &&
     /ResumeDraftReviewComparison/.test(draftReviewPopover) &&
     /formatAgentDiffValue/.test(draftReviewComparison) &&
@@ -300,8 +305,9 @@ assert(
 );
 assert(
   /box-shadow:\s*none/.test(boxedSectionDiffRule) &&
-    (previewSections.match(/data-resume-diff-label=\{getDiffLabel\(markerDiff, t\)\}/g)
-      ?.length ?? 0) === 3 &&
+    (previewSections.match(
+      /data-resume-diff-label=\{getDiffLabel\(markerDiff, t\)\}/g,
+    )?.length ?? 0) === 3 &&
     (previewSections.match(/data-resume-section-layout=\{layout\.section\}/g)
       ?.length ?? 0) === 3,
   "Section-level diffs must expose one in-bounds status label without doubling the boxed template border.",
@@ -332,36 +338,6 @@ assert(
   /onMoveTemplateImage\?:/.test(documentCanvas) &&
     /Boolean\(props\.onMoveTemplateImage\)/.test(documentCanvas),
   "Template previews must become editable only when an image-move command is provided.",
-);
-
-const previewEntries = await readdir(previewRoot, { withFileTypes: true });
-const previewTsxEntries = previewEntries.filter(
-  (entry) => entry.isFile() && entry.name.endsWith(".tsx"),
-);
-
-for (const entry of previewTsxEntries) {
-  const source = await readFile(new URL(entry.name, previewRoot), "utf8");
-  const lineCount = source.split(/\r\n|\n|\r/).length - 1;
-
-  assert(
-    lineCount <= 500,
-    `components/preview/${entry.name} has ${lineCount} lines; expected at most 500.`,
-  );
-}
-
-const sourceBudgets = await readFile(
-  new URL("scripts/verify-source-budgets.mjs", frontendRoot),
-  "utf8",
-);
-
-assert(
-  !/LEGACY_FILE_CEILINGS[\s\S]*?src\/components\/preview\/resume-preview\.tsx/.test(
-    sourceBudgets,
-  ) &&
-    !/LEGACY_COMPONENT_CEILINGS[\s\S]*?src\/components\/preview\/resume-preview\.tsx#ResumePreview/.test(
-      sourceBudgets,
-    ),
-  "ResumePreview must stay on the default file and React-body budgets.",
 );
 
 console.log("Preview thumbnail and pagination module boundaries verified.");

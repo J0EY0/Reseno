@@ -105,14 +105,24 @@ function mergePendingReviewKeepingManual(
 ): AgentDraftApplyResult {
   const applied = applyAgentEditsToDraft(
     baseResume,
-    getReviewItemEdits(reviewItems.filter((item) => item.status === "applied"), edits),
+    getReviewItemEdits(
+      reviewItems.filter((item) => item.status === "applied"),
+      edits,
+    ),
   );
   const pendingItems = getPendingAgentDraftReviewItems(reviewItems);
-  const validation = applied.errors.length > 0
-    ? applied
-    : applyAgentEditsToDraft(applied.resume, getReviewItemEdits(pendingItems, edits));
+  const validation =
+    applied.errors.length > 0
+      ? applied
+      : applyAgentEditsToDraft(
+          applied.resume,
+          getReviewItemEdits(pendingItems, edits),
+        );
   if (validation.errors.length > 0) {
-    return { ...validation, resume: createAgentDraftBaseSnapshot(currentResume) };
+    return {
+      ...validation,
+      resume: createAgentDraftBaseSnapshot(currentResume),
+    };
   }
 
   let base = applied.resume;
@@ -121,7 +131,12 @@ function mergePendingReviewKeepingManual(
   let appliedCount = 0;
   for (const item of pendingItems) {
     const groupEdits = getReviewItemEdits([item], edits);
-    const result = applyAgentEditsWithMerge(base, resume, groupEdits, "keep-manual");
+    const result = applyAgentEditsWithMerge(
+      base,
+      resume,
+      groupEdits,
+      "keep-manual",
+    );
     if (result.errors.some((error) => error.reason !== "conflict")) {
       return { ...result, resume: createAgentDraftBaseSnapshot(currentResume) };
     }
@@ -171,20 +186,35 @@ export function projectAgentDraftReview({
 
   if (conflictResolution) {
     if (!reviewItemIds?.length || requestedIds.length !== pendingItems.length) {
-      throw new Error("Agent conflict resolution requires every pending review item.");
+      throw new Error(
+        "Agent conflict resolution requires every pending review item.",
+      );
     }
-    const result = conflictResolution === "use-original"
-      ? applyAgentEditsToDraft(
-          baseResume,
-          getReviewItemEdits(reviewItems.filter((item) => item.status === "pending" || item.status === "applied"), edits),
-        )
-      : mergePendingReviewKeepingManual(baseResume, currentResume, edits, reviewItems);
+    const result =
+      conflictResolution === "use-original"
+        ? applyAgentEditsToDraft(
+            baseResume,
+            getReviewItemEdits(
+              reviewItems.filter(
+                (item) =>
+                  item.status === "pending" || item.status === "applied",
+              ),
+              edits,
+            ),
+          )
+        : mergePendingReviewKeepingManual(
+            baseResume,
+            currentResume,
+            edits,
+            reviewItems,
+          );
     return {
       diffs: result.diffs,
       errors: result.errors,
-      resume: result.errors.length > 0
-        ? createAgentDraftBaseSnapshot(currentResume)
-        : result.resume,
+      resume:
+        result.errors.length > 0
+          ? createAgentDraftBaseSnapshot(currentResume)
+          : result.resume,
       reviewItemIds: requestedIds,
     };
   }
@@ -213,7 +243,10 @@ export function projectAgentDraftReview({
 }
 
 export function previewAgentDraftReview(
-  input: Omit<Parameters<typeof projectAgentDraftReview>[0], "conflictResolution">,
+  input: Omit<
+    Parameters<typeof projectAgentDraftReview>[0],
+    "conflictResolution"
+  >,
 ): AgentDraftReviewPreview {
   const projection = projectAgentDraftReview(input);
   if (

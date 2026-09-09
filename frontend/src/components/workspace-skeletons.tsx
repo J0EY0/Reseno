@@ -13,10 +13,7 @@ export function WorkspacePanelSkeleton() {
   return (
     <div data-slot="workspace-panel-skeleton" className="grid gap-2.5">
       {Array.from({ length: 4 }).map((_, index) => (
-        <Card
-          key={index}
-          className="gap-0 border-border/75 bg-card py-0"
-        >
+        <Card key={index} className="gap-0 border-border/75 bg-card py-0">
           <CardContent className="p-0">
             <div className="flex min-h-[60px] items-center gap-2.5 px-4 py-3">
               <Skeleton className="size-9 rounded-xl" />
@@ -77,10 +74,7 @@ function WorkspaceContentSkeleton() {
         </div>
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {Array.from({ length: 6 }).map((_, index) => (
-            <Skeleton
-              key={index}
-              className="h-56 rounded-(--radius-card)"
-            />
+            <Skeleton key={index} className="h-56 rounded-(--radius-card)" />
           ))}
         </div>
       </CardContent>

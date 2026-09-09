@@ -78,9 +78,7 @@ export function ResumeDetailWorkspaceHeader({
             <div
               aria-hidden="true"
               className={
-                isCompactHeader
-                  ? "h-9 w-[124px]"
-                  : "h-9 w-[min(52vw,46rem)]"
+                isCompactHeader ? "h-9 w-[124px]" : "h-9 w-[min(52vw,46rem)]"
               }
             />
           }

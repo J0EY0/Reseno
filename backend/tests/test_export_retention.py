@@ -310,7 +310,7 @@ def test_expired_pdf_download_deletes_artifact_before_404(
     response = client.get(f"/api/exports/download/{export_id}")
 
     assert response.status_code == 404
-    assert response.json()["message"] == "NOT_FOUND"
+    assert response.json()["message"] == "EXPORT_FILE_NOT_FOUND"
     assert not export_path.exists()
 
 
@@ -331,5 +331,5 @@ def test_expired_image_download_deletes_artifact_before_404(
     response = client.get(f"/api/exports/image-download/{export_id}")
 
     assert response.status_code == 404
-    assert response.json()["message"] == "NOT_FOUND"
+    assert response.json()["message"] == "EXPORT_FILE_NOT_FOUND"
     assert not export_path.exists()

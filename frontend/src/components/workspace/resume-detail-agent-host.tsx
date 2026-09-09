@@ -19,15 +19,13 @@ import { cn } from "@/lib/utils";
 
 import "./resume-detail-agent-motion.css";
 
-let copilotPanelModulePromise:
-  | Promise<typeof import("@/components/copilot/copilot-panel")>
-  | null = null;
+let copilotPanelModulePromise: Promise<
+  typeof import("@/components/copilot/copilot-panel")
+> | null = null;
 const RESUME_DETAIL_AGENT_PANEL_ID = "resume-detail-agent-panel";
 
 function loadCopilotPanelModule() {
-  copilotPanelModulePromise ??= import(
-    "@/components/copilot/copilot-panel"
-  );
+  copilotPanelModulePromise ??= import("@/components/copilot/copilot-panel");
   return copilotPanelModulePromise;
 }
 
@@ -98,7 +96,9 @@ function ResumeDetailAgentPanel({
                     resume={state.resume}
                     modelConfigs={state.agent.modelConfigs}
                     selectedModelConfigId={state.agent.selectedModelConfigId}
-                    onSelectedModelConfigChange={commands.agent.changeSelectedModelConfig}
+                    onSelectedModelConfigChange={
+                      commands.agent.changeSelectedModelConfig
+                    }
                     agentDraftState={state.agent.draftState}
                     agentDraftReview={state.agent.review}
                     onPreviewAgentEdits={commands.agent.previewEdits}
@@ -157,8 +157,7 @@ export function ResumeDetailAgentToggle({
             aria-expanded={!isCollapsed}
             className={cn(
               "hidden w-10 rounded-md bg-background/95 shadow-lg dark:bg-background/95 dark:hover:bg-accent xl:inline-flex",
-              !isCollapsed &&
-                "bg-accent text-accent-foreground dark:bg-accent",
+              !isCollapsed && "bg-accent text-accent-foreground dark:bg-accent",
             )}
             data-agent-status={panelStatus ?? "idle"}
             data-slot="agent-panel-toggle"

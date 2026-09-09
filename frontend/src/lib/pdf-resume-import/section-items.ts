@@ -112,10 +112,7 @@ function buildListSectionItems(
       continue;
     }
 
-    if (
-      labeledItem &&
-      looksLikeListContinuation(labeledItem.line, line)
-    ) {
+    if (labeledItem && looksLikeListContinuation(labeledItem.line, line)) {
       labeledItem.item.subtitle = joinWrappedLines([
         labeledItem.item.subtitle,
         line.text,
@@ -131,9 +128,7 @@ function buildListSectionItems(
     }
 
     items.push(
-      ...splitInlineList(line.text).map((value) =>
-        buildItem({ title: value }),
-      ),
+      ...splitInlineList(line.text).map((value) => buildItem({ title: value })),
     );
   }
 
@@ -253,7 +248,9 @@ function looksLikeExperienceHeaderStart(
   let periodRowIndex = -1;
 
   for (const [index, row] of candidateRows.entries()) {
-    if (row.some((line) => line.isBullet || looksLikeHighlightLine(line.text))) {
+    if (
+      row.some((line) => line.isBullet || looksLikeHighlightLine(line.text))
+    ) {
       break;
     }
     if (row.some((line) => line.hasPeriod)) {
@@ -266,9 +263,7 @@ function looksLikeExperienceHeaderStart(
     return false;
   }
 
-  if (
-    periodRowIndex <= PDF_IMPORT_PROFILE.text.maxDirectPeriodRowIndex
-  ) {
+  if (periodRowIndex <= PDF_IMPORT_PROFILE.text.maxDirectPeriodRowIndex) {
     return true;
   }
 
@@ -276,9 +271,7 @@ function looksLikeExperienceHeaderStart(
   // visible multi-column header. In a plain single-column PDF, accepting any
   // short line before a later date would move the previous item's final body
   // sentence into the next experience.
-  return candidateRows
-    .slice(0, periodRowIndex)
-    .some((row) => row.length > 1);
+  return candidateRows.slice(0, periodRowIndex).some((row) => row.length > 1);
 }
 
 function parseExperienceLine(
@@ -306,7 +299,7 @@ function groupToItem(
   const period =
     extractPeriod(textLines, lexiconContext) ||
     (kind === "publication"
-      ? textLines.map(extractStandaloneYear).find(Boolean) ?? ""
+      ? (textLines.map(extractStandaloneYear).find(Boolean) ?? "")
       : "");
   const headerLines: ExperienceLine[] = [];
   const highlightLines: string[] = [];
@@ -349,11 +342,7 @@ function groupToItem(
     if (description) {
       if (
         descriptionLastLine &&
-        looksLikeWrappedBodyContinuation(
-          descriptionLastLine,
-          line,
-          description,
-        )
+        looksLikeWrappedBodyContinuation(descriptionLastLine, line, description)
       ) {
         description = joinWrappedLines([description, text]);
         descriptionLastLine = line;
@@ -368,8 +357,7 @@ function groupToItem(
     }
 
     if (
-      headerLines.length <
-        PDF_IMPORT_PROFILE.text.maxHeaderLinesPerItem &&
+      headerLines.length < PDF_IMPORT_PROFILE.text.maxHeaderLinesPerItem &&
       !looksLikeHighlightLine(text)
     ) {
       headerLines.push({ ...line, text });
@@ -510,8 +498,7 @@ export function looksLikeHighlightLine(line: string) {
     countTextGraphemes(line) >
       PDF_IMPORT_PROFILE.text.minLongDescriptionGraphemes ||
     /[。；;.]$/.test(line) ||
-    countMatches(line, /[，,、]/g) >=
-      PDF_IMPORT_PROFILE.text.minDenseCommaCount
+    countMatches(line, /[，,、]/g) >= PDF_IMPORT_PROFILE.text.minDenseCommaCount
   );
 }
 
@@ -522,15 +509,14 @@ function appendHighlightLine(highlights: string[], line: string) {
   }
 
   const lastIndex = highlights.length - 1;
-  highlights[lastIndex] = normalizeWhitespace(`${highlights[lastIndex]} ${line}`);
+  highlights[lastIndex] = normalizeWhitespace(
+    `${highlights[lastIndex]} ${line}`,
+  );
 }
 
 function appendHighlightContinuation(highlights: string[], line: string) {
   const lastIndex = highlights.length - 1;
-  highlights[lastIndex] = joinWrappedLines([
-    highlights[lastIndex] ?? "",
-    line,
-  ]);
+  highlights[lastIndex] = joinWrappedLines([highlights[lastIndex] ?? "", line]);
 }
 
 function looksLikeScoreMetaLine(line: string) {
@@ -538,8 +524,7 @@ function looksLikeScoreMetaLine(line: string) {
   return (
     /\d/.test(line) &&
     (/\/|%|[()（）]/.test(line) ||
-      countMatches(line, /\d/g) >=
-        PDF_IMPORT_PROFILE.text.minScoreDigitCount)
+      countMatches(line, /\d/g) >= PDF_IMPORT_PROFILE.text.minScoreDigitCount)
   );
 }
 
@@ -549,8 +534,8 @@ function looksLikeListMetaLine(line: string) {
   }
 
   return (
-    splitInlineList(line).length >=
-      PDF_IMPORT_PROFILE.text.minListMetaParts || /[+/]/.test(line)
+    splitInlineList(line).length >= PDF_IMPORT_PROFILE.text.minListMetaParts ||
+    /[+/]/.test(line)
   );
 }
 
@@ -572,8 +557,7 @@ function titleLineScore(line: string) {
     score += PDF_IMPORT_PROFILE.scoring.titleIsNotBodyText;
   }
   if (
-    countTextGraphemes(line) <=
-    PDF_IMPORT_PROFILE.text.maxTitleLineGraphemes
+    countTextGraphemes(line) <= PDF_IMPORT_PROFILE.text.maxTitleLineGraphemes
   ) {
     score += PDF_IMPORT_PROFILE.scoring.titleFitsLengthLimit;
   }

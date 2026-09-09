@@ -51,6 +51,7 @@ def test_revocation_survives_a_fresh_backend_process(client: TestClient) -> None
     assert refreshed.status_code == 200
     replacement = refreshed.json()["data"]["accessToken"]
     assert client.get("/api/resumes").status_code == 401
+    client.__exit__(None, None, None)
     program = """
 import json
 import os
@@ -100,18 +101,18 @@ def test_concurrent_refresh_has_one_winner_and_one_unauthorized_response(
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
 
+    from app.routers import auth as auth_router
     from app.services import auth_tokens
 
     barrier = Barrier(2)
-    decode = auth_tokens.decode_access_token
+    refresh = auth_tokens.refresh_access_token
 
-    def decode_before_rotation(token: str) -> auth_tokens.AuthTokenPayload:
-        payload = decode(token)
+    def refresh_before_rotation(token: str) -> tuple[str, auth_tokens.AuthTokenPayload]:
         barrier.wait(timeout=5)
-        return payload
+        return refresh(token)
 
     with monkeypatch.context() as racing:
-        racing.setattr(auth_tokens, "decode_access_token", decode_before_rotation)
+        racing.setattr(auth_router, "refresh_access_token", refresh_before_rotation)
         with ThreadPoolExecutor(max_workers=2) as executor:
             responses = list(
                 executor.map(lambda _: client.post("/api/auth/refresh"), range(2))
@@ -174,7 +175,7 @@ def test_expired_revocations_are_pruned_without_reviving_tokens(
     with pytest.raises(auth_tokens.AuthTokenError):
         auth_tokens.decode_access_token(expiring)
     with pytest.raises(auth_tokens.AuthTokenError, match="revoked"):
-        auth_tokens.decode_access_token(unexpired)
+        auth_tokens.authenticate_access_token(unexpired)
     assert auth_tokens.decode_access_token(replacement).subject == "admin"
 
 

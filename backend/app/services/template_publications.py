@@ -93,9 +93,11 @@ def recover_template_publications(
     directory = _journal_directory()
     if not directory.exists():
         return
-    for temporary in directory.glob(".*.tmp"):
+    temporaries = list(directory.glob(".*.tmp"))
+    for temporary in temporaries:
         temporary.unlink()
-    _sync_directory(directory)
+    if temporaries:
+        _sync_directory(directory)
     if template_id is None:
         journals = sorted(directory.glob("*.json"))
     else:

@@ -2,7 +2,6 @@ import {
   apiRoutes,
   fetchApiResource,
   requestApi,
-  resolveApiUrl,
   uploadApi,
 } from "@/lib/api-client";
 import type { AgentChatAttachment, ApiRequestOptions } from "@/types/api";
@@ -26,12 +25,9 @@ export function downloadAgentAttachment(
   resumeId: string,
   attachmentId: string,
 ) {
-  return fetchApiResource(
-    resolveApiUrl(apiRoutes.agentAttachment(resumeId, attachmentId)),
-    {
-      cache: "no-store",
-    },
-  );
+  return fetchApiResource(apiRoutes.agentAttachment(resumeId, attachmentId), {
+    cache: "no-store",
+  });
 }
 
 export function deletePendingAgentAttachment(

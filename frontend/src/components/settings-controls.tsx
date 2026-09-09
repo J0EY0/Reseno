@@ -59,9 +59,7 @@ export function SettingsSection({
   return (
     <section className="grid gap-3">
       <h2 className="px-1 text-base font-semibold text-foreground">{title}</h2>
-      <Card className="gap-0 overflow-hidden py-0">
-        {children}
-      </Card>
+      <Card className="gap-0 overflow-hidden py-0">{children}</Card>
     </section>
   );
 }
@@ -93,7 +91,9 @@ export function OptionSelect<T extends string>({
         aria-label={label}
         className={cn("ml-auto w-44 max-w-full", className)}
       >
-        <SelectValue>{items.find((item) => item.value === value)?.label}</SelectValue>
+        <SelectValue>
+          {items.find((item) => item.value === value)?.label}
+        </SelectValue>
       </SelectTrigger>
       <SelectContent align="end" position="popper" sideOffset={4}>
         <SelectGroup>

@@ -43,9 +43,7 @@ function resolveReference(rootSchema, reference, resumeDocumentSchema) {
 }
 
 function propertyName(name) {
-  return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name)
-    ? name
-    : JSON.stringify(name);
+  return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name) ? name : JSON.stringify(name);
 }
 
 /**
@@ -68,12 +66,7 @@ function renderType(schema, rootSchema, resumeDocumentSchema, depth = 0) {
       schema.$ref,
       resumeDocumentSchema,
     );
-    return renderType(
-      resolved,
-      referencedRoot,
-      resumeDocumentSchema,
-      depth,
-    );
+    return renderType(resolved, referencedRoot, resumeDocumentSchema, depth);
   }
 
   if ("const" in schema) {

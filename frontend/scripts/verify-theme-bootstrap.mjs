@@ -40,7 +40,10 @@ const [
 const bootstrapMatch = indexSource.match(
   /<script data-reseno-theme-bootstrap>([\s\S]*?)<\/script>/,
 );
-assert(bootstrapMatch, "index.html must synchronously bootstrap the saved theme.");
+assert(
+  bootstrapMatch,
+  "index.html must synchronously bootstrap the saved theme.",
+);
 
 const bootstrapIndex = bootstrapMatch.index ?? -1;
 const entryIndex = indexSource.indexOf(
@@ -100,10 +103,10 @@ assert.deepEqual(executeBootstrap({ savedTheme: "light" }), {
   colorScheme: "light",
   dark: false,
 });
-assert.deepEqual(
-  executeBootstrap({ savedTheme: "system", systemDark: true }),
-  { colorScheme: "dark", dark: true },
-);
+assert.deepEqual(executeBootstrap({ savedTheme: "system", systemDark: true }), {
+  colorScheme: "dark",
+  dark: true,
+});
 assert.deepEqual(
   executeBootstrap({ savedTheme: "system", systemDark: false }),
   { colorScheme: "light", dark: false },
@@ -112,15 +115,14 @@ assert.deepEqual(executeBootstrap({ savedTheme: "invalid" }), {
   colorScheme: "light",
   dark: false,
 });
-assert.deepEqual(
-  executeBootstrap({ savedTheme: "dark", storageError: true }),
-  { colorScheme: "light", dark: false },
-);
+assert.deepEqual(executeBootstrap({ savedTheme: "dark", storageError: true }), {
+  colorScheme: "light",
+  dark: false,
+});
 
 assert(
-  themeSource.includes(
-    'workspaceThemePreferenceKey = "reseno-theme"',
-  ) && themeSource.includes("loadWorkspaceThemePreference"),
+  themeSource.includes('workspaceThemePreferenceKey = "reseno-theme"') &&
+    themeSource.includes("loadWorkspaceThemePreference"),
   "The runtime and HTML bootstrap must share the validated theme cache contract.",
 );
 assert(
@@ -136,7 +138,9 @@ for (const detailSource of [
   templateDetailWorkspaceSource,
 ]) {
   assert(
-    !/loadWorkspaceThemePreference|applyWorkspaceTheme|prefers-color-scheme/.test(detailSource),
+    !/loadWorkspaceThemePreference|applyWorkspaceTheme|prefers-color-scheme/.test(
+      detailSource,
+    ),
     "Detail routes must consume the shared theme without a second bootstrap or system-theme listener.",
   );
 }

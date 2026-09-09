@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   defaultLocale,
@@ -7,23 +7,23 @@ import {
   loadMessages,
   type AppMessages,
   type Locale,
-} from '@/i18n'
+} from "@/i18n";
 
 interface LocaleSnapshot {
-  locale: Locale
-  messages: AppMessages
+  locale: Locale;
+  messages: AppMessages;
 }
 
 interface LocaleMessagesState {
-  canPersistLocale: boolean
-  isMessagesReady: boolean
-  snapshot: LocaleSnapshot
+  canPersistLocale: boolean;
+  isMessagesReady: boolean;
+  snapshot: LocaleSnapshot;
 }
 
 export function useLocaleMessages(initialLocale: Locale) {
-  const initialLocaleRef = useRef(initialLocale)
-  const activeLocaleRef = useRef(initialLocale)
-  const requestIdRef = useRef(0)
+  const initialLocaleRef = useRef(initialLocale);
+  const activeLocaleRef = useRef(initialLocale);
+  const requestIdRef = useRef(0);
   const [state, setState] = useState<LocaleMessagesState>(() => ({
     canPersistLocale: initialLocale === defaultLocale,
     isMessagesReady: initialLocale === defaultLocale,
@@ -31,11 +31,11 @@ export function useLocaleMessages(initialLocale: Locale) {
       locale: initialLocale,
       messages: getMessagesSync(initialLocale),
     },
-  }))
+  }));
   const requestLocale = useCallback(
     async (nextLocale: Locale, isInitialRequest = false) => {
-      requestIdRef.current += 1
-      const requestId = requestIdRef.current
+      requestIdRef.current += 1;
+      const requestId = requestIdRef.current;
 
       // Selecting the active locale still invalidates an older pending request.
       if (!isInitialRequest && nextLocale === activeLocaleRef.current) {
@@ -43,34 +43,37 @@ export function useLocaleMessages(initialLocale: Locale) {
           current.canPersistLocale
             ? current
             : { ...current, canPersistLocale: true },
-        )
-        return true
+        );
+        return true;
       }
 
       return loadMessages(nextLocale)
         .then((nextMessages) => {
           if (requestId !== requestIdRef.current) {
-            return false
+            return false;
           }
 
-          activeLocaleRef.current = nextLocale
+          activeLocaleRef.current = nextLocale;
           setState({
             canPersistLocale: true,
             isMessagesReady: true,
             snapshot: { locale: nextLocale, messages: nextMessages },
-          })
-          return true
+          });
+          return true;
         })
         .catch((error: unknown) => {
           if (requestId !== requestIdRef.current) {
-            return false
+            return false;
           }
 
-          console.error(`Failed to load messages for locale "${nextLocale}".`, error)
+          console.error(
+            `Failed to load messages for locale "${nextLocale}".`,
+            error,
+          );
           if (isInitialRequest) {
             // Keep an unreadable saved locale intact while rendering the known
             // synchronous catalog; a later explicit choice can retry the chunk.
-            activeLocaleRef.current = defaultLocale
+            activeLocaleRef.current = defaultLocale;
             setState({
               canPersistLocale: false,
               isMessagesReady: true,
@@ -78,33 +81,33 @@ export function useLocaleMessages(initialLocale: Locale) {
                 locale: defaultLocale,
                 messages: defaultMessages,
               },
-            })
+            });
           }
-          return false
-        })
+          return false;
+        });
     },
     [],
-  )
+  );
 
   useEffect(() => {
     if (initialLocaleRef.current !== defaultLocale) {
-      requestLocale(initialLocaleRef.current, true)
+      requestLocale(initialLocaleRef.current, true);
     }
 
     return () => {
-      requestIdRef.current += 1
-    }
-  }, [requestLocale])
+      requestIdRef.current += 1;
+    };
+  }, [requestLocale]);
 
   const changeLocale = useCallback(
     (nextLocale: Locale) => requestLocale(nextLocale),
     [requestLocale],
-  )
+  );
 
   return {
     ...state.snapshot,
     canPersistLocale: state.canPersistLocale,
     changeLocale,
     isMessagesReady: state.isMessagesReady,
-  }
+  };
 }

@@ -3,13 +3,14 @@ import { isBuiltinTemplateId } from "@/lib/template-presets";
 import {
   fetchResumeApi,
   fetchResumeVersionsApi,
+  fetchTemplateApi,
   fetchWorkspaceRouteData,
 } from "@/lib/workspace-api";
 import type {
   LoadableWorkspaceRouteDataKind,
   PreparedResumeDetailRouteData,
   WorkspaceRouteDataResult,
-  WorkspaceTemplateRouteData,
+  PreparedTemplateDetailRouteData,
 } from "@/lib/workspace-route-data";
 import { loadDocumentCanvas } from "@/components/preview/document-canvas-loader";
 import {
@@ -20,11 +21,13 @@ import {
 } from "@/components/workspace/workspace-route-loaders";
 import type { WorkspacePreferencesPersistence } from "@/lib/workspace-preferences-persistence";
 import type { PreparedWorkspaceRoute } from "@/lib/workspace-route-memory";
-import type { ResumeDetailResponse, WorkspaceVersionSummary } from "@/types/api";
+import type {
+  ResumeDetailResponse,
+  WorkspaceVersionSummary,
+} from "@/types/api";
 import type { WorkspaceView } from "@/types/resume";
 
-export const WORKSPACE_NAVIGATION_ERROR_TOAST_ID =
-  "workspace-navigation-error";
+export const WORKSPACE_NAVIGATION_ERROR_TOAST_ID = "workspace-navigation-error";
 
 interface RoutePreparationOptions {
   signal: AbortSignal;
@@ -70,17 +73,25 @@ async function loadWorkspaceRouteData(
 
   switch (view) {
     case "resume": {
-      const source = await fetchWorkspacePageData("resume-gallery", persistence, {
-        notifyOnError: false,
-        signal: options.signal,
-      });
+      const source = await fetchWorkspacePageData(
+        "resume-gallery",
+        persistence,
+        {
+          notifyOnError: false,
+          signal: options.signal,
+        },
+      );
       return { data: source.data, view };
     }
     case "templates": {
-      const source = await fetchWorkspacePageData("template-gallery", persistence, {
-        notifyOnError: false,
-        signal: options.signal,
-      });
+      const source = await fetchWorkspacePageData(
+        "template-gallery",
+        persistence,
+        {
+          notifyOnError: false,
+          signal: options.signal,
+        },
+      );
       return { data: source.data, view };
     }
     case "trash": {
@@ -147,10 +158,14 @@ export async function loadResumeDetailRouteData(
 ): Promise<PreparedResumeDetailRouteData> {
   await persistence.flush();
 
-  const routeDataRequest = fetchWorkspacePageData("resume-detail", persistence, {
-    notifyOnError: false,
-    signal: options.signal,
-  });
+  const routeDataRequest = fetchWorkspacePageData(
+    "resume-detail",
+    persistence,
+    {
+      notifyOnError: false,
+      signal: options.signal,
+    },
+  );
   const detailRequest = fetchResumeApi(resumeId, {
     notifyOnError: false,
     signal: options.signal,
@@ -202,9 +217,7 @@ export async function prepareCreatedResumeDetailRoute(
   return {
     detail,
     routeData,
-    versions: [
-      { savedAt: detail.savedAt, versionId: detail.versionId },
-    ],
+    versions: [{ savedAt: detail.savedAt, versionId: detail.versionId }],
   };
 }
 
@@ -220,19 +233,29 @@ export async function loadTemplateDetailRouteData(
   templateId: string,
   persistence: WorkspacePreferencesPersistence,
   options: RoutePreparationOptions,
-): Promise<WorkspaceTemplateRouteData> {
+): Promise<PreparedTemplateDetailRouteData> {
   await persistence.flush();
-  const source = await fetchWorkspacePageData("template-detail", persistence, {
-    notifyOnError: false,
-    signal: options.signal,
-  });
-  const hasTarget =
-    isBuiltinTemplateId(templateId) ||
-    source.data.customTemplates.some((template) => template.id === templateId);
-  if (!hasTarget) {
-    throw new Error("Template target is unavailable.");
-  }
-  return source.data;
+  const [source, detail] = await Promise.all([
+    fetchWorkspacePageData("template-detail", persistence, {
+      notifyOnError: false,
+      signal: options.signal,
+    }),
+    isBuiltinTemplateId(templateId)
+      ? null
+      : fetchTemplateApi(templateId, {
+          notifyOnError: false,
+          signal: options.signal,
+        }),
+  ]);
+  return {
+    ...source.data,
+    checkpoint: detail?.checkpoint ?? null,
+    customTemplates: detail
+      ? source.data.customTemplates.map((template) =>
+          template.id === templateId ? detail.template : template,
+        )
+      : source.data.customTemplates,
+  };
 }
 
 export async function prepareTemplateDetailRoute(

@@ -51,11 +51,16 @@ export function splitSections(
 ): SectionCandidate[] {
   const sections: SectionCandidate[] = [];
   let current: SectionCandidate | null = null;
-  const bodyFontSize = median(lines.map((line) => line.fontSize).filter(Boolean));
+  const bodyFontSize = median(
+    lines.map((line) => line.fontSize).filter(Boolean),
+  );
 
   for (const [index, line] of lines.entries()) {
     const titleMatch = classifySectionTitle(line.text, registryContext);
-    const inlineTitleMatch = splitInlineSectionTitle(line.text, registryContext);
+    const inlineTitleMatch = splitInlineSectionTitle(
+      line.text,
+      registryContext,
+    );
     // A generic list section commonly contains labeled rows such as
     // "技能：..." and "语言：...". Once that outer section is established,
     // keep those rows as editable list items instead of silently replacing the
@@ -66,8 +71,7 @@ export function splitSections(
       inlineTitleMatch !== null &&
       isListSectionKind(inlineTitleMatch.match.kind) &&
       line.fontSize <=
-        bodyFontSize *
-          PDF_IMPORT_PROFILE.text.genericSectionHeadingScale;
+        bodyFontSize * PDF_IMPORT_PROFILE.text.genericSectionHeadingScale;
     const effectiveInlineTitleMatch: ReturnType<
       typeof splitInlineSectionTitle
     > = keepsInlineListItem ? null : inlineTitleMatch;
@@ -79,8 +83,7 @@ export function splitSections(
     const isFontOnlyHeading =
       canUseFontHeading &&
       line.fontSize >
-        bodyFontSize *
-          PDF_IMPORT_PROFILE.text.genericSectionHeadingScale &&
+        bodyFontSize * PDF_IMPORT_PROFILE.text.genericSectionHeadingScale &&
       countTextGraphemes(line.text) <=
         PDF_IMPORT_PROFILE.text.maxGenericSectionHeadingGraphemes;
     const keepsExperienceItemHeader =
@@ -122,7 +125,7 @@ export function splitSections(
     }
   }
 
-  return sections.filter((section) => section.lines.length > 0);
+  return sections;
 }
 
 function looksLikeDatedExperienceHeader(
@@ -149,10 +152,7 @@ export function linesBeforeFirstSection(
   sections: SectionCandidate[],
 ): TextLine[] {
   if (!sections[0]) {
-    return lines.slice(
-      0,
-      PDF_IMPORT_PROFILE.text.contactScanLineLimit,
-    );
+    return lines.slice(0, PDF_IMPORT_PROFILE.text.contactScanLineLimit);
   }
 
   return lines.slice(0, sections[0].startLineIndex);
@@ -294,10 +294,7 @@ function splitInlineSectionTitle(
     return null;
   }
 
-  const titleMatch = classifySectionTitle(
-    labeledValue.label,
-    registryContext,
-  );
+  const titleMatch = classifySectionTitle(labeledValue.label, registryContext);
   if (titleMatch.confidence === 0) {
     return null;
   }

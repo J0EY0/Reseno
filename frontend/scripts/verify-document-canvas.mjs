@@ -49,10 +49,7 @@ assert.equal(getFitWidthScale(Number.NaN), null);
 assert.equal(getFitWidthScale(24), DOCUMENT_CANVAS_MIN_SCALE);
 assert.equal(getFitWidthScale(A4_WIDTH_PX + 48), 1);
 assert(getFitWidthScale(A4_WIDTH_PX * 2) > 1);
-assert.equal(
-  getFitWidthScale(A4_WIDTH_PX * 3 + 48),
-  DOCUMENT_CANVAS_MAX_SCALE,
-);
+assert.equal(getFitWidthScale(A4_WIDTH_PX * 3 + 48), DOCUMENT_CANVAS_MAX_SCALE);
 assert.match(
   documentCanvasSource,
   /data-slot="document-canvas-viewport"[\s\S]*?className="[^"]*cursor-default/,

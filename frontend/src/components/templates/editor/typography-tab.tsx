@@ -49,10 +49,7 @@ export function TemplateTypographyTab({
   return (
     <TabsContent
       value="typography"
-      className={cn(
-        "m-0 grid gap-1 px-1 py-4",
-        isReadonly && "opacity-70",
-      )}
+      className={cn("m-0 grid gap-1 px-1 py-4", isReadonly && "opacity-70")}
     >
       <div className="grid">
         <label className="grid min-h-[58px] grid-cols-[minmax(0,1fr)_minmax(148px,190px)] items-center gap-4 py-2 text-sm">

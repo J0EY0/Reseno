@@ -1,20 +1,13 @@
-import os
-
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import HTTPException, status
 
-from app.config import MASTER_KEY_ENV_NAME, get_settings
+from app.config import get_settings
 
 
 def _get_fernet() -> Fernet:
     """Build a Fernet helper from the configured master key."""
 
-    get_settings()
-    master_key = os.getenv(MASTER_KEY_ENV_NAME)
-    if not master_key:
-        raise RuntimeError(f"Missing {MASTER_KEY_ENV_NAME}.")
-
-    return Fernet(master_key.encode("ascii"))
+    return Fernet(get_settings().master_key.encode("ascii"))
 
 
 def encrypt_api_key(api_key: str) -> str:
@@ -24,7 +17,7 @@ def encrypt_api_key(api_key: str) -> str:
     if not value:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="API key is required.",
+            detail="MODEL_CONFIG_API_KEY_REQUIRED",
         )
 
     return _get_fernet().encrypt(value.encode("utf-8")).decode("ascii")
@@ -36,9 +29,7 @@ def decrypt_api_key(encrypted_api_key: str) -> str:
     try:
         return _get_fernet().decrypt(encrypted_api_key.encode("ascii")).decode("utf-8")
     except InvalidToken as exc:
-        raise RuntimeError(
-            "Unable to decrypt API key with RESENO_MASTER_KEY."
-        ) from exc
+        raise RuntimeError("Unable to decrypt API key with RESENO_MASTER_KEY.") from exc
 
 
 def mask_api_key(api_key: str) -> str:

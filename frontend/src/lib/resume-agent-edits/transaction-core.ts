@@ -37,7 +37,9 @@ export type OperationApplyResult =
       target: string;
     };
 
-export function operationApplied(...diffs: ResumeDraftDiff[]): OperationApplyResult {
+export function operationApplied(
+  ...diffs: ResumeDraftDiff[]
+): OperationApplyResult {
   return { ok: true, diffs };
 }
 
@@ -75,12 +77,7 @@ export function isDeepEqual(left: unknown, right: unknown): boolean {
     );
   }
 
-  if (
-    left &&
-    right &&
-    typeof left === "object" &&
-    typeof right === "object"
-  ) {
+  if (left && right && typeof left === "object" && typeof right === "object") {
     const leftRecord = left as Record<string, unknown>;
     const rightRecord = right as Record<string, unknown>;
     const leftKeys = Object.keys(leftRecord).sort();
@@ -108,20 +105,24 @@ export function sectionLabel(section: ResumeSection) {
 }
 
 export function itemLabel(item: ResumeSectionItem) {
-  if ("school" in item) return item.school.trim() || item.degree.trim() || item.id;
-  if ("company" in item) return item.company.trim() || item.position.trim() || item.id;
+  if ("school" in item)
+    return item.school.trim() || item.degree.trim() || item.id;
+  if ("company" in item)
+    return item.company.trim() || item.position.trim() || item.id;
   if ("role" in item) return item.name.trim() || item.role.trim() || item.id;
-  if ("authors" in item) return item.title.trim() || item.venue.trim() || item.id;
-  if ("issuer" in item) return item.name.trim() || item.issuer.trim() || item.id;
+  if ("authors" in item)
+    return item.title.trim() || item.venue.trim() || item.id;
+  if ("issuer" in item)
+    return item.name.trim() || item.issuer.trim() || item.id;
   return item.content.trim() || item.id;
 }
 
 export function findSection(resume: ResumeData, sectionId: string) {
-  const index = resume.sections.findIndex((section) => section.id === sectionId);
+  const index = resume.sections.findIndex(
+    (section) => section.id === sectionId,
+  );
 
-  return index >= 0
-    ? { index, section: resume.sections[index] }
-    : null;
+  return index >= 0 ? { index, section: resume.sections[index] } : null;
 }
 
 export function findItem(section: ResumeSection, itemId: string) {

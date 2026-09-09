@@ -10,7 +10,8 @@ import {
 import { toast } from "sonner";
 
 import { getMessagesSync, type AppMessages, type Locale } from "@/i18n";
-import { isAbortError, isApiErrorToastShown } from "@/lib/api-client";
+import { isAbortError } from "@/lib/api-client";
+import { notifyApiError } from "@/lib/api-error-notifier";
 import { createTemplatePreviewResumes } from "@/lib/template-preview-resume";
 import { getTemplateCatalog } from "@/lib/templates";
 import {
@@ -119,11 +120,10 @@ export function useTrashWorkspace({
         }
 
         console.error("Failed to load the trash workspace route.", error);
-        if (!isApiErrorToastShown(error)) {
-          showWorkspaceLoadError(
-            getMessagesSync(initialLocaleRef.current).apiMessages.REQUEST_FAILED,
-          );
-        }
+        showWorkspaceLoadError(
+          error,
+          getMessagesSync(initialLocaleRef.current).apiMessages.REQUEST_FAILED,
+        );
         setHasLoaded(false);
         setHasLoadError(true);
       }
@@ -151,7 +151,9 @@ export function useTrashWorkspace({
 
   const restoreResumes = useCallback(
     async (resumeIds: string[]) => {
-      const restoring = deletedResumes.filter((item) => resumeIds.includes(item.id));
+      const restoring = deletedResumes.filter((item) =>
+        resumeIds.includes(item.id),
+      );
       if (restoring.length === 0) {
         return false;
       }
@@ -167,14 +169,14 @@ export function useTrashWorkspace({
         }
       } catch (error) {
         console.error("Failed to restore resume.", error);
-        if (!isApiErrorToastShown(error)) {
-          toast.error(messages.loadError, { closeButton: true });
-        }
+        notifyApiError(error, messages.loadError);
         return false;
       }
 
       toast.success(
-        restoring.length > 1 ? messages.resumesRestored : messages.resumeRestored,
+        restoring.length > 1
+          ? messages.resumesRestored
+          : messages.resumeRestored,
         { closeButton: true },
       );
       return true;
@@ -184,7 +186,9 @@ export function useTrashWorkspace({
 
   const permanentlyDeleteResumes = useCallback(
     async (resumeIds: string[]) => {
-      const deleting = deletedResumes.filter((item) => resumeIds.includes(item.id));
+      const deleting = deletedResumes.filter((item) =>
+        resumeIds.includes(item.id),
+      );
       if (deleting.length === 0) {
         return false;
       }
@@ -200,9 +204,7 @@ export function useTrashWorkspace({
         }
       } catch (error) {
         console.error("Failed to permanently delete resume.", error);
-        if (!isApiErrorToastShown(error)) {
-          toast.error(messages.loadError, { closeButton: true });
-        }
+        notifyApiError(error, messages.loadError);
         return false;
       }
 
@@ -238,9 +240,7 @@ export function useTrashWorkspace({
         }
       } catch (error) {
         console.error("Failed to restore template.", error);
-        if (!isApiErrorToastShown(error)) {
-          toast.error(messages.loadError, { closeButton: true });
-        }
+        notifyApiError(error, messages.loadError);
         return false;
       }
 
@@ -257,7 +257,9 @@ export function useTrashWorkspace({
 
   const permanentlyDeleteTemplates = useCallback(
     async (templateIds: string[]) => {
-      const deleting = deletedTemplates.filter((item) => templateIds.includes(item.id));
+      const deleting = deletedTemplates.filter((item) =>
+        templateIds.includes(item.id),
+      );
       if (deleting.length === 0) {
         return false;
       }
@@ -273,9 +275,7 @@ export function useTrashWorkspace({
         }
       } catch (error) {
         console.error("Failed to permanently delete template.", error);
-        if (!isApiErrorToastShown(error)) {
-          toast.error(messages.loadError, { closeButton: true });
-        }
+        notifyApiError(error, messages.loadError);
         return false;
       }
 

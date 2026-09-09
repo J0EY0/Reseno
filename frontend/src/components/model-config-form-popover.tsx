@@ -57,18 +57,19 @@ export function ModelConfigFormPopover({
     setOpen(nextOpen);
   }
 
-  const triggerElement = trigger === undefined ? (
-    <Button type="button">
-      <CopyPlus data-icon="inline-start" />
-      {t.addModelConfig}
-    </Button>
-  ) : trigger === null ? null : isValidElement(trigger) ? (
-    trigger
-  ) : (
-    <Button type="button" variant="outline">
-      {trigger}
-    </Button>
-  );
+  const triggerElement =
+    trigger === undefined ? (
+      <Button type="button">
+        <CopyPlus data-icon="inline-start" />
+        {t.addModelConfig}
+      </Button>
+    ) : trigger === null ? null : isValidElement(trigger) ? (
+      trigger
+    ) : (
+      <Button type="button" variant="outline">
+        {trigger}
+      </Button>
+    );
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>

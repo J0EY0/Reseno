@@ -7,7 +7,11 @@ import { useRememberWorkspaceLateralRouteData } from "@/components/workspace/use
 import { useResumeGalleryWorkspace } from "@/components/workspace/use-resume-gallery-workspace";
 import { useWorkspacePreferences } from "@/components/workspace/workspace-preferences-context";
 
-export function ResumeGalleryWorkspacePage({ onReady }: { onReady?: () => void }) {
+export function ResumeGalleryWorkspacePage({
+  onReady,
+}: {
+  onReady?: () => void;
+}) {
   const { locale, messages } = useWorkspacePreferences();
   const gallery = useResumeGalleryWorkspace({
     locale,
@@ -42,6 +46,9 @@ export function ResumeGalleryWorkspacePage({ onReady }: { onReady?: () => void }
         resumes={gallery.resumes}
         templates={gallery.templateCatalog}
         isImporting={gallery.isImporting}
+        importProgress={gallery.pendingImport}
+        onRetryImport={() => void gallery.retryImport()}
+        onCancelImport={gallery.cancelImport}
         isCreating={gallery.isCreating}
         openingResumeId={gallery.openingResumeId}
         onPreloadResumeDetail={gallery.preloadResumeDetail}
@@ -53,9 +60,7 @@ export function ResumeGalleryWorkspacePage({ onReady }: { onReady?: () => void }
         onDeleteResume={(resumeId) =>
           void gallery.moveResumesToTrash([resumeId])
         }
-        onBulkDeleteResumes={(ids) =>
-          void gallery.moveResumesToTrash(ids)
-        }
+        onBulkDeleteResumes={(ids) => void gallery.moveResumesToTrash(ids)}
       />
     </div>
   );

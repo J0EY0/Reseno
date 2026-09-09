@@ -1,5 +1,8 @@
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
+import { waitForPdfImport } from "./abort";
+import { PdfImportError } from "./errors";
+
 import { PDF_IMPORT_PROFILE, median } from "./parser-config";
 import {
   countTextGraphemes,
@@ -34,9 +37,10 @@ type PdfJsModule = {
   GlobalWorkerOptions: {
     workerSrc: string;
   };
-  getDocument(
-    source: { data: Uint8Array },
-  ): { promise: Promise<PdfDocument> };
+  getDocument(source: { data: Uint8Array }): {
+    promise: Promise<PdfDocument>;
+    destroy(): Promise<void>;
+  };
 };
 
 export type TextLine = {
@@ -56,21 +60,50 @@ type PositionedTextItem = {
   fontSize: number;
   width: number;
 };
-export async function extractPdfLines(file: File): Promise<TextLine[]> {
-  const [pdfjs, buffer] = await Promise.all([loadPdfJs(), file.arrayBuffer()]);
-  const document = await pdfjs.getDocument({ data: new Uint8Array(buffer) }).promise;
-  const lines: TextLine[] = [];
+export const MAX_PDF_IMPORT_BYTES = 10 * 1024 * 1024;
+export const MAX_PDF_IMPORT_PAGES = 50;
 
-  for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
-    const page = await document.getPage(pageNumber);
-    const content = await page.getTextContent();
-    const pageWidth = page.getViewport({ scale: 1 }).width;
-    lines.push(
-      ...textContentToLinesForResumeImport(content, pageNumber, pageWidth),
-    );
+export async function extractPdfLines(
+  file: File,
+  { signal }: { signal?: AbortSignal } = {},
+): Promise<TextLine[]> {
+  signal?.throwIfAborted();
+  if (file.size > MAX_PDF_IMPORT_BYTES) {
+    throw new PdfImportError("PDF_IMPORT_FILE_TOO_LARGE");
   }
+  const [pdfjs, buffer] = await waitForPdfImport(
+    Promise.all([loadPdfJs(), file.arrayBuffer()]),
+    signal,
+  );
+  signal?.throwIfAborted();
+  const loadingTask = pdfjs.getDocument({ data: new Uint8Array(buffer) });
+  let destruction: Promise<void> | undefined;
+  const destroy = () => (destruction ??= loadingTask.destroy());
+  const onAbort = () => {
+    void destroy().catch(() => {});
+  };
+  signal?.addEventListener("abort", onAbort, { once: true });
 
-  return lines;
+  try {
+    const document = await waitForPdfImport(loadingTask.promise, signal);
+    if (document.numPages > MAX_PDF_IMPORT_PAGES) {
+      throw new PdfImportError("PDF_IMPORT_TOO_MANY_PAGES");
+    }
+    const lines: TextLine[] = [];
+    for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
+      signal?.throwIfAborted();
+      const page = await waitForPdfImport(document.getPage(pageNumber), signal);
+      const content = await waitForPdfImport(page.getTextContent(), signal);
+      const pageWidth = page.getViewport({ scale: 1 }).width;
+      lines.push(
+        ...textContentToLinesForResumeImport(content, pageNumber, pageWidth),
+      );
+    }
+    return lines;
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+    await destroy();
+  }
 }
 
 async function loadPdfJs(): Promise<PdfJsModule> {
@@ -181,7 +214,8 @@ function groupTextItemsByLine(
 
   for (const item of items) {
     const bucket = buckets.find(
-      (candidate) => Math.abs((candidate[0]?.y ?? item.y) - item.y) <= lineTolerance,
+      (candidate) =>
+        Math.abs((candidate[0]?.y ?? item.y) - item.y) <= lineTolerance,
     );
 
     if (bucket) {
@@ -199,8 +233,7 @@ function splitLineBucketByColumnGap(
   wordGap: number,
 ) {
   const sorted = [...bucket].sort((left, right) => left.x - right.x);
-  const columnGap =
-    wordGap * PDF_IMPORT_PROFILE.layout.minColumnGapWords;
+  const columnGap = wordGap * PDF_IMPORT_PROFILE.layout.minColumnGapWords;
   const lines: PositionedTextItem[][] = [];
   let current: PositionedTextItem[] = [];
   let previousEnd = 0;
@@ -279,10 +312,7 @@ function estimateLineTolerance(items: PositionedTextItem[]) {
 
 function estimateWordGap(items: PositionedTextItem[]) {
   const widths = items
-    .map(
-      (item) =>
-        item.width / Math.max(countTextGraphemes(item.text), 1),
-    )
+    .map((item) => item.width / Math.max(countTextGraphemes(item.text), 1))
     .filter((width) => Number.isFinite(width) && width > 0);
   return Math.max(
     PDF_IMPORT_PROFILE.layout.minWordGap,
@@ -343,9 +373,7 @@ function shouldSeparateTextItems(
   // adjacent text, so do not turn that glyph positioning into an authored
   // space (for example, `语言 ：` instead of `语言：`).
   if (
-    /^(?:[\p{Pe}\p{Pf}\p{M}]|[,.;:!?，。；：！？、%％])/u.test(
-      currentText,
-    ) ||
+    /^(?:[\p{Pe}\p{Pf}\p{M}]|[,.;:!?，。；：！？、%％])/u.test(currentText) ||
     /[\p{Ps}\p{Pi}]$/u.test(previousText)
   ) {
     return false;
@@ -353,10 +381,7 @@ function shouldSeparateTextItems(
   // Some embedded fonts expose every Han glyph as a separate PDF.js token
   // whose advance is slightly wider than its reported box. A visual gap there
   // is glyph positioning, not an authored word separator.
-  if (
-    isSingleHanGrapheme(previousText) &&
-    isSingleHanGrapheme(currentText)
-  ) {
+  if (isSingleHanGrapheme(previousText) && isSingleHanGrapheme(currentText)) {
     return false;
   }
 
@@ -386,7 +411,9 @@ function orderPageLinesForReading(lines: TextLine[]) {
     return visualOrder;
   }
 
-  const bodyFontSize = median(lines.map((line) => line.fontSize).filter(Boolean));
+  const bodyFontSize = median(
+    lines.map((line) => line.fontSize).filter(Boolean),
+  );
   const clusterTolerance =
     bodyFontSize * PDF_IMPORT_PROFILE.layout.columnStartClusterScale;
   const clusters = clusterLineStarts(lines, clusterTolerance);
@@ -405,8 +432,7 @@ function orderPageLinesForReading(lines: TextLine[]) {
   // form a large cluster and remain in normal visual-row order.
   const rightColumn = clusters.find(
     (cluster) =>
-      cluster.lines.length >=
-        PDF_IMPORT_PROFILE.layout.minRightColumnLines &&
+      cluster.lines.length >= PDF_IMPORT_PROFILE.layout.minRightColumnLines &&
       cluster.center - minimumX >=
         bodyFontSize * PDF_IMPORT_PROFILE.layout.columnStartGapScale &&
       cluster.center - minimumX >=
@@ -418,10 +444,7 @@ function orderPageLinesForReading(lines: TextLine[]) {
     return visualOrder;
   }
 
-  const provenBands = splitColumnLinesIntoBands(
-    rightColumn.lines,
-    bodyFontSize,
-  )
+  const provenBands = splitColumnLinesIntoBands(rightColumn.lines, bodyFontSize)
     .filter(
       (rightLines) =>
         rightLines.length >= PDF_IMPORT_PROFILE.layout.minRightColumnLines,
@@ -461,10 +484,7 @@ type ProvenColumnBand = {
   rightLines: TextLine[];
 };
 
-function splitColumnLinesIntoBands(
-  lines: TextLine[],
-  bodyFontSize: number,
-) {
+function splitColumnLinesIntoBands(lines: TextLine[], bodyFontSize: number) {
   const sorted = sortLinesTopToBottom(lines);
   const maximumGap =
     bodyFontSize * PDF_IMPORT_PROFILE.layout.maxColumnBandGapScale;
@@ -502,8 +522,7 @@ function createProvenColumnBand(
 
   if (
     leftLines.length < PDF_IMPORT_PROFILE.layout.minLeftColumnLines ||
-    resolvedRightLines.length <
-      PDF_IMPORT_PROFILE.layout.minRightColumnLines ||
+    resolvedRightLines.length < PDF_IMPORT_PROFILE.layout.minRightColumnLines ||
     !columnsShareVerticalRange(leftLines, resolvedRightLines, bodyFontSize)
   ) {
     return null;
@@ -542,14 +561,10 @@ function columnsShareVerticalRange(
     Math.min(leftTop, rightTop) - Math.max(leftBottom, rightBottom);
   return (
     overlap >=
-    bodyFontSize *
-      PDF_IMPORT_PROFILE.layout.minColumnVerticalOverlapScale
+    bodyFontSize * PDF_IMPORT_PROFILE.layout.minColumnVerticalOverlapScale
   );
 }
 
 function sortLinesTopToBottom(lines: TextLine[]) {
-  return [...lines].sort(
-    (left, right) => right.y - left.y || left.x - right.x,
-  );
+  return [...lines].sort((left, right) => right.y - left.y || left.x - right.x);
 }
-

@@ -1,9 +1,9 @@
-import os
 import secrets
 import time
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from hmac import compare_digest
 
 import jwt
 
@@ -23,6 +23,10 @@ class AuthTokenError(Exception):
     pass
 
 
+class AuthOwnerChangedError(AuthTokenError):
+    """Raised when a token no longer identifies the current owner."""
+
+
 @dataclass(frozen=True)
 class AuthTokenPayload:
     """Validated claims extracted from a browser access token."""
@@ -37,8 +41,7 @@ class AuthTokenPayload:
 def _get_jwt_secret() -> bytes:
     """Return the configured JWT signing secret as bytes."""
 
-    get_settings()
-    secret = os.getenv(JWT_SECRET_ENV_NAME)
+    secret = get_settings().jwt_secret
     if not secret:
         raise RuntimeError(f"Missing {JWT_SECRET_ENV_NAME}.")
 
@@ -89,18 +92,8 @@ def create_access_token(
     )
 
 
-def is_access_token_revoked(jwt_id: str) -> bool:
-    """Return whether a verified token identity has been revoked."""
-
-    with closing(connect_auth_database()) as conn:
-        return conn.execute(
-            "SELECT 1 FROM auth_revoked_tokens WHERE jwt_id = ?",
-            (jwt_id,),
-        ).fetchone() is not None
-
-
 def decode_access_token(token: str) -> AuthTokenPayload:
-    """Validate a token and return its trusted payload."""
+    """Validate the token signature, header, and claims."""
 
     try:
         decoded = jwt.decode_complete(
@@ -141,9 +134,6 @@ def decode_access_token(token: str) -> AuthTokenPayload:
     ):
         raise AuthTokenError("Incomplete access token payload.")
 
-    if is_access_token_revoked(jwt_id):
-        raise AuthTokenError("Access token has been revoked.")
-
     return AuthTokenPayload(
         subject=subject,
         auth_revision=auth_revision,
@@ -151,6 +141,39 @@ def decode_access_token(token: str) -> AuthTokenPayload:
         issued_at=issued_at,
         jwt_id=jwt_id,
     )
+
+
+def authenticate_access_token(token: str) -> AuthTokenPayload:
+    """Validate a token against the current owner and revocations."""
+
+    payload = decode_access_token(token)
+    with closing(connect_auth_database()) as conn:
+        row = conn.execute(
+            """
+            SELECT
+                EXISTS(
+                    SELECT 1 FROM auth_revoked_tokens WHERE jwt_id = ?
+                ) AS revoked,
+                (SELECT username FROM auth_owner WHERE id = 1) AS username,
+                (SELECT auth_revision FROM auth_owner WHERE id = 1) AS auth_revision
+            """,
+            (payload.jwt_id,),
+        ).fetchone()
+
+    if row["revoked"]:
+        raise AuthTokenError("Access token has been revoked.")
+    if (
+        row["username"] is None
+        or not compare_digest(
+            str(row["username"]).encode("utf-8"), payload.subject.encode("utf-8")
+        )
+        or not compare_digest(
+            str(row["auth_revision"]).encode("utf-8"),
+            payload.auth_revision.encode("utf-8"),
+        )
+    ):
+        raise AuthOwnerChangedError("Access token owner is missing or changed.")
+    return payload
 
 
 def refresh_access_token(token: str) -> tuple[str, AuthTokenPayload]:

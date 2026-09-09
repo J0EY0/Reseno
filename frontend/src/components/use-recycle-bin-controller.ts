@@ -89,10 +89,7 @@ export function useRecycleBinController({
     }
   }
 
-  function openPreview(
-    target: RecycleBinPreviewTarget,
-    triggerId: string,
-  ) {
+  function openPreview(target: RecycleBinPreviewTarget, triggerId: string) {
     previewTriggerRef.current = triggerId;
     setPreviewTarget(target);
     setIsPreviewOpen(true);
@@ -168,6 +165,4 @@ export function useRecycleBinController({
   };
 }
 
-export type RecycleBinController = ReturnType<
-  typeof useRecycleBinController
->;
+export type RecycleBinController = ReturnType<typeof useRecycleBinController>;

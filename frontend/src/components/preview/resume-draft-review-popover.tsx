@@ -132,8 +132,7 @@ export function useResumeDraftReviewInteraction({
       return {
         diff,
         element,
-        reviewItemId:
-          reviewItemIdByOperationId[diff.operationId],
+        reviewItemId: reviewItemIdByOperationId[diff.operationId],
       };
     },
     [diffByPath, reviewItemIdByOperationId],
@@ -206,7 +205,8 @@ export function useResumeDraftReviewInteraction({
           getResumeDraftReviewTargetElement(event.target, previewRef.current),
         ),
       );
-    }, [clearHoverTimer, effectivePinnedTarget, previewRef, resolveTarget],
+    },
+    [clearHoverTimer, effectivePinnedTarget, previewRef, resolveTarget],
   );
   const onPointerOut = useCallback(
     (event: ReactPointerEvent<HTMLElement>) => {
@@ -225,7 +225,8 @@ export function useResumeDraftReviewInteraction({
         return;
       }
       scheduleHoverClose();
-    }, [effectivePinnedTarget, previewRef, scheduleHoverClose],
+    },
+    [effectivePinnedTarget, previewRef, scheduleHoverClose],
   );
   const onFocus = useCallback(
     (event: ReactFocusEvent<HTMLElement>) => {
@@ -236,7 +237,8 @@ export function useResumeDraftReviewInteraction({
           ),
         );
       }
-    }, [effectivePinnedTarget, previewRef, resolveTarget],
+    },
+    [effectivePinnedTarget, previewRef, resolveTarget],
   );
   const onBlur = useCallback(
     (event: ReactFocusEvent<HTMLElement>) => {
@@ -249,7 +251,8 @@ export function useResumeDraftReviewInteraction({
           scheduleHoverClose();
         }
       }
-    }, [effectivePinnedTarget, previewRef, scheduleHoverClose],
+    },
+    [effectivePinnedTarget, previewRef, scheduleHoverClose],
   );
   const pinTarget = useCallback(
     (element: HTMLElement | null) => {
@@ -263,7 +266,8 @@ export function useResumeDraftReviewInteraction({
       if (target.reviewItemId) {
         onSelectReviewItem?.(target.reviewItemId);
       }
-    }, [clearHoverTimer, onSelectReviewItem, resolveTarget],
+    },
+    [clearHoverTimer, onSelectReviewItem, resolveTarget],
   );
   const onClick = useCallback(
     (event: ReactMouseEvent<HTMLElement>) => {
@@ -277,7 +281,8 @@ export function useResumeDraftReviewInteraction({
       event.preventDefault();
       event.stopPropagation();
       pinTarget(element);
-    }, [pinTarget, previewRef],
+    },
+    [pinTarget, previewRef],
   );
   const onKeyDown = useCallback(
     (event: ReactKeyboardEvent<HTMLElement>) => {
@@ -294,7 +299,8 @@ export function useResumeDraftReviewInteraction({
       event.preventDefault();
       event.stopPropagation();
       pinTarget(element);
-    }, [pinTarget, previewRef],
+    },
+    [pinTarget, previewRef],
   );
 
   return {

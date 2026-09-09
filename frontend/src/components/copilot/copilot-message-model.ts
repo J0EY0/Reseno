@@ -41,10 +41,7 @@ function isCitationSource(source: AgentSource) {
     return false;
   }
 
-  return (
-    source.sourceType === "web" ||
-    source.sourceType === "attachment"
-  );
+  return source.sourceType === "web" || source.sourceType === "attachment";
 }
 
 function stripTransientModelStatus(
@@ -53,7 +50,9 @@ function stripTransientModelStatus(
 ) {
   const trimmed = text.trim();
 
-  return transientStatusTexts.some((statusText) => statusText.trim() === trimmed)
+  return transientStatusTexts.some(
+    (statusText) => statusText.trim() === trimmed,
+  )
     ? ""
     : text;
 }

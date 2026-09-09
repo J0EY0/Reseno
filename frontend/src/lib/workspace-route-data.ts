@@ -33,19 +33,16 @@ interface WorkspaceRoutePreferences {
   theme?: ThemeMode;
 }
 
-export interface WorkspaceTemplateRouteData
-  extends WorkspaceRoutePreferences {
+export interface WorkspaceTemplateRouteData extends WorkspaceRoutePreferences {
   defaultTemplateIds: DefaultTemplateIds;
   customTemplates: ResumeTemplateDefinition[];
 }
 
-export interface ResumeGalleryRouteData
-  extends WorkspaceTemplateRouteData {
+export interface ResumeGalleryRouteData extends WorkspaceTemplateRouteData {
   resumes: ResumeWorkspaceItem[];
 }
 
-export interface ResumeEditorRouteData
-  extends WorkspaceTemplateRouteData {
+export interface ResumeEditorRouteData extends WorkspaceTemplateRouteData {
   modelConfigs: ModelConfig[];
   agentSettings: AgentSettings;
 }
@@ -56,6 +53,10 @@ export interface PreparedResumeDetailRouteData {
   versions: WorkspaceVersionSummary[];
 }
 
+export interface PreparedTemplateDetailRouteData extends WorkspaceTemplateRouteData {
+  checkpoint: ResumeTemplateDefinition | null;
+}
+
 export type TemplateRouteData = WorkspaceTemplateRouteData;
 
 export interface TrashRouteData extends WorkspaceTemplateRouteData {
@@ -63,8 +64,7 @@ export interface TrashRouteData extends WorkspaceTemplateRouteData {
   deletedTemplates: DeletedResumeTemplateDefinition[];
 }
 
-export interface ModelSettingsRouteData
-  extends WorkspaceRoutePreferences {
+export interface ModelSettingsRouteData extends WorkspaceRoutePreferences {
   modelConfigs: ModelConfig[];
   agentSettings: AgentSettings;
 }
@@ -81,8 +81,7 @@ export interface WorkspaceRouteDataMap {
 }
 
 export type WorkspaceRouteDataResult<
-  Kind extends LoadableWorkspaceRouteDataKind =
-    LoadableWorkspaceRouteDataKind,
+  Kind extends LoadableWorkspaceRouteDataKind = LoadableWorkspaceRouteDataKind,
 > = Kind extends LoadableWorkspaceRouteDataKind
   ? { kind: Kind; data: WorkspaceRouteDataMap[Kind] }
   : never;

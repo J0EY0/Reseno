@@ -32,8 +32,6 @@ export interface ResumePreviewModel {
     typeof createResumePreviewStyles
   >["contentFlowStyle"];
   diffLookup: ResumeDiffLookup;
-  fontFamily: ResumeFontFamily;
-  fontSize: number;
   fullPreviewSections: PaginatedResumeSection[];
   isSidebarLayout: boolean;
   layout: ResumeTemplateDefinition["layout"];
@@ -44,7 +42,6 @@ export interface ResumePreviewModel {
   standardContentWidthMm: number;
   t: AppMessages;
   template: ResumeTemplateDefinition;
-  visibleSections: RenderableResumeSection[];
 }
 
 const emptyDiffLookup: ResumeDiffLookup = {
@@ -68,9 +65,7 @@ function hasRenderableItemContent(item: RenderableSectionItem) {
   ].some((value) => !isRichTextEmpty(value));
 }
 
-export function getRenderableItems(
-  section: RenderableResumeSection,
-) {
+export function getRenderableItems(section: RenderableResumeSection) {
   return section.items.filter((item) =>
     section.layout === "list"
       ? !isRichTextEmpty(item.content)
@@ -145,26 +140,16 @@ export function useResumePreviewModel({
     () => (diffs?.length ? createResumeDiffLookup(diffs) : emptyDiffLookup),
     [diffs],
   );
-  const projectedSections = useMemo(
-    () => projectResumeSections(resume.sections),
-    [resume.sections],
-  );
-  const visibleSections = useMemo(
-    () =>
-      projectedSections.filter(
-        (section) =>
-          getRenderableItems(section).length > 0,
-      ),
-    [projectedSections],
-  );
   const fullPreviewSections = useMemo(
     () =>
-      visibleSections.map((section) => ({
-        section,
-        items: getRenderableItems(section),
-        showTitle: true,
-      })),
-    [visibleSections],
+      projectResumeSections(resume.sections)
+        .map((section) => ({
+          section,
+          items: getRenderableItems(section),
+          showTitle: true,
+        }))
+        .filter(({ items }) => items.length > 0),
+    [resume.sections],
   );
   const settings = template.settings;
   const layout = template.layout;
@@ -188,8 +173,6 @@ export function useResumePreviewModel({
     () => ({
       contentFlowStyle,
       diffLookup,
-      fontFamily,
-      fontSize,
       fullPreviewSections,
       isSidebarLayout,
       layout,
@@ -200,13 +183,10 @@ export function useResumePreviewModel({
       standardContentWidthMm,
       t,
       template,
-      visibleSections,
     }),
     [
       contentFlowStyle,
       diffLookup,
-      fontFamily,
-      fontSize,
       fullPreviewSections,
       isSidebarLayout,
       layout,
@@ -217,7 +197,6 @@ export function useResumePreviewModel({
       standardContentWidthMm,
       t,
       template,
-      visibleSections,
     ],
   );
 }

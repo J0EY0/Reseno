@@ -45,7 +45,9 @@ export function useAgentDraftReviewSelection({
     mode: "all",
     reviewItemId: null,
   });
-  const [exitingReviewItemIds, setExitingReviewItemIds] = useState<string[]>([]);
+  const [exitingReviewItemIds, setExitingReviewItemIds] = useState<string[]>(
+    [],
+  );
   const [isTransitioning, setIsTransitioning] = useState(false);
   const decisionPendingRef = useRef(decisionPending);
   const pendingItemsRef = useRef(pendingItems);
@@ -89,13 +91,14 @@ export function useAgentDraftReviewSelection({
       if (current.mode === "single" && current.reviewItemId === reviewItemId) {
         return;
       }
-      const exitingIds = current.mode === "all"
-        ? items
-            .filter((item) => item.id !== reviewItemId)
-            .map((item) => item.id)
-        : current.reviewItemId
-          ? [current.reviewItemId]
-          : [];
+      const exitingIds =
+        current.mode === "all"
+          ? items
+              .filter((item) => item.id !== reviewItemId)
+              .map((item) => item.id)
+          : current.reviewItemId
+            ? [current.reviewItemId]
+            : [];
       const next = { mode: "single", reviewItemId } as const;
 
       if (
@@ -116,7 +119,7 @@ export function useAgentDraftReviewSelection({
         const nextItems = pendingItemsRef.current;
         const nextItemId = nextItems.some((item) => item.id === reviewItemId)
           ? reviewItemId
-          : nextItems[0]?.id ?? null;
+          : (nextItems[0]?.id ?? null);
         commitSelection(
           nextItemId
             ? { mode: "single", reviewItemId: nextItemId }
@@ -157,7 +160,10 @@ export function useAgentDraftReviewSelection({
     },
     [transitionToItem],
   );
-  const selectPrevious = useCallback(() => selectAdjacent(-1), [selectAdjacent]);
+  const selectPrevious = useCallback(
+    () => selectAdjacent(-1),
+    [selectAdjacent],
+  );
   const selectNext = useCallback(() => selectAdjacent(1), [selectAdjacent]);
 
   const reset = useCallback(() => {
@@ -203,20 +209,19 @@ export function useAgentDraftReviewSelection({
     }
     // Decisions and review navigation share one outgoing-region channel so
     // the preview never runs competing animations for the same operation.
-    setExitingReviewItemIds(
-      prefersReducedMotion() ? [] : [...reviewItemIds],
-    );
+    setExitingReviewItemIds(prefersReducedMotion() ? [] : [...reviewItemIds]);
     return true;
   }, []);
   const endDecisionExit = useCallback(() => {
     setExitingReviewItemIds([]);
   }, []);
 
-  const selectedItem = selection.mode === "single"
-    ? pendingItems.find((item) => item.id === selection.reviewItemId) ??
-      pendingItems[0] ??
-      null
-    : null;
+  const selectedItem =
+    selection.mode === "single"
+      ? (pendingItems.find((item) => item.id === selection.reviewItemId) ??
+        pendingItems[0] ??
+        null)
+      : null;
 
   return {
     adoptResolvedItems,
@@ -224,7 +229,7 @@ export function useAgentDraftReviewSelection({
     endDecisionExit,
     exitingReviewItemIds,
     isTransitioning,
-    mode: selectedItem ? "single" as const : "all" as const,
+    mode: selectedItem ? ("single" as const) : ("all" as const),
     reconcile,
     reset,
     selectFirst,

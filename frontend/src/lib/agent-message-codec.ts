@@ -37,29 +37,29 @@ function toSources(value: unknown): AgentChatMessage["sources"] {
     return undefined;
   }
 
-  return value
-    .filter(isRecord)
-    .flatMap((item): AgentSource[] => {
-      const sourceType = toSourceType(item.sourceType);
-      const id = typeof item.id === "string" ? item.id : "";
-      const title = typeof item.title === "string" ? item.title : "";
+  return value.filter(isRecord).flatMap((item): AgentSource[] => {
+    const sourceType = toSourceType(item.sourceType);
+    const id = typeof item.id === "string" ? item.id : "";
+    const title = typeof item.title === "string" ? item.title : "";
 
-      if (!sourceType || !id || !title) {
-        return [];
-      }
+    if (!sourceType || !id || !title) {
+      return [];
+    }
 
-      if (sourceType === "web" && typeof item.url !== "string") {
-        return [];
-      }
+    if (sourceType === "web" && typeof item.url !== "string") {
+      return [];
+    }
 
-      return [{
+    return [
+      {
         id,
         title,
         sourceType,
         url: typeof item.url === "string" ? item.url : undefined,
         excerpt: typeof item.excerpt === "string" ? item.excerpt : undefined,
-      }];
-    });
+      },
+    ];
+  });
 }
 
 function toToolState(value: unknown): AgentToolInvocation["state"] {
@@ -92,8 +92,10 @@ function toToolInvocations(value: unknown): AgentChatMessage["tools"] {
       state: toToolState(item.state),
       input: item.input,
       output: item.output,
-      errorText: typeof item.errorText === "string" ? item.errorText : undefined,
-      startedAt: typeof item.startedAt === "string" ? item.startedAt : undefined,
+      errorText:
+        typeof item.errorText === "string" ? item.errorText : undefined,
+      startedAt:
+        typeof item.startedAt === "string" ? item.startedAt : undefined,
       completedAt:
         typeof item.completedAt === "string" ? item.completedAt : undefined,
     }))
@@ -113,8 +115,7 @@ function mergeAgentToolInvocation(
   incoming: AgentToolInvocation,
 ): AgentToolInvocation {
   const preserveTerminalState =
-    isTerminalToolState(current.state) &&
-    !isTerminalToolState(incoming.state);
+    isTerminalToolState(current.state) && !isTerminalToolState(incoming.state);
 
   return {
     ...current,
@@ -179,10 +180,14 @@ function toEditSuggestions(value: unknown): AgentChatMessage["edits"] {
   return value
     .filter(isRecord)
     .map((item): AgentResumeEditSuggestion => {
-      if (!isRecord(item.operation) || typeof item.operation.type !== "string") {
+      if (
+        !isRecord(item.operation) ||
+        typeof item.operation.type !== "string"
+      ) {
         throw new TypeError("Agent edit requires an explicit operation.");
       }
-      const operation = item.operation as AgentResumeEditSuggestion["operation"];
+      const operation =
+        item.operation as AgentResumeEditSuggestion["operation"];
       const diffs = Array.isArray(item.diffs)
         ? (item.diffs as AgentResumeEditSuggestion["diffs"])
         : undefined;
@@ -223,17 +228,15 @@ function toTimelineParts(value: unknown): AgentChatMessage["timeline"] {
     .filter(isRecord)
     .map((item): AgentTimelinePart => {
       const type: AgentTimelinePart["type"] =
-        item.type === "text" || item.type === "tool_group"
-          ? item.type
-          : "text";
+        item.type === "text" || item.type === "tool_group" ? item.type : "text";
 
       return {
         id: typeof item.id === "string" ? item.id : "",
         type,
         text: typeof item.text === "string" ? item.text : undefined,
         toolIds: Array.isArray(item.toolIds)
-          ? item.toolIds.filter((toolId): toolId is string =>
-              typeof toolId === "string",
+          ? item.toolIds.filter(
+              (toolId): toolId is string => typeof toolId === "string",
             )
           : undefined,
       };

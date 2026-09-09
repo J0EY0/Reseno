@@ -1,7 +1,12 @@
 import { useEffect, useState } from "react";
 import { useRouteError } from "react-router-dom";
 
-import { defaultLocale, getLoadedMessages, getMessagesSync, getSystemLocale } from "@/i18n";
+import {
+  defaultLocale,
+  getLoadedMessages,
+  getMessagesSync,
+  getSystemLocale,
+} from "@/i18n";
 import { loadLocalePreferenceApi } from "@/lib/preference-api";
 
 import {
@@ -16,7 +21,9 @@ export function AppRouteErrorPage() {
     try {
       preferredLocale = loadLocalePreferenceApi() ?? preferredLocale;
     } catch {
-      return getLoadedMessages(preferredLocale) ? preferredLocale : defaultLocale;
+      return getLoadedMessages(preferredLocale)
+        ? preferredLocale
+        : defaultLocale;
     }
     return getLoadedMessages(preferredLocale) ? preferredLocale : defaultLocale;
   });
@@ -32,7 +39,10 @@ export function AppRouteErrorPage() {
   }, [error, isDynamicImportError]);
 
   return (
-    <main lang={locale === "zh" ? "zh-CN" : "en"} className="flex min-h-svh w-screen items-center justify-center bg-background p-6">
+    <main
+      lang={locale === "zh" ? "zh-CN" : "en"}
+      className="flex min-h-svh w-screen items-center justify-center bg-background p-6"
+    >
       <section
         role="alert"
         className="w-full max-w-md rounded-(--radius-card) border border-border bg-card p-8 text-center shadow-card"

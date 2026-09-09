@@ -39,8 +39,7 @@ function toAttachmentData(
   return {
     filename: file.filename || fallbackLabel,
     id:
-      file.id ||
-      `agent-attachment-${index}-${file.filename || fallbackLabel}`,
+      file.id || `agent-attachment-${index}-${file.filename || fallbackLabel}`,
     mediaType:
       file.mediaType ||
       (file.kind === "image" ? "image/*" : "application/octet-stream"),
@@ -95,10 +94,7 @@ export function AgentMessageAttachments({
                   }
                 }}
                 onKeyDown={(event) => {
-                  if (
-                    canOpen &&
-                    (event.key === "Enter" || event.key === " ")
-                  ) {
+                  if (canOpen && (event.key === "Enter" || event.key === " ")) {
                     event.preventDefault();
                     onDownload(file);
                   }
@@ -180,7 +176,10 @@ function AgentPromptAttachment({
               <AttachmentPreview />
             </div>
             {onRemove ? (
-              <AttachmentRemove className="absolute inset-0" label={removeLabel} />
+              <AttachmentRemove
+                className="absolute inset-0"
+                label={removeLabel}
+              />
             ) : null}
           </div>
           <AttachmentInfo />
@@ -246,9 +245,7 @@ export function AgentPromptAttachmentsDisplay({
           key={`local-${attachment.id}`}
           removeLabel={removeLabel}
           onRemove={
-            disableRemoval
-              ? undefined
-              : () => attachments.remove(attachment.id)
+            disableRemoval ? undefined : () => attachments.remove(attachment.id)
           }
         />
       ))}

@@ -26,10 +26,7 @@ interface TemplateEditorProps {
   onSetDefaultTemplate: (templateId: string) => void;
   onTemplateLocaleChange: (locale: DocumentLocale) => void;
   onCreateCustomTemplate: () => void;
-  onUpdateTemplate: (
-    templateId: string,
-    patch: ResumeTemplateUpdate,
-  ) => void;
+  onUpdateTemplate: (templateId: string, patch: ResumeTemplateUpdate) => void;
 }
 
 export function TemplateEditor({

@@ -118,7 +118,9 @@ function assertValidPreviewSet(messages, locale, expectedSeparator) {
       `${locale}/${scenario} must use ResumeData V2.`,
     );
     assert.deepEqual(
-      normalize(resume.sections.map((section) => [section.kind, section.title])),
+      normalize(
+        resume.sections.map((section) => [section.kind, section.title]),
+      ),
       expectedSections[scenario],
       `${locale}/${scenario} must keep its exact section order and titles.`,
     );
@@ -211,12 +213,12 @@ for (const [presetId, expected] of Object.entries(expectedLayouts)) {
 
 assert.match(
   previewStyles,
-  /\[data-resume-list-layout='columns'\] > div > ul/,
+  /\[data-resume-list-layout=["']columns["']\] > div > ul/,
   "Column lists must style the sanitized rich-text wrapper used by previews.",
 );
 assert.match(
   previewStyles,
-  /\[data-resume-list-layout='inline'\] > div > ul/,
+  /\[data-resume-list-layout=["']inline["']\] > div > ul/,
   "Inline lists must style the sanitized rich-text wrapper used by previews.",
 );
 

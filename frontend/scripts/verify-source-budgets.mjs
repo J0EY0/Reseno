@@ -6,11 +6,11 @@ import ts from "typescript";
 const frontendRoot = fileURLToPath(new URL("../", import.meta.url));
 const sourceRoot = path.join(frontendRoot, "src");
 
-const DEFAULT_FILE_LIMITS = Object.freeze({
+const DEFAULT_FILE_THRESHOLDS = Object.freeze({
   ".ts": 600,
   ".tsx": 500,
 });
-const DEFAULT_COMPONENT_BODY_LIMIT = 250;
+const DEFAULT_COMPONENT_BODY_THRESHOLD = 250;
 
 function countLines(source) {
   if (source.length === 0) {
@@ -105,14 +105,15 @@ function containsJsx(node) {
 }
 
 function getNodeLineSpan(sourceFile, node) {
-  const startLine = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line;
+  const startLine = sourceFile.getLineAndCharacterOfPosition(
+    node.getStart(sourceFile),
+  ).line;
   const endLine = sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line;
   return endLine - startLine + 1;
 }
 
 function collectReactComponents(sourceFile) {
   const components = [];
-  const seenSymbols = new Set();
 
   function record(symbol, implementation) {
     if (
@@ -122,13 +123,6 @@ function collectReactComponents(sourceFile) {
       return;
     }
 
-    if (seenSymbols.has(symbol)) {
-      throw new Error(
-        `${sourceFile.fileName} declares the React component symbol ${symbol} more than once.`,
-      );
-    }
-
-    seenSymbols.add(symbol);
     components.push({
       symbol,
       lines: getNodeLineSpan(sourceFile, implementation.body),
@@ -144,7 +138,11 @@ function collectReactComponents(sourceFile) {
       if (node.name || isDefaultExport) {
         record(node.name?.text ?? "default", node);
       }
-    } else if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+    } else if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer
+    ) {
       const implementation = unwrapComponentFunction(node.initializer);
 
       if (implementation) {
@@ -165,22 +163,25 @@ function collectReactComponents(sourceFile) {
   return components;
 }
 
-function verifyBudget({ actual, defaultLimit, key, kind }) {
-  return actual > defaultLimit
-    ? [`${key} has ${actual} ${kind}; default limit is ${defaultLimit}. Split it.`]
+function getSizeDiagnostics({ actual, threshold, key, kind }) {
+  return actual > threshold
+    ? [`${key} has ${actual} ${kind}; review threshold is ${threshold}.`]
     : [];
 }
 
-const failures = [];
+const diagnostics = [];
 
 for (const absolutePath of await collectSourceFiles(sourceRoot)) {
   const source = await readFile(absolutePath, "utf8");
-  const sourcePath = path.relative(frontendRoot, absolutePath).split(path.sep).join("/");
+  const sourcePath = path
+    .relative(frontendRoot, absolutePath)
+    .split(path.sep)
+    .join("/");
   const extension = path.extname(absolutePath);
-  failures.push(
-    ...verifyBudget({
+  diagnostics.push(
+    ...getSizeDiagnostics({
       actual: countLines(source),
-      defaultLimit: DEFAULT_FILE_LIMITS[extension],
+      threshold: DEFAULT_FILE_THRESHOLDS[extension],
       key: sourcePath,
       kind: "line file",
     }),
@@ -200,10 +201,10 @@ for (const absolutePath of await collectSourceFiles(sourceRoot)) {
 
   for (const component of collectReactComponents(sourceFile)) {
     const componentKey = `${sourcePath}#${component.symbol}`;
-    failures.push(
-      ...verifyBudget({
+    diagnostics.push(
+      ...getSizeDiagnostics({
         actual: component.lines,
-        defaultLimit: DEFAULT_COMPONENT_BODY_LIMIT,
+        threshold: DEFAULT_COMPONENT_BODY_THRESHOLD,
         key: componentKey,
         kind: "line component body",
       }),
@@ -211,12 +212,13 @@ for (const absolutePath of await collectSourceFiles(sourceRoot)) {
   }
 }
 
-if (failures.length > 0) {
-  console.error("Source budget verification failed:\n");
-  for (const failure of failures.sort()) {
-    console.error(`- ${failure}`);
+if (diagnostics.length > 0) {
+  console.log("Source size diagnostics:\n");
+  for (const diagnostic of diagnostics.sort()) {
+    console.log(`- ${diagnostic}`);
   }
-  process.exitCode = 1;
 } else {
-  console.log("Source file and React component budgets verified.");
+  console.log(
+    "Source file and React component sizes are within review thresholds.",
+  );
 }

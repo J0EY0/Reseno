@@ -2,14 +2,7 @@ import { useCallback, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import type { AppMessages } from "@/i18n";
-import { isApiErrorToastShown } from "@/lib/api-client";
-import {
-  downloadExportedFile,
-  downloadExportedPdf,
-  downloadResumeJson,
-  requestResumeImagesExport,
-  requestResumePdfExport,
-} from "@/lib/export-api";
+import { notifyApiError } from "@/lib/api-error-notifier";
 import type { ResumeDetailResponse } from "@/types/api";
 import type {
   ResumeTemplateDefinition,
@@ -36,6 +29,7 @@ export function useResumeDetailExport({
       operation: (
         activeResume: ResumeWorkspaceItem,
         savedVersion: ResumeDetailResponse,
+        exportApi: typeof import("@/lib/export-api"),
       ) => Promise<void> | void,
     ) => {
       if (exportInFlightRef.current) {
@@ -45,8 +39,11 @@ export function useResumeDetailExport({
       exportInFlightRef.current = true;
       setIsExporting(true);
       try {
-        const savedVersion = await save();
-        await operation(savedVersion.resume, savedVersion);
+        const [savedVersion, exportApi] = await Promise.all([
+          save(),
+          import("@/lib/export-api"),
+        ]);
+        await operation(savedVersion.resume, savedVersion, exportApi);
       } finally {
         exportInFlightRef.current = false;
         setIsExporting(false);
@@ -57,61 +54,64 @@ export function useResumeDetailExport({
 
   const exportPdf = useCallback(async () => {
     try {
-      await runExport(async (activeResume, savedVersion) => {
-        const result = await requestResumePdfExport({
+      await runExport(async (activeResume, savedVersion, exportApi) => {
+        const result = await exportApi.requestResumePdfExport({
           fileNameSeed: activeResume.title,
           resumeId: activeResume.id,
           savedAt: savedVersion.savedAt,
           versionId: savedVersion.versionId,
         });
-        await downloadExportedPdf(result);
+        await exportApi.downloadExportedPdf(result);
         toast.success(messages.exportSuccess, { closeButton: true });
       });
     } catch (error) {
       console.error("Failed to export resume PDF.", error);
-      if (!isApiErrorToastShown(error)) {
-        toast.error(messages.exportFailed, { closeButton: true });
-      }
+      notifyApiError(error, messages.exportFailed);
     }
   }, [messages.exportFailed, messages.exportSuccess, runExport]);
 
   const exportImages = useCallback(async () => {
     try {
-      await runExport(async (activeResume, savedVersion) => {
-        const result = await requestResumeImagesExport({
+      await runExport(async (activeResume, savedVersion, exportApi) => {
+        const result = await exportApi.requestResumeImagesExport({
           fileNameSeed: activeResume.title,
           resumeId: activeResume.id,
           savedAt: savedVersion.savedAt,
           versionId: savedVersion.versionId,
         });
-        await downloadExportedFile(result);
+        await exportApi.downloadExportedFile(result);
         toast.success(messages.exportImagesSuccess, { closeButton: true });
       });
     } catch (error) {
       console.error("Failed to export resume images.", error);
-      if (!isApiErrorToastShown(error)) {
-        toast.error(messages.exportImagesFailed, { closeButton: true });
-      }
+      notifyApiError(error, messages.exportImagesFailed);
     }
   }, [messages.exportImagesFailed, messages.exportImagesSuccess, runExport]);
 
   const exportJson = useCallback(async () => {
     try {
-      await runExport((activeResume) => {
-        const template = templates.find((item) => item.id === activeResume.template);
+      await runExport((activeResume, _savedVersion, exportApi) => {
+        const template = templates.find(
+          (item) => item.id === activeResume.template,
+        );
         if (!template) {
-          throw new Error("The saved resume's template definition is unavailable.");
+          throw new Error(
+            "The saved resume's template definition is unavailable.",
+          );
         }
-        downloadResumeJson(activeResume, template);
+        exportApi.downloadResumeJson(activeResume, template);
         toast.success(messages.exportJsonSuccess, { closeButton: true });
       });
     } catch (error) {
       console.error("Failed to export resume JSON.", error);
-      if (!isApiErrorToastShown(error)) {
-        toast.error(messages.exportJsonFailed, { closeButton: true });
-      }
+      notifyApiError(error, messages.exportJsonFailed);
     }
-  }, [messages.exportJsonFailed, messages.exportJsonSuccess, runExport, templates]);
+  }, [
+    messages.exportJsonFailed,
+    messages.exportJsonSuccess,
+    runExport,
+    templates,
+  ]);
 
   return { exportImages, exportJson, exportPdf, isExporting };
 }

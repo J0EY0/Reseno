@@ -1,6 +1,6 @@
-import type { AppMessages } from '@/i18n'
+import type { AppMessages } from "@/i18n";
 
-import { Button } from '@/components/ui/button'
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -8,11 +8,11 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@/components/ui/dialog'
-import { Spinner } from '@/components/ui/spinner'
+} from "@/components/ui/dialog";
+import { Spinner } from "@/components/ui/spinner";
 
-import { AvatarCropCanvas } from './avatar-crop-canvas'
-import type { AvatarCropController } from './use-avatar-crop'
+import { AvatarCropCanvas } from "./avatar-crop-canvas";
+import type { AvatarCropController } from "./use-avatar-crop";
 
 export function AvatarCropDialogView({
   t,
@@ -21,18 +21,18 @@ export function AvatarCropDialogView({
   onCancel,
   controller,
 }: {
-  t: AppMessages
-  source: string
-  open: boolean
-  onCancel: () => void
-  controller: AvatarCropController
+  t: AppMessages;
+  source: string;
+  open: boolean;
+  onCancel: () => void;
+  controller: AvatarCropController;
 }) {
   return (
     <Dialog
       open={open}
       onOpenChange={(nextOpen) => {
         if (!nextOpen && !controller.isSaving) {
-          onCancel()
+          onCancel();
         }
       }}
     >
@@ -42,7 +42,7 @@ export function AvatarCropDialogView({
         className="max-h-[calc(100dvh-2rem)] gap-0 overflow-y-auto p-0 sm:max-w-4xl"
         onEscapeKeyDown={(event) => {
           if (controller.isSaving) {
-            event.preventDefault()
+            event.preventDefault();
           }
         }}
         onPointerDownOutside={(event) => event.preventDefault()}
@@ -103,5 +103,5 @@ export function AvatarCropDialogView({
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  )
+  );
 }

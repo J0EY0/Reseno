@@ -15,37 +15,33 @@ let notoSerifStylesPromise: Promise<unknown> | null = null;
 
 function loadNotoSansStyles() {
   // Keep literal import paths so Vite emits one predictable optional CSS entry.
-  notoSansStylesPromise ??= import(
-    "@fontsource-variable/noto-sans-sc/wght.css"
-  ).catch((error) => {
-    notoSansStylesPromise = null;
-    throw error;
-  });
+  notoSansStylesPromise ??=
+    import("@fontsource-variable/noto-sans-sc/wght.css").catch((error) => {
+      notoSansStylesPromise = null;
+      throw error;
+    });
 
   return notoSansStylesPromise;
 }
 
 function loadNotoSerifStyles() {
-  notoSerifStylesPromise ??= import(
-    "@fontsource-variable/noto-serif-sc/wght.css"
-  ).catch((error) => {
-    notoSerifStylesPromise = null;
-    throw error;
-  });
+  notoSerifStylesPromise ??=
+    import("@fontsource-variable/noto-serif-sc/wght.css").catch((error) => {
+      notoSerifStylesPromise = null;
+      throw error;
+    });
 
   return notoSerifStylesPromise;
 }
 
-const resumeFontStyleLoaders: Record<
-  ResumeFontFamily,
-  () => Promise<unknown>
-> = {
-  inter: loadNotoSansStyles,
-  noto_sans_sc: loadNotoSansStyles,
-  plex: loadNotoSansStyles,
-  serif: loadNotoSerifStyles,
-  times: loadNotoSerifStyles,
-};
+const resumeFontStyleLoaders: Record<ResumeFontFamily, () => Promise<unknown>> =
+  {
+    inter: loadNotoSansStyles,
+    noto_sans_sc: loadNotoSansStyles,
+    plex: loadNotoSansStyles,
+    serif: loadNotoSerifStyles,
+    times: loadNotoSerifStyles,
+  };
 
 export function loadResumeFontStyles(fontFamily: ResumeFontFamily) {
   return resumeFontStyleLoaders[fontFamily]();
@@ -84,10 +80,7 @@ async function prepareResumeFont(fontFamily: ResumeFontFamily) {
 
   // Let the settled stylesheet reach the rendered document before reading FontFaceSet.
   await waitForAnimationFrame();
-  await waitWithTimeout(
-    document.fonts?.ready ?? Promise.resolve(),
-    2_500,
-  );
+  await waitWithTimeout(document.fonts?.ready ?? Promise.resolve(), 2_500);
 }
 
 export function useResumeFontReadyToken(
@@ -95,12 +88,13 @@ export function useResumeFontReadyToken(
   resume: ResumeData,
   messages: AppMessages,
 ): object | null {
-  const [readySnapshot, setReadySnapshot] =
-    useState<ReadyFontSnapshot | null>(null);
+  const [readySnapshot, setReadySnapshot] = useState<ReadyFontSnapshot | null>(
+    null,
+  );
   const isReady = Boolean(
     readySnapshot?.fontFamily === fontFamily &&
-      readySnapshot.resume === resume &&
-      readySnapshot.messages === messages,
+    readySnapshot.resume === resume &&
+    readySnapshot.messages === messages,
   );
 
   useEffect(() => {
@@ -117,5 +111,5 @@ export function useResumeFontReadyToken(
     };
   }, [fontFamily, messages, resume]);
 
-  return isReady ? readySnapshot?.token ?? null : null;
+  return isReady ? (readySnapshot?.token ?? null) : null;
 }

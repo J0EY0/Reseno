@@ -2,13 +2,16 @@ import { readFile } from "node:fs/promises";
 import vm from "node:vm";
 import ts from "typescript";
 
-export function evaluateTypeScript(source, {
-  filename = "module.ts",
-  globals = {},
-  imports = {},
-  resolveImport,
-  context = vm.createContext({ ...globals }),
-} = {}) {
+export function evaluateTypeScript(
+  source,
+  {
+    filename = "module.ts",
+    globals = {},
+    imports = {},
+    resolveImport,
+    context = vm.createContext({ ...globals }),
+  } = {},
+) {
   const compiled = ts.transpileModule(source, {
     fileName: String(filename),
     compilerOptions: {

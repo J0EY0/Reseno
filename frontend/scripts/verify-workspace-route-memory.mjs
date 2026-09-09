@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { matchPath } from "react-router-dom";
 import { loadTypeScriptModule } from "./typescript-module.mjs";
 
 const handoffs = await loadTypeScriptModule(
@@ -97,20 +96,21 @@ const clearedDeadToken = resolveWorkspaceLateralRoute(
 assert.equal(clearedDeadToken.data, null);
 assert.equal(clearedDeadToken.shouldScrubHistory, true);
 
-const routes = await loadTypeScriptModule(
-  new URL("../src/lib/workspace-route.ts", import.meta.url),
+const details = await loadTypeScriptModule(
+  new URL("../src/lib/workspace-detail-route-handoff.ts", import.meta.url),
   {
     imports: {
-      "react-router-dom": { matchPath },
       "@/lib/workspace-route-handoff": handoffs,
     },
   },
 );
 const templateData = {
-  customTemplates: [{
-    id: "custom-a",
-    layout: { images: [{ src: "A".repeat(5 * 1024 * 1024) }] },
-  }],
+  customTemplates: [
+    {
+      id: "custom-a",
+      layout: { images: [{ src: "A".repeat(5 * 1024 * 1024) }] },
+    },
+  ],
   defaultTemplateIds: { zh: "minimal", en: "minimal" },
 };
 const detailData = {
@@ -118,24 +118,28 @@ const detailData = {
   routeData: { ...templateData, modelConfigs: [], agentSettings: {} },
   versions: [],
 };
-const detailState = routes.createResumeDetailRouteHandoff(detailData, 1, 2);
+const detailState = details.createResumeDetailRouteHandoff(detailData, 1, 2);
 assert.ok(
   JSON.stringify(detailState).length < 256,
   "Resume detail history must not serialize document or template images.",
 );
 assert.equal(
-  routes.getResumeDetailRouteHandoff(structuredClone(detailState), "resume-a").payload,
+  details.getResumeDetailRouteHandoff(structuredClone(detailState), "resume-a")
+    .payload,
   detailData,
 );
 assert.equal(
-  routes.getResumeDetailRouteHandoff(detailState, "another-resume"),
+  details.getResumeDetailRouteHandoff(detailState, "another-resume"),
   null,
 );
 assert.equal(
-  routes.getResumeDetailRouteHandoff({ ...detailState, token: "missing" }, "resume-a"),
+  details.getResumeDetailRouteHandoff(
+    { ...detailState, token: "missing" },
+    "resume-a",
+  ),
   null,
 );
-const templateState = routes.createTemplateDetailRouteHandoff(
+const templateState = details.createTemplateDetailRouteHandoff(
   "custom-a",
   templateData,
   "en",
@@ -145,18 +149,30 @@ assert.ok(
   "Template detail history must not serialize the template catalog.",
 );
 assert.equal(
-  routes.getTemplateDetailRouteHandoff(structuredClone(templateState), "custom-a").data,
+  details.getTemplateDetailRouteHandoff(
+    structuredClone(templateState),
+    "custom-a",
+  ).data,
   templateData,
 );
 assert.equal(
-  routes.getTemplateDetailRouteHandoff(templateState, "another-template"),
+  details.getTemplateDetailRouteHandoff(templateState, "another-template"),
   null,
 );
 handoffs.releaseWorkspaceRouteHandoff(detailState);
-assert.equal(routes.getResumeDetailRouteHandoff(detailState, "resume-a"), null);
-assert.ok(routes.getTemplateDetailRouteHandoff(templateState, "custom-a"));
+assert.equal(
+  details.getResumeDetailRouteHandoff(detailState, "resume-a"),
+  null,
+);
+assert.ok(details.getTemplateDetailRouteHandoff(templateState, "custom-a"));
 clearWorkspaceRouteMemory();
-assert.equal(routes.getResumeDetailRouteHandoff(detailState, "resume-a"), null);
-assert.equal(routes.getTemplateDetailRouteHandoff(templateState, "custom-a"), null);
+assert.equal(
+  details.getResumeDetailRouteHandoff(detailState, "resume-a"),
+  null,
+);
+assert.equal(
+  details.getTemplateDetailRouteHandoff(templateState, "custom-a"),
+  null,
+);
 
 console.log("Workspace route memory verification passed.");

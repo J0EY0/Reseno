@@ -58,10 +58,7 @@ export function AppSidebar({
   ];
 
   return (
-    <Sidebar
-      collapsible="icon"
-      className="print:hidden"
-    >
+    <Sidebar collapsible="icon" className="print:hidden">
       <SidebarHeader className="min-h-20 justify-center overflow-hidden border-sidebar-border px-2 py-3 transition-[min-height] [transition-duration:var(--duration-move)] [transition-timing-function:var(--ease-move)] group-data-[collapsible=icon]:min-h-16">
         <div className="flex h-10 w-full items-center gap-3 overflow-hidden transition-[height] [transition-duration:var(--duration-move)] [transition-timing-function:var(--ease-move)] group-data-[collapsible=icon]:h-8">
           <div className="flex size-10 shrink-0 items-center justify-center transition-[width,height] [transition-duration:var(--duration-move)] [transition-timing-function:var(--ease-move)] group-data-[collapsible=icon]:size-8">
@@ -99,7 +96,9 @@ export function AppSidebar({
                     >
                       <NavLink
                         to={getWorkspacePath(item.id)}
-                        aria-current={activeView === item.id ? "page" : undefined}
+                        aria-current={
+                          activeView === item.id ? "page" : undefined
+                        }
                         aria-busy={isPending || undefined}
                         onClick={(event) => {
                           setOpenMobile(false);

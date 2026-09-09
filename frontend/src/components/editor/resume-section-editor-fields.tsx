@@ -1,21 +1,21 @@
-import { Suspense, lazy } from 'react'
+import { Suspense, lazy } from "react";
 
-import { FieldLegend, FieldSet } from '@/components/ui/field'
-import { Skeleton } from '@/components/ui/skeleton'
-import type { AppMessages } from '@/i18n'
-import { isRichTextEmpty, serializeHighlightsToHtml } from '@/lib/rich-text'
+import { FieldLegend, FieldSet } from "@/components/ui/field";
+import { Skeleton } from "@/components/ui/skeleton";
+import type { AppMessages } from "@/i18n";
+import { isRichTextEmpty, serializeHighlightsToHtml } from "@/lib/rich-text";
 
 const RichHighlightsEditor = lazy(() =>
-  import('./rich-highlights-editor').then((module) => ({
+  import("./rich-highlights-editor").then((module) => ({
     default: module.RichHighlightsEditor,
   })),
-)
+);
 
 export const compactResumeFieldClassName =
-  'border-border/60 bg-muted/35 shadow-none focus-visible:border-ring/50 focus-visible:ring-1 focus-visible:ring-ring/20'
+  "border-border/60 bg-muted/35 shadow-none focus-visible:border-ring/50 focus-visible:ring-1 focus-visible:ring-ring/20";
 
 function RichHighlightsEditorSkeleton({ value }: { value: string[] }) {
-  const editorValue = serializeHighlightsToHtml(value)
+  const editorValue = serializeHighlightsToHtml(value);
 
   return (
     <div className="overflow-hidden rounded-lg border border-border/70 bg-muted/30">
@@ -29,12 +29,12 @@ function RichHighlightsEditorSkeleton({ value }: { value: string[] }) {
           <div
             aria-hidden="true"
             className="tiptap rich-text-editor rich-text-editor-scroll invisible max-h-[160px] min-h-[120px] cursor-text overflow-y-auto overscroll-contain text-sm leading-[1.12] text-foreground outline-none"
-            dangerouslySetInnerHTML={{ __html: editorValue || '<p></p>' }}
+            dangerouslySetInnerHTML={{ __html: editorValue || "<p></p>" }}
           />
         </Skeleton>
       </div>
     </div>
-  )
+  );
 }
 
 export function HighlightsField({
@@ -42,9 +42,9 @@ export function HighlightsField({
   value,
   onChange,
 }: {
-  t: AppMessages
-  value: string[]
-  onChange: (value: string[]) => void
+  t: AppMessages;
+  value: string[];
+  onChange: (value: string[]) => void;
 }) {
   return (
     <FieldSet className="min-w-0 gap-2 md:col-span-2">
@@ -64,7 +64,7 @@ export function HighlightsField({
         />
       </Suspense>
     </FieldSet>
-  )
+  );
 }
 
 export function SimpleContentField({
@@ -72,9 +72,9 @@ export function SimpleContentField({
   value,
   onChange,
 }: {
-  t: AppMessages
-  value: string
-  onChange: (value: string) => void
+  t: AppMessages;
+  value: string;
+  onChange: (value: string) => void;
 }) {
   return (
     <FieldSet className="min-w-0 gap-2">
@@ -98,5 +98,5 @@ export function SimpleContentField({
         />
       </Suspense>
     </FieldSet>
-  )
+  );
 }

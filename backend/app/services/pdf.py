@@ -1,6 +1,5 @@
 import json
 import logging
-import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -15,8 +14,6 @@ from playwright.sync_api import (
     Browser,
     BrowserContext,
     Page,
-    Playwright,
-    sync_playwright,
 )
 from playwright.sync_api import (
     Error as PlaywrightError,
@@ -29,6 +26,7 @@ from app.config import get_settings
 from app.document_locales import DocumentLocale
 from app.schemas.exports import ExportResumeRenderRequest
 from app.services.render_assets import route_render_image
+from app.services.resume_renderer import ResumeRenderer
 
 EXPORT_FILE_TTL = timedelta(hours=1)
 logger = logging.getLogger(__name__)
@@ -56,12 +54,6 @@ def create_export_id() -> str:
     """Create a unique id for one generated export file."""
 
     return f"export-{uuid4().hex}"
-
-
-def datetime_now_iso() -> str:
-    """Return the current UTC time as an ISO string."""
-
-    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 def export_expires_at(export_path: Path) -> str:
@@ -115,7 +107,7 @@ def _normalize_render_base_url() -> str:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid frontend render base URL.",
+            detail="EXPORT_RENDER_URL_INVALID",
         )
 
     return base_url
@@ -150,37 +142,6 @@ def build_render_url(
     )
 
 
-def _get_chromium_executable() -> str | None:
-    """Find a locally installed Chromium-based browser for Playwright."""
-
-    configured = os.getenv("PLAYWRIGHT_CHROMIUM_EXECUTABLE")
-    candidates = [
-        configured,
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        "/Applications/Chromium.app/Contents/MacOS/Chromium",
-        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-    ]
-
-    for candidate in candidates:
-        if candidate and Path(candidate).exists():
-            return candidate
-
-    return None
-
-
-def _launch_browser(playwright: Playwright) -> Browser:
-    """Launch the configured Chromium browser for one export operation."""
-
-    executable_path = _get_chromium_executable()
-    if executable_path:
-        return playwright.chromium.launch(
-            headless=True,
-            executable_path=executable_path,
-        )
-
-    return playwright.chromium.launch(headless=True)
-
-
 def _create_render_context(
     browser: Browser,
     *,
@@ -196,22 +157,26 @@ def _create_render_context(
         device_scale_factor=device_scale_factor,
         service_workers="block",
     )
-    context.route("**/*", route_render_image)
-    if access_token and token_expires_at:
-        auth_session = {
-            "username": username or "resume-render",
-            "authenticatedAt": datetime_now_iso(),
-            "accessToken": access_token,
-            "expiresAt": token_expires_at,
-        }
-        render_base = json.dumps(_normalize_render_base_url())
-        context.add_init_script(
-            f"if (window.location.origin === new URL({render_base}).origin) {{"
-            "window.localStorage.setItem("
-            "'reseno-auth-session', "
-            f"{json.dumps(json.dumps(auth_session))}"
-            ");}",
-        )
+    try:
+        context.route("**/*", route_render_image)
+        if access_token and token_expires_at:
+            auth_session = {
+                "username": username or "resume-render",
+                "accessToken": access_token,
+                "expiresAt": token_expires_at,
+            }
+            render_base = json.dumps(_normalize_render_base_url())
+            context.add_init_script(
+                f"if (window.location.origin === new URL({render_base}).origin) {{"
+                "window.localStorage.setItem("
+                "'reseno-auth-session', "
+                f"{json.dumps(json.dumps(auth_session))}"
+                ");}",
+            )
+
+    except BaseException:
+        context.close()
+        raise
 
     return context
 
@@ -232,6 +197,7 @@ def write_resume_pdf(
     request: ExportResumeRenderRequest,
     *,
     document_locale: DocumentLocale,
+    renderer: ResumeRenderer,
     access_token: str | None = None,
     token_expires_at: str | None = None,
     username: str | None = None,
@@ -245,50 +211,46 @@ def write_resume_pdf(
     render_url = build_render_url(request, document_locale)
     timeout = settings.pdf_render_timeout_ms
 
-    try:
-        with sync_playwright() as playwright:
-            browser = _launch_browser(playwright)
-            context = _create_render_context(
-                browser,
-                access_token=access_token,
-                token_expires_at=token_expires_at,
-                username=username,
-            )
+    def render(browser: Browser) -> Path:
+        context = _create_render_context(
+            browser,
+            access_token=access_token,
+            token_expires_at=token_expires_at,
+            username=username,
+        )
 
+        try:
             page = context.new_page()
+            _wait_for_resume_render(page, render_url, timeout)
+            page.emulate_media(media="print")
+            page.pdf(
+                path=str(export_path),
+                format="A4",
+                print_background=True,
+                prefer_css_page_size=True,
+                margin={
+                    "top": "0",
+                    "right": "0",
+                    "bottom": "0",
+                    "left": "0",
+                },
+            )
+        finally:
+            context.close()
+        return export_path
 
-            try:
-                _wait_for_resume_render(page, render_url, timeout)
-                page.emulate_media(media="print")
-                page.pdf(
-                    path=str(export_path),
-                    format="A4",
-                    print_background=True,
-                    prefer_css_page_size=True,
-                    margin={
-                        "top": "0",
-                        "right": "0",
-                        "bottom": "0",
-                        "left": "0",
-                    },
-                )
-            finally:
-                browser.close()
+    try:
+        return renderer.render(render)
     except PlaywrightTimeoutError as exc:
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            detail="Timed out while rendering the resume PDF.",
+            detail="PDF_RENDER_TIMEOUT",
         ) from exc
     except PlaywrightError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=(
-                "Unable to render PDF. Install Playwright browsers or set "
-                "PLAYWRIGHT_CHROMIUM_EXECUTABLE to a Chromium-based browser."
-            ),
+            detail="PDF_RENDER_FAILED",
         ) from exc
-
-    return export_path
 
 
 def get_image_export_path(export_id: str, *, is_archive: bool) -> Path:
@@ -316,6 +278,7 @@ def write_resume_images(
     request: ExportResumeRenderRequest,
     *,
     document_locale: DocumentLocale,
+    renderer: ResumeRenderer,
     access_token: str | None = None,
     token_expires_at: str | None = None,
     username: str | None = None,
@@ -327,69 +290,65 @@ def write_resume_images(
     render_url = build_render_url(request, document_locale)
     timeout = settings.pdf_render_timeout_ms
 
-    try:
-        with sync_playwright() as playwright:
-            browser = _launch_browser(playwright)
-            context = _create_render_context(
-                browser,
-                access_token=access_token,
-                token_expires_at=token_expires_at,
-                username=username,
-                device_scale_factor=2,
-            )
+    def render(browser: Browser) -> ResumeImageExportResult:
+        context = _create_render_context(
+            browser,
+            access_token=access_token,
+            token_expires_at=token_expires_at,
+            username=username,
+            device_scale_factor=2,
+        )
+        try:
             page = context.new_page()
-
-            try:
-                _wait_for_resume_render(page, render_url, timeout)
-                page.emulate_media(media="print")
-                resume_pages = page.locator("[data-export-root='resume-page']")
-                page_count = resume_pages.count()
-                if page_count < 1:
-                    raise HTTPException(
-                        status_code=status.HTTP_502_BAD_GATEWAY,
-                        detail="The resume renderer returned no pages.",
-                    )
-
-                is_archive = page_count > 1
-                export_path = get_image_export_path(
-                    export_id,
-                    is_archive=is_archive,
+            _wait_for_resume_render(page, render_url, timeout)
+            page.emulate_media(media="print")
+            resume_pages = page.locator("[data-export-root='resume-page']")
+            page_count = resume_pages.count()
+            if page_count < 1:
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="EXPORT_RENDERER_NO_PAGES",
                 )
-                if is_archive:
-                    with ZipFile(export_path, "w", ZIP_DEFLATED) as archive:
-                        for index in range(page_count):
-                            image = resume_pages.nth(index).screenshot(
-                                type="png",
-                                animations="disabled",
-                            )
-                            archive.writestr(f"page-{index + 1}.png", image)
-                else:
-                    image = resume_pages.first.screenshot(
-                        type="png",
-                        animations="disabled",
-                    )
-                    export_path.write_bytes(image)
-            finally:
-                browser.close()
+
+            is_archive = page_count > 1
+            export_path = get_image_export_path(
+                export_id,
+                is_archive=is_archive,
+            )
+            if is_archive:
+                with ZipFile(export_path, "w", ZIP_DEFLATED) as archive:
+                    for index in range(page_count):
+                        image = resume_pages.nth(index).screenshot(
+                            type="png",
+                            animations="disabled",
+                        )
+                        archive.writestr(f"page-{index + 1}.png", image)
+            else:
+                image = resume_pages.first.screenshot(
+                    type="png",
+                    animations="disabled",
+                )
+                export_path.write_bytes(image)
+        finally:
+            context.close()
+        return ResumeImageExportResult(
+            path=export_path,
+            page_count=page_count,
+            is_archive=is_archive,
+        )
+
+    try:
+        return renderer.render(render)
     except PlaywrightTimeoutError as exc:
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            detail="Timed out while rendering resume images.",
+            detail="IMAGE_RENDER_TIMEOUT",
         ) from exc
     except PlaywrightError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=(
-                "Unable to render resume images. Install Playwright browsers or set "
-                "PLAYWRIGHT_CHROMIUM_EXECUTABLE to a Chromium-based browser."
-            ),
+            detail="IMAGE_RENDER_FAILED",
         ) from exc
-
-    return ResumeImageExportResult(
-        path=export_path,
-        page_count=page_count,
-        is_archive=is_archive,
-    )
 
 
 def require_export_file(export_id: str) -> Path:
@@ -407,7 +366,7 @@ def require_export_file(export_id: str) -> Path:
     if not export_path.exists():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Export file not found.",
+            detail="EXPORT_FILE_NOT_FOUND",
         )
 
     return export_path
@@ -431,5 +390,5 @@ def require_image_export_file(export_id: str) -> Path:
 
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
-        detail="Export file not found.",
+        detail="EXPORT_FILE_NOT_FOUND",
     )

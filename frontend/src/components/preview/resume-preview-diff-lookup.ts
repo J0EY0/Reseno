@@ -18,10 +18,7 @@ export function createResumeDiffLookup(
   diffs: ResumeDraftDiff[],
 ): ResumeDiffLookup {
   const basicDiffByField = new Map<string, ResumeDraftDiff>();
-  const deletedItemDiffsBySectionId = new Map<
-    string,
-    ResumeDraftDiff[]
-  >();
+  const deletedItemDiffsBySectionId = new Map<string, ResumeDraftDiff[]>();
   const deletedSectionDiffs: ResumeDraftDiff[] = [];
   const itemDiffById = new Map<string, ItemDiffLookup>();
   const sectionDiffById = new Map<string, SectionDiffLookup>();

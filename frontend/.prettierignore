@@ -1,0 +1,5 @@
+node_modules/
+dist/
+pnpm-lock.yaml
+src/types/resume-edit-operation.generated.ts
+src/lib/template-presets.generated.ts

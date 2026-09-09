@@ -1,4 +1,5 @@
 import { toast } from "sonner";
+import { notifyApiError } from "@/lib/api-error-notifier";
 
 let activeToastId: string | number | undefined;
 
@@ -9,7 +10,9 @@ export function dismissWorkspaceLoadError() {
   }
 }
 
-export function showWorkspaceLoadError(message: string) {
-  dismissWorkspaceLoadError();
-  activeToastId = toast.error(message, { closeButton: true });
+export function showWorkspaceLoadError(error: unknown, message: string) {
+  notifyApiError(error, message, (text) => {
+    dismissWorkspaceLoadError();
+    activeToastId = toast.error(text, { closeButton: true });
+  });
 }

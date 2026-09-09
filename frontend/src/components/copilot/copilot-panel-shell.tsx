@@ -1,16 +1,16 @@
-import { Skeleton } from '@/components/ui/skeleton'
-import { TooltipProvider } from '@/components/ui/tooltip'
-import type { AppMessages } from '@/i18n'
-import type { ReactNode, Ref } from 'react'
+import { Skeleton } from "@/components/ui/skeleton";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import type { AppMessages } from "@/i18n";
+import type { ReactNode, Ref } from "react";
 
-import { useAgentComposerLayout } from './use-agent-composer-layout'
+import { useAgentComposerLayout } from "./use-agent-composer-layout";
 
 export function CopilotPanelShell({
   children,
   t,
 }: {
-  children: ReactNode
-  t: AppMessages
+  children: ReactNode;
+  t: AppMessages;
 }) {
   return (
     <TooltipProvider>
@@ -26,7 +26,7 @@ export function CopilotPanelShell({
         {children}
       </section>
     </TooltipProvider>
-  )
+  );
 }
 
 function AgentSessionLoading({ t }: { t: AppMessages }) {
@@ -46,7 +46,7 @@ function AgentSessionLoading({ t }: { t: AppMessages }) {
         {t.agentHistoryLoading}
       </p>
     </div>
-  )
+  );
 }
 
 export function CopilotPanelBodyFrame({
@@ -55,10 +55,10 @@ export function CopilotPanelBodyFrame({
   composerRef,
   conversationLayoutRef,
 }: {
-  children: ReactNode
-  composer: ReactNode
-  composerRef?: Ref<HTMLElement>
-  conversationLayoutRef?: Ref<HTMLDivElement>
+  children: ReactNode;
+  composer: ReactNode;
+  composerRef?: Ref<HTMLElement>;
+  conversationLayoutRef?: Ref<HTMLDivElement>;
 }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -81,11 +81,11 @@ export function CopilotPanelBodyFrame({
         </section>
       </div>
     </div>
-  )
+  );
 }
 
 export function AgentPanelLoadingBody({ t }: { t: AppMessages }) {
-  const { composerRef, conversationLayoutRef } = useAgentComposerLayout()
+  const { composerRef, conversationLayoutRef } = useAgentComposerLayout();
 
   return (
     <CopilotPanelBodyFrame
@@ -102,5 +102,5 @@ export function AgentPanelLoadingBody({ t }: { t: AppMessages }) {
         <AgentSessionLoading t={t} />
       </div>
     </CopilotPanelBodyFrame>
-  )
+  );
 }

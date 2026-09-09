@@ -35,10 +35,7 @@ export function TemplateVisualTab({
   return (
     <TabsContent
       value="visual"
-      className={cn(
-        "m-0 grid gap-1 px-1 py-4",
-        isReadonly && "opacity-70",
-      )}
+      className={cn("m-0 grid gap-1 px-1 py-4", isReadonly && "opacity-70")}
     >
       <TemplateColorField
         label={t.pageBackground}

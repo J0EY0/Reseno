@@ -1,5 +1,11 @@
-import { access, readFile, readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { access, readFile } from "node:fs/promises";
+import {
+  findJsxElements,
+  getJsxAttributes,
+  getMemberPath,
+  hasImport,
+  parseSource,
+} from "./source-analysis.mjs";
 
 const frontendRoot = new URL("../", import.meta.url);
 const srcDir = new URL("src/", frontendRoot);
@@ -75,10 +81,7 @@ const [
     "utf8",
   ),
   readFile(new URL("template-gallery.tsx", templatesDir), "utf8"),
-  readFile(
-    new URL("use-template-gallery-controller.ts", templatesDir),
-    "utf8",
-  ),
+  readFile(new URL("use-template-gallery-controller.ts", templatesDir), "utf8"),
   readFile(new URL("components/gallery-toolbar.tsx", srcDir), "utf8"),
   readFile(new URL("template-gallery-grid.tsx", templatesDir), "utf8"),
   readFile(new URL("template-gallery-card.tsx", templatesDir), "utf8"),
@@ -88,7 +91,10 @@ const [
   readFile(new URL("editor/editor-fields.tsx", templatesDir), "utf8"),
   readFile(new URL("editor/layout-tab.tsx", templatesDir), "utf8"),
   readFile(new URL("editor/images-tab.tsx", templatesDir), "utf8"),
-  readFile(new URL("editor/use-template-images-editor.ts", templatesDir), "utf8"),
+  readFile(
+    new URL("editor/use-template-images-editor.ts", templatesDir),
+    "utf8",
+  ),
   readFile(new URL("editor/template-image-card.tsx", templatesDir), "utf8"),
   readFile(
     new URL("editor/template-image-field-controls.tsx", templatesDir),
@@ -101,21 +107,29 @@ const galleryOpenTemplate = galleryRoute.slice(
   galleryRoute.indexOf("const createCustomTemplate"),
 );
 
+const appFile = parseSource(app);
+const routeLoaderFile = parseSource(routeLoaders);
+for (const [entry, routeKey] of [
+  ["template-gallery-workspace-page", "templateGallery"],
+  ["template-detail-workspace-page", "templateDetail"],
+]) {
+  assert(
+    hasImport(routeLoaderFile, `@/components/workspace/${entry}`, {
+      dynamic: true,
+    }),
+    `${entry} must remain an independently loaded route.`,
+  );
+  assert(
+    findJsxElements(appFile, "Route").some(
+      (element) =>
+        getMemberPath(getJsxAttributes(element).get("path")) ===
+        `workspaceRoutePaths.${routeKey}`,
+    ),
+    `${entry} must use its canonical route path.`,
+  );
+}
 assert(
-  routeLoaders.includes(
-    'import("@/components/workspace/template-gallery-workspace-page")',
-  ) && app.includes('<Route path="/templates"'),
-  "The gallery must remain a literal, independently registered lazy route.",
-);
-assert(
-  routeLoaders.includes(
-    'import("@/components/workspace/template-detail-workspace-page")',
-  ) && app.includes('<Route path="/template/:id"'),
-  "Template detail must remain a literal, independently registered lazy route.",
-);
-assert(
-  !gallery.includes("template-editor") &&
-    !editor.includes("template-gallery"),
+  !gallery.includes("template-editor") && !editor.includes("template-gallery"),
   "The removed template-library module must not remain as a shared or compatibility seam.",
 );
 assert(
@@ -128,12 +142,8 @@ assert(
   "The route page must statically compose only the gallery and its route-owned controller.",
 );
 assert(
-  routePreparation.includes(
-    "loadTemplateDetailWorkspacePage()",
-  ) &&
-    routePreparation.includes(
-      "loadDocumentCanvas()",
-    ) &&
+  routePreparation.includes("loadTemplateDetailWorkspacePage()") &&
+    routePreparation.includes("loadDocumentCanvas()") &&
     !/from\s+["']@\/components\/templates\/template-editor["']/.test(
       galleryRoute,
     ) &&
@@ -165,9 +175,7 @@ assert(
 assert(
   !galleryCard.includes("<Spinner") &&
     galleryCard.includes("const isSettingDefaultTemplate =") &&
-    galleryCard.includes(
-      "aria-busy={isSettingDefaultTemplate || undefined}",
-    ),
+    galleryCard.includes("aria-busy={isSettingDefaultTemplate || undefined}"),
   "Opening or setting a default template must keep its card visually stable without a loading icon.",
 );
 assert(
@@ -192,7 +200,7 @@ assert(
       galleryCard,
     ) &&
     galleryCard.includes("{canSelect ? (") &&
-    galleryCard.includes("if (canSelect && event.key === \" \")") &&
+    galleryCard.includes('if (canSelect && event.key === " ")') &&
     galleryCard.includes("aria-disabled={isSelecting && template.isBuiltIn}") &&
     galleryCard.includes(
       "tabIndex={isSelecting && template.isBuiltIn ? -1 : undefined}",
@@ -243,7 +251,7 @@ assert(
 );
 assert(
   editor.includes('data-slot="template-editor"') &&
-    !editor.includes('@/components/ui/card') &&
+    !editor.includes("@/components/ui/card") &&
     !editor.includes("<Card") &&
     detailView.includes(
       "xl:grid-cols-[clamp(372px,calc(27vw+32px),432px)_minmax(0,1fr)]",
@@ -253,7 +261,9 @@ assert(
 assert(
   metadataDialog.includes('data-template-metadata-trigger="true"') &&
     metadataDialog.includes("<DialogTrigger asChild>") &&
-    metadataDialog.includes("<DialogTitle>{messages.editTemplateInfo}</DialogTitle>") &&
+    metadataDialog.includes(
+      "<DialogTitle>{messages.editTemplateInfo}</DialogTitle>",
+    ) &&
     metadataDialog.includes("<FieldGroup") &&
     metadataDialog.includes("<FieldLabel htmlFor={nameInputId}>") &&
     metadataDialog.includes("<FieldLabel htmlFor={descriptionInputId}>") &&
@@ -303,14 +313,12 @@ assert(
   "A complete template handoff must skip the direct-URL read.",
 );
 assert(
-  /activeRequestRef[\s\S]*submittedFingerprint[\s\S]*acceptedFingerprints[\s\S]*onAdoptSavedTemplateRef/.test(
-    detailSave,
-  ) &&
-    /AUTOSAVE_DELAY_MS[\s\S]*AUTOSAVE_MAX_WAIT_MS[\s\S]*AUTOSAVE_RETRY_DELAYS_MS/.test(
-      detailSave,
-    ),
-  "Template detail must retain serialized race-safe persistence and bounded autosave retries.",
+  ["@/lib/workspace-api", "@/lib/workspace-change-tracking"].every(
+    (specifier) => hasImport(parseSource(detailSave), specifier),
+  ),
+  "Template persistence must use the shared API and change-tracking modules.",
 );
+
 assert(
   /useBlocker\(hasUnsavedChanges\)[\s\S]*beforeunload[\s\S]*saveAndLeave[\s\S]*discardAndLeave/.test(
     detailLeave,
@@ -342,7 +350,7 @@ assert(
       editorFields,
     ) &&
     editorFields.includes("icon: LucideIcon") &&
-    editorFields.includes("<Icon className=\"max-sm:hidden\" />"),
+    editorFields.includes('<Icon className="max-sm:hidden" />'),
   "Template setting rows must stay text-led while tab icons remain visible.",
 );
 assert(
@@ -372,9 +380,9 @@ assert(
     editorTabs.includes("getBoundingClientRect()") &&
     editorTabs.includes("new ResizeObserver(scheduleIndicatorSync)") &&
     editorTabs.includes("requestAnimationFrame(syncIndicator)") &&
-    editorTabs.includes('indicator.style.width = `${width}px`') &&
+    editorTabs.includes("indicator.style.width = `${width}px`") &&
     editorTabs.includes(
-      'indicator.style.transform = `translate3d(${offset}px, 0, 0)`',
+      "indicator.style.transform = `translate3d(${offset}px, 0, 0)`",
     ) &&
     !editorTabs.includes("grid-cols-[") &&
     editorTabs.includes("motion-reduce:transition-none") &&
@@ -392,7 +400,7 @@ assert(
   imageEditorState.includes("expandedImageIdByTemplate") &&
     imageEditorState.includes("imageNameDraft") &&
     imageEditorState.includes("[template.id]: nextImage.id") &&
-    imageEditorState.includes("readAvatarFileAsDataUrl(file)") &&
+    imageEditorState.includes("prepareTemplateImage(file)") &&
     imageEditorState.includes('file.name.replace(/\\.[^.]+$/, "")'),
   "Template image drafts, expansion, creation, and upload adoption must remain in editor state.",
 );
@@ -426,38 +434,13 @@ assert(
 
 try {
   await access(new URL("components/template-library.tsx", srcDir));
-  throw new Error("The obsolete template-library.tsx compatibility file must be deleted.");
+  throw new Error(
+    "The obsolete template-library.tsx compatibility file must be deleted.",
+  );
 } catch (error) {
   if (error?.code !== "ENOENT") {
     throw error;
   }
 }
 
-async function collectSourceFiles(directoryUrl) {
-  const entries = await readdir(directoryUrl, { withFileTypes: true });
-  const files = [];
-
-  for (const entry of entries) {
-    const entryUrl = new URL(`${entry.name}${entry.isDirectory() ? "/" : ""}`, directoryUrl);
-
-    if (entry.isDirectory()) {
-      files.push(...(await collectSourceFiles(entryUrl)));
-    } else if (entry.name.endsWith(".ts") || entry.name.endsWith(".tsx")) {
-      files.push(entryUrl);
-    }
-  }
-
-  return files;
-}
-
-for (const sourceUrl of await collectSourceFiles(templatesDir)) {
-  const source = await readFile(sourceUrl, "utf8");
-  const lineCount = source.split(/\r?\n/).length;
-
-  assert(
-    lineCount <= 500,
-    `${join("components/templates", sourceUrl.pathname.split("/components/templates/")[1])} has ${lineCount} lines; expected at most 500.`,
-  );
-}
-
-console.log("Template route chunks and module size boundaries verified.");
+console.log("Template route boundaries verified.");

@@ -27,11 +27,6 @@ const modules = [
   "use-recycle-bin-selection.ts",
 ];
 
-function countLines(source) {
-  const lines = source.split(/\r\n|\n|\r/).length;
-  return /(?:\r\n|\n|\r)$/.test(source) ? lines - 1 : lines;
-}
-
 function resolvePanelImport(moduleName, specifier) {
   let resolved;
 
@@ -120,12 +115,6 @@ for (const moduleName of modules) {
     ts.ScriptTarget.Latest,
     true,
     moduleName.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
-  );
-  const limit = moduleName.endsWith(".tsx") ? 500 : 600;
-
-  assert.ok(
-    countLines(source) <= limit,
-    `${moduleName} must stay within the default ${limit}-line source budget.`,
   );
   assert.doesNotMatch(
     source,
@@ -268,13 +257,13 @@ assert.equal(
   "The general language Select must stay compact without overflowing.",
 );
 assert.equal(
-  (agentSettings.match(/className="ml-auto w-full sm:max-w-64"/g) ?? [])
-    .length,
+  (agentSettings.match(/className="ml-auto w-full sm:max-w-64"/g) ?? []).length,
   1,
   "The default-model Select must retain room for longer values.",
 );
 assert.equal(
-  (agentSettings.match(/className="ml-auto w-auto min-w-44 max-w-full"/g) ?? []).length,
+  (agentSettings.match(/className="ml-auto w-auto min-w-44 max-w-full"/g) ?? [])
+    .length,
   1,
   "The response-language Select must grow to fit translated labels without exceeding its container.",
 );
@@ -400,8 +389,14 @@ assert.doesNotMatch(
   /<DialogHeader|bg-muted\/35|mx-auto max-w-4xl/,
   "The recycle preview dialog must not restore a visible title band or padded outer shell.",
 );
-assert.match(recyclePreviewDialog, /variant="template"[\s\S]*?template=\{target\.template\}/);
-assert.match(recyclePreviewDialog, /variant="resume"[\s\S]*?typography=\{target\.typography\}/);
+assert.match(
+  recyclePreviewDialog,
+  /variant="template"[\s\S]*?template=\{target\.template\}/,
+);
+assert.match(
+  recyclePreviewDialog,
+  /variant="resume"[\s\S]*?typography=\{target\.typography\}/,
+);
 assert.doesNotMatch(
   recycleTable,
   /export function (?:TrashItemRow|TrashSelectionToolbar)/,

@@ -242,21 +242,6 @@ def authenticate_owner(username: str, password: str) -> OwnerAccount | None:
     return _account_from_row(row)
 
 
-def owner_identity_matches(username: str, auth_revision: str) -> bool:
-    """Return whether token identity matches the current owner revision."""
-
-    with closing(connect_auth_database()) as conn:
-        row = _owner_row(conn)
-
-    return (
-        row is not None
-        and compare_digest(
-            str(row["username"]).encode("utf-8"), username.encode("utf-8")
-        )
-        and compare_digest(str(row["auth_revision"]), auth_revision)
-    )
-
-
 def update_owner_password(
     username: str,
     current_password: str,

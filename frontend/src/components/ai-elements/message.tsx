@@ -22,7 +22,7 @@ export const Message = ({ className, from, ...props }: MessageProps) => (
       from === "user"
         ? "is-user ml-auto max-w-[82%] items-end justify-end"
         : "is-assistant max-w-full",
-      className
+      className,
     )}
     {...props}
   />
@@ -40,7 +40,7 @@ export const MessageContent = ({
       "is-user:dark flex min-w-0 max-w-full flex-col gap-2 overflow-hidden break-words text-sm [overflow-wrap:anywhere]",
       "group-[.is-user]:ml-auto group-[.is-user]:rounded-lg group-[.is-user]:bg-secondary group-[.is-user]:px-4 group-[.is-user]:py-3 group-[.is-user]:text-foreground",
       "group-[.is-user]:w-fit group-[.is-user]:overflow-visible group-[.is-assistant]:w-full group-[.is-assistant]:text-foreground",
-      className
+      className,
     )}
     {...props}
   >

@@ -3,10 +3,7 @@ import { useState, type FormEvent } from "react";
 import { toast } from "sonner";
 
 import type { AppMessages } from "@/i18n";
-import {
-  validateSetupForm,
-  type SetupFormErrors,
-} from "@/lib/auth-validation";
+import { validateSetupForm, type SetupFormErrors } from "@/lib/auth-validation";
 
 import { AuthPageShell } from "@/components/auth/auth-page-shell";
 import { PasswordField } from "@/components/auth/password-field";
@@ -126,9 +123,7 @@ export function SetupPage({
               ...current,
               password: undefined,
               confirmPassword:
-                confirmPassword === value
-                  ? undefined
-                  : current.confirmPassword,
+                confirmPassword === value ? undefined : current.confirmPassword,
             }));
           }}
         />

@@ -10,7 +10,9 @@ export function createAgentMarkdownComponents(
       const displayLabel = fieldLabels.get(token);
 
       if (displayLabel) {
-        return <span className="font-medium text-foreground">{displayLabel}</span>;
+        return (
+          <span className="font-medium text-foreground">{displayLabel}</span>
+        );
       }
 
       return (
@@ -35,7 +37,10 @@ export function getAgentMarkdownFallbackText(
   let projectedText = text;
 
   for (const [token, displayLabel] of fieldLabels) {
-    projectedText = projectedText.replaceAll(`\`${token}\``, () => displayLabel);
+    projectedText = projectedText.replaceAll(
+      `\`${token}\``,
+      () => displayLabel,
+    );
   }
 
   return projectedText;

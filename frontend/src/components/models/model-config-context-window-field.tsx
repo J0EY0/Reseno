@@ -41,10 +41,13 @@ export function ModelConfigContextWindowField({
     failed: messages.contextWindowCatalogFailed,
   };
 
-  useLayoutEffect(() => () => {
-    requestRef.current?.abort();
-    requestRef.current = null;
-  }, [provider, model, value]);
+  useLayoutEffect(
+    () => () => {
+      requestRef.current?.abort();
+      requestRef.current = null;
+    },
+    [provider, model, value],
+  );
 
   async function lookupContextWindow() {
     if (!model.trim() || requestRef.current) {
@@ -108,7 +111,9 @@ export function ModelConfigContextWindowField({
           aria-busy={loading}
           onClick={() => void lookupContextWindow()}
         >
-          {loading ? <Spinner data-icon="inline-start" aria-hidden="true" /> : null}
+          {loading ? (
+            <Spinner data-icon="inline-start" aria-hidden="true" />
+          ) : null}
           {messages.contextWindowCatalog}
         </Button>
         <Input
@@ -125,7 +130,9 @@ export function ModelConfigContextWindowField({
             [
               error ? "model-context-window-error" : null,
               status ? "model-context-catalog-status" : null,
-            ].filter(Boolean).join(" ") || undefined
+            ]
+              .filter(Boolean)
+              .join(" ") || undefined
           }
           onChange={(event) => {
             requestRef.current?.abort();

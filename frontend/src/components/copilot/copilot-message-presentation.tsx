@@ -1,7 +1,4 @@
-import {
-  Message,
-  MessageContent,
-} from "@/components/ai-elements/message";
+import { Message, MessageContent } from "@/components/ai-elements/message";
 import type { AppMessages } from "@/i18n";
 import { getAgentDisplayFieldLabels } from "@/lib/agent-message-rendering";
 import { lazy, memo, Suspense, useMemo } from "react";
@@ -23,12 +20,12 @@ function hasAssistantRenderableContent(message: AgentPanelMessage) {
 
   return Boolean(
     message.text.trim() ||
-      response?.timeline?.some(
-        (part) => part.text?.trim() || part.toolIds?.length,
-      ) ||
-      response?.tools?.length ||
-      response?.edits?.length ||
-      response?.sources?.length,
+    response?.timeline?.some(
+      (part) => part.text?.trim() || part.toolIds?.length,
+    ) ||
+    response?.tools?.length ||
+    response?.edits?.length ||
+    response?.sources?.length,
   );
 }
 
@@ -93,10 +90,7 @@ export const AgentAssistantMessageRow = memo(function AgentAssistantMessageRow({
         )}
         {response?.edits?.length ? (
           <Suspense fallback={null}>
-            <AgentChangeSummary
-              response={response}
-              t={t}
-            />
+            <AgentChangeSummary response={response} t={t} />
           </Suspense>
         ) : null}
       </MessageContent>

@@ -120,7 +120,10 @@ assert.equal(
   ),
   true,
 );
-assert.equal(isDynamicImportFailure(new Error("ordinary render failure")), false);
+assert.equal(
+  isDynamicImportFailure(new Error("ordinary render failure")),
+  false,
+);
 
 const uninstall = installDynamicImportRecovery();
 const preloadErrorListener = listeners.get("vite:preloadError");
@@ -160,7 +163,11 @@ assert.equal(
   ),
   true,
 );
-assert.equal(reloadCount, 2, "A different route gets its own recovery attempt.");
+assert.equal(
+  reloadCount,
+  2,
+  "A different route gets its own recovery attempt.",
+);
 assert.equal(
   tryReloadAfterDynamicImportFailure(new Error("ordinary render failure")),
   false,

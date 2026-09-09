@@ -22,7 +22,7 @@ pytestmark = [
 
 def _open_basic_info(page: Page) -> None:
     page.get_by_role("button", name="基本信息: 展开或收起模块", exact=True).click()
-    expect(page.locator('input[name="name"]')).to_be_visible()
+    expect(page.get_by_role("textbox", name="姓名", exact=True)).to_be_visible()
 
 
 @pytest.mark.parametrize(
@@ -81,7 +81,7 @@ def test_version_response_preserves_new_editor_title_and_format_input(
             ).get_by_role("button").last.click()
         assert pending
 
-        name_input = page.locator('input[name="name"]')
+        name_input = page.get_by_role("textbox", name="姓名", exact=True)
         name_input.fill("Name typed during history request")
         page.get_by_role("button", name="修改简历标题", exact=True).click()
         dialog = page.get_by_role("dialog", name="修改简历标题", exact=True)
@@ -96,7 +96,7 @@ def test_version_response_preserves_new_editor_title_and_format_input(
         with page.expect_response(lambda response: "/versions/" in response.url):
             pending.pop().continue_()
         page.unroute(pattern)
-        expect(name_input).to_have_value("Name typed during history request")
+        expect(name_input).to_have_text("Name typed during history request")
         expect(page.locator("header h1[title]")).to_have_text(
             "Title typed during history request"
         )
@@ -115,7 +115,7 @@ def test_version_response_preserves_new_editor_title_and_format_input(
         saved = page.request.get(f"{frontend_url}/api/resumes/{resume_id}").json()[
             "data"
         ]["resume"]
-        assert saved["resume"]["basic"]["name"] == name_input.input_value()
+        assert saved["resume"]["basic"]["name"] == name_input.inner_text()
         assert saved["title"] == "Title typed during history request"
         assert saved["typography"]["fontSize"] == 20
     finally:
@@ -177,7 +177,7 @@ def test_json_export_uses_saved_document_and_matching_custom_template(
         resume_id = response.json()["data"]["resume"]["id"]
         page.goto(f"{frontend_url}/resume/{resume_id}", wait_until="networkidle")
         _open_basic_info(page)
-        name_input = page.locator('input[name="name"]')
+        name_input = page.get_by_role("textbox", name="姓名", exact=True)
         name_input.fill("Saved export name")
         page.route(f"**/api/resumes/{resume_id}?*", hold_first_save)
         with page.expect_download() as download_info:
@@ -198,7 +198,7 @@ def test_json_export_uses_saved_document_and_matching_custom_template(
             "Saved export name"
         )
         assert artifact["templates"][0]["definition"]["name"] == "Snapshot A"
-        expect(name_input).to_have_value("Newer live name")
+        expect(name_input).to_have_text("Newer live name")
         page.get_by_role("button", name="格式", exact=True).click()
         expect(page.get_by_role("combobox", name="应用模板", exact=True)).to_have_text(
             "Snapshot B"

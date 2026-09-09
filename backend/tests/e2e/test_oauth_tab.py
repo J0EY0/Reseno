@@ -573,9 +573,7 @@ def test_github_binding_identity_failure_retries_without_reauthorizing(
     flow.page.get_by_role("button", name="Retry", exact=True).click()
     expect(flow.page.get_by_text("connected-owner", exact=True)).to_be_visible()
     expect(flow.page.get_by_role("button", name="Disconnect GitHub")).to_be_enabled()
-    assert (
-        flow.page.evaluate("localStorage.getItem('reseno-auth-session')") == session
-    )
+    assert flow.page.evaluate("localStorage.getItem('reseno-auth-session')") == session
     assert len(flow.starts) == 1
     assert len(flow.completions) == 1
     flow.assert_binding_toast()
@@ -600,9 +598,30 @@ def test_github_callback_without_opener_never_exchanges_or_loads_workspace(
     assert [urlparse(request.url).path for request in flow.requests] == [
         "/api/auth/oauth/github/callback"
     ]
-    assert (
-        flow.page.evaluate("localStorage.getItem('reseno-auth-session')") is not None
+    assert flow.page.evaluate("localStorage.getItem('reseno-auth-session')") is not None
+
+
+@pytest.mark.browser_smoke
+def test_direct_callback_route_keeps_session_and_clears_unused_credentials(
+    tab_flow: Callable[..., TabFlow],
+) -> None:
+    flow = tab_flow("bind")
+    flow.page.goto(
+        f"{flow.url}/auth/callback?code=unused#oauth_code=unused",
+        wait_until="networkidle",
     )
+    expect(
+        flow.page.get_by_text(
+            "Could not connect to the original page. Close this tab and try again.",
+            exact=True,
+        )
+    ).to_be_visible()
+    expect(
+        flow.page.get_by_role("button", name="Close tab", exact=True)
+    ).to_be_visible()
+    assert flow.page.url == f"{flow.url}/auth/callback"
+    assert not flow.requests
+    assert flow.page.evaluate("localStorage.getItem('reseno-auth-session')") is not None
 
 
 def test_github_callback_requires_acknowledgement_from_original_page(
@@ -617,9 +636,7 @@ def test_github_callback_requires_acknowledgement_from_original_page(
         )
     tab = opened.value
     expect(tab).to_have_url(f"{flow.url}/api/auth/oauth/github/callback")
-    tab.evaluate(
-        "window.postMessage({type: 'reseno:oauth:received'}, location.origin)"
-    )
+    tab.evaluate("window.postMessage({type: 'reseno:oauth:received'}, location.origin)")
     expect(tab).to_have_url(f"{flow.url}/auth/callback", timeout=10_000)
     expect(
         tab.get_by_text(
@@ -670,7 +687,5 @@ def test_github_completion_rejects_server_intent_mismatch(
     expect(flow.page.locator('[data-slot="field-error"]')).to_have_count(0)
     assert tab.is_closed()
     flow.assert_parent()
-    assert (
-        flow.page.evaluate("localStorage.getItem('reseno-auth-session')") == session
-    )
+    assert flow.page.evaluate("localStorage.getItem('reseno-auth-session')") == session
     assert len(flow.completions) == 1

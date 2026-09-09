@@ -34,12 +34,16 @@ export function useOAuthLogin({
   onComplete: (signal: AbortSignal) => Promise<void>;
   t: AppMessages;
 }) {
-  const [callback] = useState(() => window.location.pathname === "/login"
-    ? parseOAuthLoginCallback(window.location.hash)
-    : null);
+  const [callback] = useState(() =>
+    window.location.pathname === "/login"
+      ? parseOAuthLoginCallback(window.location.hash)
+      : null,
+  );
   const callbackConsumedRef = useRef(false);
   const [requestError, setRequestError] = useState<string | null>(null);
-  const [isCompleting, setIsCompleting] = useState(Boolean(callback && "code" in callback));
+  const [isCompleting, setIsCompleting] = useState(
+    Boolean(callback && "code" in callback),
+  );
   const [isPending, setIsPending] = useState(Boolean(callback));
   const [availability, setAvailability] = useState<GitHubAvailability>({
     status: "loading",
@@ -54,31 +58,44 @@ export function useOAuthLogin({
     getAuthSetupStatus().then(
       (result) => {
         if (active) {
-          setAvailability({ status: "ready", available: result.githubLoginAvailable });
+          setAvailability({
+            status: "ready",
+            available: result.githubLoginAvailable,
+          });
         }
       },
       (error: unknown) => {
         if (active) {
           setAvailability({
             status: "error",
-            message: error instanceof Error ? error.message : t.oauthStartFailed,
+            message:
+              error instanceof Error ? error.message : t.oauthStartFailed,
           });
         }
       },
     );
-    return () => { active = false; };
+    return () => {
+      active = false;
+    };
   }, [enabled, loadAttempt, t.oauthStartFailed]);
 
-  useEffect(() => () => {
-    const controller = requestRef.current;
-    requestRef.current = null;
-    controller?.abort();
-  }, []);
+  useEffect(
+    () => () => {
+      const controller = requestRef.current;
+      requestRef.current = null;
+      controller?.abort();
+    },
+    [],
+  );
 
   function cancelSignIn() {
     if (callback && !callbackConsumedRef.current) {
       callbackConsumedRef.current = true;
-      window.history.replaceState(window.history.state, "", `${window.location.pathname}${window.location.search}`);
+      window.history.replaceState(
+        window.history.state,
+        "",
+        `${window.location.pathname}${window.location.search}`,
+      );
     }
     const controller = requestRef.current;
     requestRef.current = null;
@@ -103,17 +120,26 @@ export function useOAuthLogin({
   }, []);
 
   function showRequestError(error: unknown) {
-    if (isApiErrorCode(error, "OAUTH_NOT_CONFIGURED") || isApiErrorCode(error, "OAUTH_NOT_BOUND")) {
+    if (
+      isApiErrorCode(error, "OAUTH_NOT_CONFIGURED") ||
+      isApiErrorCode(error, "OAUTH_NOT_BOUND")
+    ) {
       setAvailability({ status: "ready", available: false });
       toast.info(t.oauthGithubNotBound, { closeButton: true });
     } else {
       const message = error instanceof Error ? error.message : "";
-      setRequestError(resolveOAuthLoginError(message, t, message || t.oauthStartFailed));
+      setRequestError(
+        resolveOAuthLoginError(message, t, message || t.oauthStartFailed),
+      );
     }
   }
 
   const consumeCallback = useEffectEvent(async (result: OAuthLoginCallback) => {
-    window.history.replaceState(window.history.state, "", `${window.location.pathname}${window.location.search}`);
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${window.location.pathname}${window.location.search}`,
+    );
     setRequestError(null);
     if ("error" in result) {
       setRequestError(resolveOAuthLoginError(result.error, t));
@@ -128,7 +154,11 @@ export function useOAuthLogin({
     try {
       await completeGitHubLogin(result.code, controller.signal, onComplete);
     } catch (error) {
-      if (!controller.signal.aborted && requestRef.current === controller && !isAbortError(error)) {
+      if (
+        !controller.signal.aborted &&
+        requestRef.current === controller &&
+        !isAbortError(error)
+      ) {
         showRequestError(error);
       }
     } finally {
@@ -148,11 +178,19 @@ export function useOAuthLogin({
       callbackConsumedRef.current = true;
       void consumeCallback(callback);
     });
-    return () => { active = false; };
+    return () => {
+      active = false;
+    };
   }, [callback, enabled]);
 
   async function signIn() {
-    if (!enabled || isPending || requestRef.current || availability.status !== "ready") return;
+    if (
+      !enabled ||
+      isPending ||
+      requestRef.current ||
+      availability.status !== "ready"
+    )
+      return;
 
     setRequestError(null);
     if (!availability.available) {
@@ -168,7 +206,11 @@ export function useOAuthLogin({
       await redirectToGitHubLogin(controller.signal);
       redirected = true;
     } catch (error) {
-      if (!controller.signal.aborted && requestRef.current === controller && !isAbortError(error)) {
+      if (
+        !controller.signal.aborted &&
+        requestRef.current === controller &&
+        !isAbortError(error)
+      ) {
         showRequestError(error);
       }
     } finally {

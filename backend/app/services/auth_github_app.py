@@ -1,4 +1,3 @@
-import os
 import secrets
 from contextlib import closing
 from dataclasses import dataclass, field
@@ -9,7 +8,7 @@ from urllib.parse import quote, urlsplit
 import httpx2
 from cryptography.fernet import Fernet
 
-from app.config import MASTER_KEY_ENV_NAME, get_settings
+from app.config import get_settings
 from app.schemas.common import (
     APP_MESSAGE_OAUTH_ALREADY_CONFIGURED,
     APP_MESSAGE_OAUTH_INVALID_ORIGIN,
@@ -69,8 +68,7 @@ def validate_public_origin(value: str) -> str:
 
 
 def _cipher() -> Fernet:
-    get_settings()
-    return Fernet(os.environ[MASTER_KEY_ENV_NAME].encode())
+    return Fernet(get_settings().master_key.encode())
 
 
 def github_app_configured() -> bool:

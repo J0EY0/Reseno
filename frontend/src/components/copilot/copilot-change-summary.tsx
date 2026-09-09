@@ -23,11 +23,7 @@ function formatCount(template: string, count: number) {
   return template.replace("{count}", String(count));
 }
 
-function formatReceipt(
-  template: string,
-  applied: number,
-  discarded: number,
-) {
+function formatReceipt(template: string, applied: number, discarded: number) {
   return template
     .replace("{applied}", String(applied))
     .replace("{discarded}", String(discarded));
@@ -54,18 +50,29 @@ export function AgentChangeSummary({
     return null;
   }
 
-  const applied = reviewItems.filter((item) => item.status === "applied").length;
-  const discarded = reviewItems.filter((item) => item.status === "discarded").length;
-  const superseded = reviewItems.filter((item) => item.status === "superseded").length;
-  const receipt = superseded === 0
-    ? formatReceipt(t.agentDraftResolutionReceipt, applied, discarded)
-    : applied === 0 && discarded === 0
-      ? t.agentDraftSuperseded
-      : [
-          applied > 0 ? formatCount(t.agentDraftAppliedCount, applied) : null,
-          discarded > 0 ? formatCount(t.agentDraftDiscardedCount, discarded) : null,
-          formatCount(t.agentDraftSupersededCount, superseded),
-        ].filter(Boolean).join(" · ");
+  const applied = reviewItems.filter(
+    (item) => item.status === "applied",
+  ).length;
+  const discarded = reviewItems.filter(
+    (item) => item.status === "discarded",
+  ).length;
+  const superseded = reviewItems.filter(
+    (item) => item.status === "superseded",
+  ).length;
+  const receipt =
+    superseded === 0
+      ? formatReceipt(t.agentDraftResolutionReceipt, applied, discarded)
+      : applied === 0 && discarded === 0
+        ? t.agentDraftSuperseded
+        : [
+            applied > 0 ? formatCount(t.agentDraftAppliedCount, applied) : null,
+            discarded > 0
+              ? formatCount(t.agentDraftDiscardedCount, discarded)
+              : null,
+            formatCount(t.agentDraftSupersededCount, superseded),
+          ]
+            .filter(Boolean)
+            .join(" · ");
 
   return (
     <div className="mt-3 grid justify-items-start gap-1.5">

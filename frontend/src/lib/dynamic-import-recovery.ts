@@ -1,5 +1,4 @@
-const DYNAMIC_IMPORT_RELOAD_GUARD_KEY =
-  "reseno-dynamic-import-reload-route";
+const DYNAMIC_IMPORT_RELOAD_GUARD_KEY = "reseno-dynamic-import-reload-route";
 
 const DYNAMIC_IMPORT_ERROR_PATTERN =
   /failed to fetch dynamically imported module|importing a module script failed|error loading dynamically imported module|chunkloaderror|loading chunk [^ ]+ failed/i;
@@ -31,9 +30,7 @@ function getErrorMessage(error: unknown): string | null {
   ) {
     return candidate.data.message;
   }
-  return typeof candidate.statusText === "string"
-    ? candidate.statusText
-    : null;
+  return typeof candidate.statusText === "string" ? candidate.statusText : null;
 }
 
 export function getApplicationRouteErrorDetails(error: unknown) {

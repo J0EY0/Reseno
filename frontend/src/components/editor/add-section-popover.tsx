@@ -7,24 +7,24 @@ import {
   ListPlus,
   Plus,
   type LucideIcon,
-} from 'lucide-react'
-import { useState } from 'react'
+} from "lucide-react";
+import { useState } from "react";
 
-import type { AppMessages } from '@/i18n'
-import { SECTION_KINDS, type SectionKind } from '@/types/resume'
+import type { AppMessages } from "@/i18n";
+import { SECTION_KINDS, type SectionKind } from "@/types/resume";
 
-import { Button } from '@/components/ui/button'
+import { Button } from "@/components/ui/button";
 import {
   Command,
   CommandGroup,
   CommandItem,
   CommandList,
-} from '@/components/ui/command'
+} from "@/components/ui/command";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
-} from '@/components/ui/popover'
+} from "@/components/ui/popover";
 
 const sectionIcons: Record<SectionKind, LucideIcon> = {
   education: GraduationCap,
@@ -33,20 +33,20 @@ const sectionIcons: Record<SectionKind, LucideIcon> = {
   publication: LibraryBig,
   achievement: Award,
   simple_list: ListPlus,
-}
+};
 
 export function AddSectionPopover({
   t,
   onSelect,
 }: {
-  t: AppMessages
-  onSelect: (kind: SectionKind) => void
+  t: AppMessages;
+  onSelect: (kind: SectionKind) => void;
 }) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(false);
 
   function selectKind(kind: SectionKind) {
-    setOpen(false)
-    onSelect(kind)
+    setOpen(false);
+    onSelect(kind);
   }
 
   return (
@@ -73,7 +73,7 @@ export function AddSectionPopover({
           >
             <CommandGroup>
               {SECTION_KINDS.map((kind) => {
-                const Icon = sectionIcons[kind]
+                const Icon = sectionIcons[kind];
 
                 return (
                   <CommandItem
@@ -84,18 +84,20 @@ export function AddSectionPopover({
                   >
                     <Icon aria-hidden="true" className="mt-0.5" />
                     <span className="grid min-w-0 gap-0.5">
-                      <span className="font-medium">{t.sectionTitles[kind]}</span>
+                      <span className="font-medium">
+                        {t.sectionTitles[kind]}
+                      </span>
                       <span className="text-xs text-muted-foreground">
                         {t.sectionDescriptions[kind]}
                       </span>
                     </span>
                   </CommandItem>
-                )
+                );
               })}
             </CommandGroup>
           </CommandList>
         </Command>
       </PopoverContent>
     </Popover>
-  )
+  );
 }

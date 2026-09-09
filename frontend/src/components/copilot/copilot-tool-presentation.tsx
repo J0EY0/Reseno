@@ -1,7 +1,4 @@
-import {
-  Message,
-  MessageContent,
-} from "@/components/ai-elements/message";
+import { Message, MessageContent } from "@/components/ai-elements/message";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import {
   Collapsible,
@@ -44,11 +41,7 @@ function getToolTimelineLabel(tool: AgentToolInvocation, t: AppMessages) {
   return t[getAgentToolLabelKey(tool, "complete")];
 }
 
-function formatCountMessage(
-  template: string,
-  count: number,
-  failedCount = 0,
-) {
+function formatCountMessage(template: string, count: number, failedCount = 0) {
   return template
     .replace("{count}", String(count))
     .replace("{failed}", String(failedCount));
@@ -215,10 +208,7 @@ export function AgentMessageTimeline({
 
   if (visibleParts.length === 0) {
     return isStreamingAssistant ? (
-      <AgentToolShimmerStatus
-        className="text-sm"
-        label={t.agentToolThinking}
-      />
+      <AgentToolShimmerStatus className="text-sm" label={t.agentToolThinking} />
     ) : null;
   }
 
@@ -229,7 +219,7 @@ export function AgentMessageTimeline({
           return (
             <div key={part.id}>
               <AgentAssistantResponse
-                  t={t}
+                t={t}
                 fieldLabels={fieldLabels}
                 isStreaming={part.id === activeTextPartId}
                 sources={part.id === lastTextPartId ? sources : undefined}

@@ -31,11 +31,7 @@ export function OAuthIdentitySettings({
     return (
       <SettingsRow icon={<GithubIcon />} label="GitHub">
         <div className="flex justify-end">
-          <Button
-            type="button"
-            variant="outline"
-            onClick={retryLoad}
-          >
+          <Button type="button" variant="outline" onClick={retryLoad}>
             {t.retry}
           </Button>
         </div>
@@ -58,7 +54,11 @@ export function OAuthIdentitySettings({
 
   return (
     <>
-      <SettingsRow icon={<GithubIcon />} label="GitHub" description={description}>
+      <SettingsRow
+        icon={<GithubIcon />}
+        label="GitHub"
+        description={description}
+      >
         <div
           className="flex min-w-0 items-center justify-end gap-3"
           aria-busy={!data || isPending}
@@ -87,13 +87,10 @@ export function OAuthIdentitySettings({
                 )}
                 {identity ? (
                   <span className="sr-only">
-                    {isPending ? t.oauthUpdating : t.oauthConnected}: {" "}
+                    {isPending ? t.oauthUpdating : t.oauthConnected}:{" "}
                   </span>
                 ) : null}
-                <span
-                  className="truncate"
-                  title={identity?.label}
-                >
+                <span className="truncate" title={identity?.label}>
                   {identity?.label ?? t.oauthNotConnected}
                 </span>
               </span>

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from sqlite3 import Connection, Row
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from fastapi import HTTPException, status
 
@@ -113,8 +113,10 @@ def _restore_template_json(template_id: str, content: bytes | None) -> None:
     restore_template_bytes(_template_path(template_id), content)
 
 
-def _read_template_json(template_id: str) -> dict[str, Any]:
-    """Load one stored template JSON file."""
+def _read_template_state(
+    template_id: str,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Load current content and its pending-edit checkpoint."""
 
     path = _template_path(template_id)
     if not path.exists():
@@ -123,7 +125,15 @@ def _read_template_json(template_id: str) -> dict[str, Any]:
             detail="Template JSON is missing.",
         )
 
-    return cast(dict[str, Any], json.loads(path.read_text(encoding="utf-8")))
+    stored = cast(dict[str, Any], json.loads(path.read_text(encoding="utf-8")))
+    checkpoint = stored.pop("_checkpoint", None)
+    return stored, checkpoint
+
+
+def _read_template_json(template_id: str) -> dict[str, Any]:
+    """Load template content without persistence metadata."""
+
+    return _read_template_state(template_id)[0]
 
 
 def _template_name(template_item: dict[str, Any]) -> str:
@@ -140,8 +150,9 @@ def _save_template_item(
     *,
     template_item: dict[str, Any],
     saved_at: str,
+    checkpoint: dict[str, Any] | None = None,
 ) -> None:
-    """Persist one template item without creating versions."""
+    """Persist current content and its pending-edit checkpoint together."""
 
     template_id = template_item.get("id")
     if not isinstance(template_id, str) or not template_id.strip():
@@ -174,7 +185,12 @@ def _save_template_item(
             saved_at,
         ),
     )
-    _write_template_json(template_id, template_item)
+    stored = (
+        {**template_item, "_checkpoint": checkpoint}
+        if checkpoint is not None
+        else template_item
+    )
+    _write_template_json(template_id, stored)
 
 
 def _load_template_items(
@@ -396,13 +412,34 @@ def create_template(payload: dict[str, Any]) -> dict[str, Any]:
     return {"template": template_item}
 
 
-def update_template(template_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-    """Replace one active custom template."""
+def get_template_detail(template_id: str) -> dict[str, Any]:
+    """Return editable template content and the last explicit save."""
+
+    with closing(connect()) as conn, conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = _require_custom_template_row(conn, template_id)
+        template_item, checkpoint = _read_template_state(row["id"])
+    return {"template": template_item, "checkpoint": checkpoint}
+
+
+def update_template(
+    template_id: str,
+    payload: dict[str, Any],
+    *,
+    save_mode: Literal["autosave", "checkpoint"] = "checkpoint",
+) -> dict[str, Any]:
+    """Save a draft or establish an explicit template checkpoint."""
 
     safe_template_id = _validate_template_id(template_id.strip())
     with closing(connect()) as conn, conn:
         conn.execute("BEGIN IMMEDIATE")
         row = _require_custom_template_row(conn, safe_template_id)
+        current, checkpoint = _read_template_state(safe_template_id)
+        if save_mode == "autosave":
+            if checkpoint is None:
+                checkpoint = current
+        else:
+            checkpoint = None
         saved_at = _next_saved_at(row["saved_at"])
         template_item = _build_template_item(
             template_id=row["id"], payload=payload, saved_at=saved_at
@@ -412,11 +449,39 @@ def update_template(template_id: str, payload: dict[str, Any]) -> dict[str, Any]
             template_id=safe_template_id,
             saved_at=saved_at,
             publish=lambda: _save_template_item(
-                conn, template_item=template_item, saved_at=saved_at
+                conn,
+                template_item=template_item,
+                saved_at=saved_at,
+                checkpoint=checkpoint,
             ),
             restore=lambda content: _restore_template_json(safe_template_id, content),
         )
-    return {"template": template_item}
+    return {"template": template_item, "checkpoint": checkpoint}
+
+
+def discard_template_changes(template_id: str) -> dict[str, Any]:
+    """Restore the last explicit save and finish the current draft."""
+
+    with closing(connect()) as conn, conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = _require_custom_template_row(conn, template_id)
+        current, checkpoint = _read_template_state(row["id"])
+        if checkpoint is None:
+            return {"template": current, "checkpoint": None}
+        saved_at = _next_saved_at(row["saved_at"])
+        template_item = _build_template_item(
+            template_id=row["id"], payload=checkpoint, saved_at=saved_at
+        )
+        publish_template(
+            conn,
+            template_id=row["id"],
+            saved_at=saved_at,
+            publish=lambda: _save_template_item(
+                conn, template_item=template_item, saved_at=saved_at
+            ),
+            restore=lambda content: _restore_template_json(row["id"], content),
+        )
+    return {"template": template_item, "checkpoint": None}
 
 
 def trash_template(template_id: str) -> dict[str, Any]:

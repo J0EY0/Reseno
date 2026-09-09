@@ -6,8 +6,11 @@ from starlette.concurrency import run_in_threadpool
 
 from app.exceptions import app_error_response
 from app.schemas.common import APP_CODE_UNAUTHORIZED, APP_MESSAGE_UNAUTHORIZED
-from app.services.auth_accounts import owner_identity_matches
-from app.services.auth_tokens import AuthTokenError, decode_access_token
+from app.services.auth_tokens import (
+    AuthOwnerChangedError,
+    AuthTokenError,
+    authenticate_access_token,
+)
 
 PUBLIC_API_PATHS = {
     "/api/auth/login",
@@ -59,7 +62,7 @@ async def jwt_auth_middleware(
     if (
         request.method == "OPTIONS"
         or not path.startswith("/api/")
-        or path in PUBLIC_API_PATHS
+        or path.removesuffix("/") in PUBLIC_API_PATHS
     ):
         return await call_next(request)
 
@@ -68,17 +71,11 @@ async def jwt_auth_middleware(
         return unauthorized_response("missing_token")
 
     try:
-        payload = await run_in_threadpool(decode_access_token, token)
+        payload = await run_in_threadpool(authenticate_access_token, token)
+    except AuthOwnerChangedError:
+        return unauthorized_response("owner_missing_or_changed")
     except AuthTokenError:
         return unauthorized_response("invalid_or_expired_token")
-
-    identity_matches = await run_in_threadpool(
-        owner_identity_matches,
-        payload.subject,
-        payload.auth_revision,
-    )
-    if not identity_matches:
-        return unauthorized_response("owner_missing_or_changed")
 
     request.state.auth_token = token
     request.state.auth_payload = payload

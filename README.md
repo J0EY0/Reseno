@@ -82,14 +82,34 @@ GitHub** to finish.
 cd backend
 uv sync --locked
 uv run --locked playwright install --only-shell chromium
-uv run --locked uvicorn app.main:app --reload
+uv run --locked uvicorn app.main:create_app --factory --reload
 ```
 
 The backend listens on `http://127.0.0.1:8000`.
 
+Run one worker and one replica per workspace. Agent execution and SSE replay
+belong to the running process; multiple workers cannot share them. The backend
+holds file locks on its business database, authentication directory and storage
+for its entire lifetime, and refuses a second instance that shares any of them.
+Keep these locations on persistent storage with working file-lock support.
+Do not load-balance one workspace across independent backend replicas.
+
+The application factory initializes configuration explicitly. Importing Python
+modules and reading settings do not create files or modify process environment
+variables. Public Swagger, ReDoc and OpenAPI endpoints are disabled; the Python
+application exposes `app.openapi()` for contract tooling.
+
+Database startup checks preserve existing data and reject incompatible schemas.
+Back up the keys, databases and storage together and use a release that supports
+the existing schema. Configure separate unused data, database and storage paths
+when creating a new workspace.
+
 Playwright's Chromium renders dynamic job pages and resume exports. It does not
-require Google Chrome to be installed. On a Linux server, install Chromium and
-its system dependencies during the build instead:
+require Google Chrome to be installed. Exports reuse one browser with a separate
+context per request; up to four requests can wait or render at once. Set
+`PLAYWRIGHT_CHROMIUM_EXECUTABLE` only when using an external Chromium explicitly.
+On a Linux server, install Chromium and its system dependencies during the build
+instead:
 
 ```bash
 uv run --locked playwright install --with-deps --only-shell chromium

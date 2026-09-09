@@ -34,7 +34,7 @@ def test_default_configuration_path_is_independent_of_data_directory(
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.chdir(tmp_path)
-    settings = config.get_settings()
+    settings = config.initialize_settings()
     assert settings.env_file_path == configuration
     assert settings.data_dir == data_dir
     assert settings.db_path == data_dir / "app.db"
@@ -53,11 +53,14 @@ def test_startup_does_not_write_complete_read_only_configuration(tmp_path, monke
     configuration.chmod(0o400)
     monkeypatch.setenv("APP_ENV_FILE", str(configuration))
     try:
-        settings = config.get_settings()
+        settings = config.initialize_settings()
         assert settings.env_file_path == configuration
         assert configuration.read_text() == content
-        for name in (config.MASTER_KEY_ENV_NAME, config.JWT_SECRET_ENV_NAME):
-            assert os.environ[name] == dotenv_values(configuration)[name]
+        values = dotenv_values(configuration)
+        assert settings.master_key == values[config.MASTER_KEY_ENV_NAME]
+        assert settings.jwt_secret == values[config.JWT_SECRET_ENV_NAME]
+        assert not os.environ.get(config.MASTER_KEY_ENV_NAME)
+        assert not os.environ.get(config.JWT_SECRET_ENV_NAME)
     finally:
         configuration.chmod(0o600)
 
@@ -67,7 +70,7 @@ def test_missing_configuration_is_created_to_persist_generated_keys(
 ):
     configuration = tmp_path / "application" / ".env"
     monkeypatch.setenv("APP_ENV_FILE", str(configuration))
-    settings = config.get_settings()
+    settings = config.initialize_settings()
     assert settings.env_file_path == configuration
     values = dotenv_values(configuration)
     Fernet(values[config.MASTER_KEY_ENV_NAME].encode("ascii"))
@@ -84,7 +87,7 @@ def test_complete_environment_keys_do_not_require_a_configuration_file(
         config.MASTER_KEY_ENV_NAME, Fernet.generate_key().decode("ascii")
     )
     monkeypatch.setenv(config.JWT_SECRET_ENV_NAME, "test-secret-" * 4)
-    config.get_settings()
+    config.initialize_settings()
     assert not configuration.parent.exists()
 
 
@@ -101,7 +104,7 @@ def test_environment_overrides_configuration_without_changing_it(tmp_path, monke
     monkeypatch.setenv(config.MASTER_KEY_ENV_NAME, master_key)
     monkeypatch.delenv("APP_DB_PATH", raising=False)
     monkeypatch.delenv("APP_STORAGE_DIR", raising=False)
-    settings = config.get_settings()
+    settings = config.initialize_settings()
     assert settings.data_dir == tmp_path / "from-environment"
     assert settings.db_path == settings.data_dir / "app.db"
     assert settings.storage_dir == settings.data_dir / "storage"
@@ -125,6 +128,6 @@ def test_missing_secrets_cannot_silently_replace_keys_for_existing_data(
     configuration.write_text(content)
     monkeypatch.setenv("APP_ENV_FILE", str(configuration))
     with pytest.raises(RuntimeError, match="[Ss]ecrets|[Kk]eys"):
-        config.get_settings()
+        config.initialize_settings()
     assert path.read_bytes() == b"existing database"
     assert configuration.read_text() == content

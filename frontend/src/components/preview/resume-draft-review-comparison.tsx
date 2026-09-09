@@ -23,9 +23,7 @@ function localizedKind(diff: ResumeDraftDiff, t: AppMessages) {
 
 function comparisonRows(diff: ResumeDraftDiff, t: AppMessages) {
   const formatPosition = (value: unknown) =>
-    typeof value === "number"
-      ? String(value + 1)
-      : formatAgentDiffValue(value);
+    typeof value === "number" ? String(value + 1) : formatAgentDiffValue(value);
 
   switch (diff.kind) {
     case "added":
@@ -44,7 +42,10 @@ function comparisonRows(diff: ResumeDraftDiff, t: AppMessages) {
       ];
     case "moved":
       return [
-        { label: t.agentDiffPreviousPosition, value: formatPosition(diff.before) },
+        {
+          label: t.agentDiffPreviousPosition,
+          value: formatPosition(diff.before),
+        },
         { label: t.agentDiffNewPosition, value: formatPosition(diff.after) },
       ];
     case "modified":

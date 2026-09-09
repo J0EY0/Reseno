@@ -166,8 +166,7 @@ export function TemplateImages({
   } | null>(null);
   const visibleImages = images.filter(
     (image) =>
-      image.visible &&
-      (showEmptyPlaceholders || image.src.trim().length > 0),
+      image.visible && (showEmptyPlaceholders || image.src.trim().length > 0),
   );
 
   if (visibleImages.length === 0) {

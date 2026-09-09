@@ -13,7 +13,8 @@ import type { ResumeDetailSession } from "@/components/workspace/use-resume-deta
 import type { ResumeDetailSaveController } from "@/components/workspace/use-resume-detail-save";
 import type { AppMessages } from "@/i18n";
 import { getRichTextPlainText } from "@/lib/rich-text";
-import { isAbortError, isApiErrorToastShown } from "@/lib/api-client";
+import { isAbortError } from "@/lib/api-client";
+import { notifyApiError } from "@/lib/api-error-notifier";
 import {
   createDefaultResumeTitle,
   normalizeResumeTitle,
@@ -39,7 +40,10 @@ interface ResumeDetailCommandsOptions {
   navigateToResume: (detail: ResumeDetailResponse) => void;
   previewResume: ResumeData;
   resumeOrdinal: number;
-  save: Pick<ResumeDetailSaveController, "hasUnsavedChanges" | "save" | "saveState">;
+  save: Pick<
+    ResumeDetailSaveController,
+    "hasUnsavedChanges" | "save" | "saveState"
+  >;
   session: Pick<
     ResumeDetailSession,
     | "applyTemplate"
@@ -270,9 +274,7 @@ export function useResumeDetailCommands({
       });
     } catch (error) {
       console.error("Failed to duplicate resume.", error);
-      if (!isApiErrorToastShown(error)) {
-        toast.error(messages.duplicateResumeFailed, { closeButton: true });
-      }
+      notifyApiError(error, messages.duplicateResumeFailed);
     } finally {
       duplicateInFlightRef.current = false;
       setIsDuplicating(false);
@@ -282,7 +284,8 @@ export function useResumeDetailCommands({
   return {
     applyTemplate,
     changeTitleDraft,
-    documentPreviewRef: documentPreviewRef as RefObject<DocumentCanvasHandle | null>,
+    documentPreviewRef:
+      documentPreviewRef as RefObject<DocumentCanvasHandle | null>,
     duplicate,
     fitOnePage,
     isDuplicating,

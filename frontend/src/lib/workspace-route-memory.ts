@@ -19,14 +19,13 @@ export interface WorkspaceLateralRouteDataMap {
   trash: TrashRouteData;
 }
 
-export type PreparedWorkspaceRoute<
-  View extends WorkspaceView = WorkspaceView,
-> = {
-  [CurrentView in View]: {
-    data: WorkspaceLateralRouteDataMap[CurrentView];
-    view: CurrentView;
-  };
-}[View];
+export type PreparedWorkspaceRoute<View extends WorkspaceView = WorkspaceView> =
+  {
+    [CurrentView in View]: {
+      data: WorkspaceLateralRouteDataMap[CurrentView];
+      view: CurrentView;
+    };
+  }[View];
 
 type WorkspaceLateralRouteHandoffState<
   View extends WorkspaceView = WorkspaceView,
@@ -38,9 +37,7 @@ type WorkspaceLateralRouteHandoffState<
   };
 }[View];
 
-interface WorkspaceLateralRouteResolution<
-  View extends WorkspaceView,
-> {
+interface WorkspaceLateralRouteResolution<View extends WorkspaceView> {
   data: WorkspaceLateralRouteDataMap[View] | null;
   shouldScrubHistory: boolean;
   tokenToDelete: string | null;
@@ -73,10 +70,7 @@ function hasTemplateRouteData(data: Record<string, unknown>) {
   );
 }
 
-function hasWorkspaceLateralRouteData(
-  view: WorkspaceView,
-  data: unknown,
-) {
+function hasWorkspaceLateralRouteData(view: WorkspaceView, data: unknown) {
   if (!data || typeof data !== "object") {
     return false;
   }
@@ -84,7 +78,9 @@ function hasWorkspaceLateralRouteData(
   const candidate = data as Record<string, unknown>;
   switch (view) {
     case "resume":
-      return hasTemplateRouteData(candidate) && Array.isArray(candidate.resumes);
+      return (
+        hasTemplateRouteData(candidate) && Array.isArray(candidate.resumes)
+      );
     case "templates":
       return hasTemplateRouteData(candidate);
     case "trash":
@@ -126,9 +122,7 @@ export function rememberWorkspaceLateralRoute<View extends WorkspaceView>(
   );
 }
 
-export function createWorkspaceLateralRouteHandoff<
-  View extends WorkspaceView,
->(
+export function createWorkspaceLateralRouteHandoff<View extends WorkspaceView>(
   prepared: PreparedWorkspaceRoute<View>,
 ): WorkspaceLateralRouteHandoffState<View> {
   rememberWorkspaceLateralRoute(prepared);
@@ -162,8 +156,7 @@ export function getWorkspaceLateralRouteHandoff(
   }
 
   const prepared = readWorkspaceHandoffToken(candidate.token) as
-    | PreparedWorkspaceRoute
-    | undefined;
+    PreparedWorkspaceRoute | undefined;
   return prepared &&
     prepared.view === candidate.view &&
     hasWorkspaceLateralRouteData(prepared.view, prepared.data)
@@ -171,9 +164,10 @@ export function getWorkspaceLateralRouteHandoff(
     : null;
 }
 
-export function resolveWorkspaceLateralRoute<
-  View extends WorkspaceView,
->(state: unknown, view: View): WorkspaceLateralRouteResolution<View> {
+export function resolveWorkspaceLateralRoute<View extends WorkspaceView>(
+  state: unknown,
+  view: View,
+): WorkspaceLateralRouteResolution<View> {
   if (!state || typeof state !== "object") {
     return {
       data: getCommittedRouteData(view),

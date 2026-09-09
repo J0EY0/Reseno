@@ -3,7 +3,10 @@ import { fileURLToPath } from "node:url";
 import { build } from "vite";
 
 const frontendRoot = fileURLToPath(new URL("../", import.meta.url));
-const entry = path.join(frontendRoot, "workspace-preferences-react-fixture.jsx");
+const entry = path.join(
+  frontendRoot,
+  "workspace-preferences-react-fixture.jsx",
+);
 const api = "virtual:workspace-preferences-api";
 const fixture = `
 import React, { StrictMode, useState } from "react";
@@ -100,18 +103,20 @@ const result = await build({
       { find: "@", replacement: path.join(frontendRoot, "src") },
     ],
   },
-  plugins: [{
-    name: "workspace-preferences-react-fixture",
-    resolveId(id) {
-      if (id === entry || id === api) return `\0${id}`;
+  plugins: [
+    {
+      name: "workspace-preferences-react-fixture",
+      resolveId(id) {
+        if (id === entry || id === api) return `\0${id}`;
+      },
+      load(id) {
+        if (id === `\0${entry}`) return { code: fixture, moduleType: "jsx" };
+        if (id === `\0${api}`) {
+          return "export const saveUserSettingsApi = (...args) => window.savePreferences(...args);";
+        }
+      },
     },
-    load(id) {
-      if (id === `\0${entry}`) return { code: fixture, moduleType: "jsx" };
-      if (id === `\0${api}`) {
-        return "export const saveUserSettingsApi = (...args) => window.savePreferences(...args);";
-      }
-    },
-  }],
+  ],
   build: {
     write: false,
     minify: false,

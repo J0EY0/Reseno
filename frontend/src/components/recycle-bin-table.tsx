@@ -221,10 +221,7 @@ function RecycleBinRowActions({
             )}
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent
-          align="end"
-          className="w-32 whitespace-nowrap"
-        >
+        <DropdownMenuContent align="end" className="w-32 whitespace-nowrap">
           <DropdownMenuGroup>
             <DropdownMenuItem
               onSelect={() => onPreview(item.previewTarget, item.id)}
@@ -289,16 +286,12 @@ export function RecycleBinTable({
     () => Object.fromEntries(selectedIds.map((id) => [id, true])),
     [selectedIds],
   );
-  const handleRowSelectionChange = useCallback<
-    OnChangeFn<RowSelectionState>
-  >(
+  const handleRowSelectionChange = useCallback<OnChangeFn<RowSelectionState>>(
     (updater) => {
       const nextSelection =
         typeof updater === "function" ? updater(rowSelection) : updater;
       onSelectionChange(
-        items
-          .filter((item) => nextSelection[item.id])
-          .map((item) => item.id),
+        items.filter((item) => nextSelection[item.id]).map((item) => item.id),
       );
     },
     [items, onSelectionChange, rowSelection],
@@ -328,9 +321,7 @@ export function RecycleBinTable({
             checked={row.getIsSelected()}
             disabled={disabled}
             aria-label={`${selectLabel}: ${row.original.title}`}
-            onCheckedChange={(checked) =>
-              row.toggleSelected(checked === true)
-            }
+            onCheckedChange={(checked) => row.toggleSelected(checked === true)}
           />
         ),
         enableHiding: false,

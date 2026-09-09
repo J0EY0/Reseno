@@ -28,13 +28,18 @@ import type { ResumeDetailWorkspaceModel } from "@/components/workspace/resume-d
 import type { AppMessages, Locale } from "@/i18n";
 import { useResumeAgentDraft } from "@/hooks/use-resume-agent-draft";
 import { isAbortError } from "@/lib/api-client";
-import { createTemplateSettings, getTemplateById, getTemplateCatalog } from "@/lib/templates";
+import { notifyApiError } from "@/lib/api-error-notifier";
+import {
+  createTemplateSettings,
+  getTemplateById,
+  getTemplateCatalog,
+} from "@/lib/templates";
 import type { PreparedResumeDetailRouteData } from "@/lib/workspace-route-data";
+import { getResumePath } from "@/lib/workspace-route";
 import {
   createResumeDetailRouteHandoff,
   getResumeDetailRouteHandoff,
-  getResumePath,
-} from "@/lib/workspace-route";
+} from "@/lib/workspace-detail-route-handoff";
 import type { ResumeDetailResponse } from "@/types/api";
 import type {
   ResumeWorkspaceItem,
@@ -99,6 +104,7 @@ export function useResumeDetailWorkspace({
   });
   const { isLoading } = loader;
   const save = useResumeDetailSave({
+    getFingerprint: session.getFingerprint,
     getSnapshot: session.getSnapshot,
     initialCheckpoint,
     initialResume: initialDetail?.payload.detail.resume ?? null,
@@ -126,11 +132,17 @@ export function useResumeDetailWorkspace({
       review: null,
       resume: agent.agentDraft?.resume ?? session.resume,
     };
-  }, [agent.review, agent.agentDraft?.diffs, agent.agentDraft?.resume, session.resume]);
+  }, [
+    agent.review,
+    agent.agentDraft?.diffs,
+    agent.agentDraft?.resume,
+    session.resume,
+  ]);
   const deferredPreviewPresentation = useDeferredValue(previewPresentation);
-  const preview = previewPresentation.review || deferredPreviewPresentation.review
-    ? previewPresentation
-    : deferredPreviewPresentation;
+  const preview =
+    previewPresentation.review || deferredPreviewPresentation.review
+      ? previewPresentation
+      : deferredPreviewPresentation;
 
   function hydrateResume(item: ResumeWorkspaceItem) {
     agent.resetAgentDraft();
@@ -148,6 +160,9 @@ export function useResumeDetailWorkspace({
     save.hydratePersistedResume(detail, versions);
   }
   const saveResume = save.save;
+  const saveCheckpoint = useCallback(() => {
+    void saveResume("checkpoint").catch(notifyApiError);
+  }, [saveResume]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -161,11 +176,11 @@ export function useResumeDetailWorkspace({
       if (isLoading || loader.hasLoadError) {
         return;
       }
-      void saveResume("checkpoint");
+      saveCheckpoint();
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isLoading, loader.hasLoadError, saveResume]);
+  }, [isLoading, loader.hasLoadError, saveCheckpoint]);
 
   const templateCatalog = useMemo(
     () => getTemplateCatalog(messages, customTemplates),
@@ -193,22 +208,19 @@ export function useResumeDetailWorkspace({
     hasUnsavedChanges: save.hasUnsavedChanges,
     markCheckpointPromotionSkipped: save.markCheckpointPromotionSkipped,
     messages,
-    promoteCheckpoint: () =>
-      save.save("checkpoint", { notifyOnError: false }),
+    promoteCheckpoint: () => save.save("checkpoint", { notifyOnError: false }),
     requiresCheckpointPromotion: save.requiresCheckpointPromotion,
     save: () => save.save(),
   });
   const { requestLeave } = leave;
-  const {
-    preload: preloadWorkspaceView,
-    request: requestWorkspaceNavigation,
-  } = usePreparedWorkspaceNavigation({
-    persistence,
-    preparationErrorMessage: messages.loadError,
-    requestLeave,
-    requiresLeaveResolution: () =>
-      save.hasUnsavedChanges() || save.requiresCheckpointPromotion(),
-  });
+  const { preload: preloadWorkspaceView, request: requestWorkspaceNavigation } =
+    usePreparedWorkspaceNavigation({
+      persistence,
+      preparationErrorMessage: messages.loadError,
+      requestLeave,
+      requiresLeaveResolution: () =>
+        save.hasUnsavedChanges() || save.requiresCheckpointPromotion(),
+    });
 
   const navigateToResume = useCallback(
     (detail: ResumeDetailResponse) => {
@@ -217,9 +229,7 @@ export function useResumeDetailWorkspace({
         ? initialDetail.resumeCount + 1
         : 1;
 
-      const commitPreparedRoute = (
-        prepared: PreparedResumeDetailRouteData,
-      ) => {
+      const commitPreparedRoute = (prepared: PreparedResumeDetailRouteData) => {
         if (!intent.isCurrent()) {
           return;
         }
@@ -245,11 +255,9 @@ export function useResumeDetailWorkspace({
         }
 
         toast.dismiss(WORKSPACE_NAVIGATION_ERROR_TOAST_ID);
-        void prepareResumeDetailRoute(
-          detail.resume.id,
-          persistence,
-          { signal: intent.signal },
-        )
+        void prepareResumeDetailRoute(detail.resume.id, persistence, {
+          signal: intent.signal,
+        })
           .then((prepared) => {
             if (!intent.isCurrent()) {
               return;
@@ -274,7 +282,10 @@ export function useResumeDetailWorkspace({
               return;
             }
             intent.finish();
-            console.error("Failed to prepare the duplicated resume route.", error);
+            console.error(
+              "Failed to prepare the duplicated resume route.",
+              error,
+            );
             toast.error(messages.loadError, {
               closeButton: true,
               id: WORKSPACE_NAVIGATION_ERROR_TOAST_ID,
@@ -311,13 +322,16 @@ export function useResumeDetailWorkspace({
     templates: templateCatalog,
   });
   const previewTemplate = useMemo(
-    () => documentCommands.previewStyle ? {
-      ...activeTemplate,
-      settings: createTemplateSettings(activeTemplate.preset, {
-        ...activeTemplate.settings,
-        ...documentCommands.previewStyle.templateSettings,
-      }),
-    } : activeTemplate,
+    () =>
+      documentCommands.previewStyle
+        ? {
+            ...activeTemplate,
+            settings: createTemplateSettings(activeTemplate.preset, {
+              ...activeTemplate.settings,
+              ...documentCommands.previewStyle.templateSettings,
+            }),
+          }
+        : activeTemplate,
     [activeTemplate, documentCommands.previewStyle],
   );
   const agentLayout = useResumeDetailAgentLayout(session.document?.id);
@@ -328,34 +342,22 @@ export function useResumeDetailWorkspace({
     },
     [requestWorkspaceNavigation],
   );
-  const back = useCallback(
-    () => {
-      void requestWorkspaceNavigation("resume");
-    },
-    [requestWorkspaceNavigation],
-  );
-  const logout = useCallback(
-    () => {
-      const intent = beginNavigation();
-      requestLeave(
-        () => {
-          if (!intent.isCurrent()) {
-            return;
-          }
-          intent.finish();
-          onLogout();
-        },
-        intent.cancel,
-      );
-    },
-    [beginNavigation, onLogout, requestLeave],
-  );
-  const openModelSettings = useCallback(
-    () => {
-      void requestWorkspaceNavigation("models");
-    },
-    [requestWorkspaceNavigation],
-  );
+  const back = useCallback(() => {
+    void requestWorkspaceNavigation("resume");
+  }, [requestWorkspaceNavigation]);
+  const logout = useCallback(() => {
+    const intent = beginNavigation();
+    requestLeave(() => {
+      if (!intent.isCurrent()) {
+        return;
+      }
+      intent.finish();
+      onLogout();
+    }, intent.cancel);
+  }, [beginNavigation, onLogout, requestLeave]);
+  const openModelSettings = useCallback(() => {
+    void requestWorkspaceNavigation("models");
+  }, [requestWorkspaceNavigation]);
   const changeSelectedModelConfig = useCallback(
     (modelConfigId: string) => {
       if (!preferences.agentSettings) {
@@ -407,7 +409,7 @@ export function useResumeDetailWorkspace({
       preloadView: preloadWorkspaceView,
       restoreTemplateDefaults: documentCommands.restoreTemplateDefaults,
       retryLoad: loader.retryLoad,
-      save: () => save.save(),
+      save: saveCheckpoint,
       saveAndLeave: leave.saveAndLeave,
       saveTitle: documentCommands.saveTitle,
       selectVersion,
@@ -422,7 +424,8 @@ export function useResumeDetailWorkspace({
     state: {
       activeTemplate,
       previewTemplate,
-      previewTypography: documentCommands.previewStyle?.typography ?? session.typography,
+      previewTypography:
+        documentCommands.previewStyle?.typography ?? session.typography,
       agent: {
         draft: agent.agentDraft,
         draftState: agent.agentDraftState,
@@ -430,7 +433,8 @@ export function useResumeDetailWorkspace({
         modelConfigs: models.modelConfigs,
         panelStatus: agentLayout.panelStatus,
         review: agent.review,
-        selectedModelConfigId: preferences.agentSettings?.defaultModelConfigId ?? "",
+        selectedModelConfigId:
+          preferences.agentSettings?.defaultModelConfigId ?? "",
       },
       openSectionId: session.openSectionId,
       document: {

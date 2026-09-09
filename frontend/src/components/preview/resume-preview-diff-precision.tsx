@@ -8,7 +8,10 @@ function displayValue(value: unknown) {
   if (typeof value === "string") {
     return value;
   }
-  if (Array.isArray(value) && value.every((entry) => typeof entry === "string")) {
+  if (
+    Array.isArray(value) &&
+    value.every((entry) => typeof entry === "string")
+  ) {
     return value.join(" · ");
   }
   return null;

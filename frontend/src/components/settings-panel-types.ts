@@ -1,9 +1,5 @@
 import type { AppMessages, Locale } from "@/i18n";
-import type {
-  AgentSettings,
-  ModelConfig,
-  ThemeMode,
-} from "@/types/resume";
+import type { AgentSettings, ModelConfig, ThemeMode } from "@/types/resume";
 
 export interface SettingsPanelProps {
   locale: Locale;

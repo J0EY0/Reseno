@@ -17,8 +17,7 @@ export interface OAuthIdentities {
 }
 
 export type OAuthIdentitySettingsState =
-  | { status: "ready"; data: OAuthIdentities }
-  | { status: "error" };
+  { status: "ready"; data: OAuthIdentities } | { status: "error" };
 
 interface OAuthCompletion {
   provider: OAuthProvider;
@@ -53,7 +52,10 @@ export function requestGitHubSetup(signal: AbortSignal) {
   });
 }
 
-export function submitGitHubSetup(target: string, { registrationUrl, manifest }: GitHubSetup) {
+export function submitGitHubSetup(
+  target: string,
+  { registrationUrl, manifest }: GitHubSetup,
+) {
   const form = document.createElement("form");
   form.action = registrationUrl;
   form.method = "POST";
@@ -93,10 +95,13 @@ export async function requestOAuthAuthorization(
 }
 
 export async function unbindOAuth(provider: OAuthProvider) {
-  await requestApi<{ deleted: boolean }>(`${oauthBaseRoute}/${provider}/binding`, {
-    method: "DELETE",
-    notifyOnError: false,
-  });
+  await requestApi<{ deleted: boolean }>(
+    `${oauthBaseRoute}/${provider}/binding`,
+    {
+      method: "DELETE",
+      notifyOnError: false,
+    },
+  );
 }
 
 export async function completeOAuth(
@@ -117,7 +122,11 @@ export async function completeOAuth(
     },
   );
   signal.throwIfAborted();
-  if (provider !== "github" || intent !== expectedIntent || (intent === "login") !== Boolean(auth)) {
+  if (
+    provider !== "github" ||
+    intent !== expectedIntent ||
+    (intent === "login") !== Boolean(auth)
+  ) {
     throw new Error("OAUTH_INVALID_STATE");
   }
   if (auth) {

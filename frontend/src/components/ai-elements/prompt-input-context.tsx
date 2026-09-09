@@ -38,8 +38,9 @@ interface PromptInputController {
 
 const PromptInputControllerContext =
   createContext<PromptInputController | null>(null);
-const ProviderAttachmentsContext =
-  createContext<PromptInputAttachments | null>(null);
+const ProviderAttachmentsContext = createContext<PromptInputAttachments | null>(
+  null,
+);
 
 export const LocalPromptInputAttachmentsContext =
   createContext<PromptInputAttachments | null>(null);

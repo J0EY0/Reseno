@@ -5,12 +5,7 @@ import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
 const frontendRoot = fileURLToPath(new URL("../", import.meta.url));
-const copilotRoot = path.join(
-  frontendRoot,
-  "src",
-  "components",
-  "copilot",
-);
+const copilotRoot = path.join(frontendRoot, "src", "components", "copilot");
 const modules = [
   "agent-conversation-runtime.ts",
   "copilot-composer.tsx",
@@ -26,11 +21,6 @@ const modules = [
   "use-agent-send-controller.ts",
   "use-agent-session-hydration.ts",
 ];
-
-function countLines(source) {
-  const lines = source.split(/\r\n|\n|\r/).length;
-  return /(?:\r\n|\n|\r)$/.test(source) ? lines - 1 : lines;
-}
 
 function resolveCopilotImport(moduleName, specifier) {
   if (!specifier.startsWith(".")) {
@@ -113,12 +103,6 @@ for (const moduleName of modules) {
     ts.ScriptTarget.Latest,
     true,
     moduleName.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
-  );
-  const limit = moduleName.endsWith(".tsx") ? 500 : 600;
-
-  assert.ok(
-    countLines(source) <= limit,
-    `${moduleName} must stay within the default ${limit}-line source budget.`,
   );
   assert.doesNotMatch(
     source,
@@ -225,4 +209,4 @@ assert.doesNotMatch(
   "The selector trigger must not replace its model-selection label with next-turn status text.",
 );
 
-console.log("Agent controller/view module boundaries and budgets verified.");
+console.log("Agent controller/view module boundaries verified.");

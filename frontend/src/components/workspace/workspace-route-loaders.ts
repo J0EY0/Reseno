@@ -1,3 +1,8 @@
+import {
+  getWorkspacePath,
+  getWorkspaceRoute,
+  type WorkspaceRouteKind,
+} from "@/lib/workspace-route";
 import { createRouteLoader } from "@/lib/route-loader";
 import type { WorkspaceView } from "@/types/resume";
 
@@ -46,25 +51,25 @@ export const loadTemplateDetailWorkspacePage = createRouteLoader(
   "TemplateDetailWorkspacePage",
 );
 
-function loadWorkspaceRoute(view: WorkspaceView) {
-  switch (view) {
-    case "models":
-      return loadModelsWorkspacePage();
-    case "settings":
-      return loadSettingsWorkspacePage();
-    case "templates":
-      return loadTemplateGalleryWorkspacePage();
-    case "trash":
-      return loadTrashWorkspacePage();
-    case "resume":
-      return loadResumeGalleryWorkspacePage();
-  }
+const workspaceRouteLoaders = {
+  "resume-gallery": loadResumeGalleryWorkspacePage,
+  "resume-detail": loadResumeDetailWorkspacePage,
+  "template-gallery": loadTemplateGalleryWorkspacePage,
+  "template-detail": loadTemplateDetailWorkspacePage,
+  models: loadModelsWorkspacePage,
+  settings: loadSettingsWorkspacePage,
+  trash: loadTrashWorkspacePage,
+  unknown: loadResumeGalleryWorkspacePage,
+} satisfies Record<WorkspaceRouteKind, () => Promise<unknown>>;
+
+export function getWorkspaceRouteLoader(pathname: string) {
+  return workspaceRouteLoaders[getWorkspaceRoute(pathname).kind];
 }
 
 export function preloadWorkspaceRoute(view: WorkspaceView) {
   return Promise.all([
     loadWorkspacePreferencesProvider(),
     loadWorkspaceLateralLayout(),
-    loadWorkspaceRoute(view),
+    getWorkspaceRouteLoader(getWorkspacePath(view))(),
   ]);
 }

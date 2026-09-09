@@ -43,7 +43,7 @@ def _load_document_locale_for_export(
     except HTTPException as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Resume not found for export.",
+            detail="RESUME_NOT_FOUND",
         ) from exc
     return cast(DocumentLocale, detail["resume"]["documentLocale"])
 
@@ -77,6 +77,7 @@ def export_resume_pdf(
         export_id,
         request,
         document_locale=document_locale,
+        renderer=http_request.app.state.resume_renderer,
         **_render_auth_kwargs(http_request),
     )
     download_query = urlencode({"fileName": file_name})
@@ -108,6 +109,7 @@ def export_resume_images(
         export_id,
         request,
         document_locale=document_locale,
+        renderer=http_request.app.state.resume_renderer,
         **_render_auth_kwargs(http_request),
     )
     file_name = safe_image_file_name(

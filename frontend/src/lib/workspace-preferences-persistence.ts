@@ -45,14 +45,18 @@ export interface WorkspacePreferencesPersistence {
 const fields = ["locale", "theme", "agentSettings"] as const;
 type PreferenceField = (typeof fields)[number];
 
-function equalSettings(left: AgentSettings | null, right: AgentSettings | null) {
-  return left === right || (
-    left !== null &&
-    right !== null &&
-    left.defaultModelConfigId === right.defaultModelConfigId &&
-    left.responseLanguage === right.responseLanguage &&
-    left.behaviorMode === right.behaviorMode &&
-    left.confirmationMode === right.confirmationMode
+function equalSettings(
+  left: AgentSettings | null,
+  right: AgentSettings | null,
+) {
+  return (
+    left === right ||
+    (left !== null &&
+      right !== null &&
+      left.defaultModelConfigId === right.defaultModelConfigId &&
+      left.responseLanguage === right.responseLanguage &&
+      left.behaviorMode === right.behaviorMode &&
+      left.confirmationMode === right.confirmationMode)
   );
 }
 
@@ -77,7 +81,10 @@ export function createWorkspacePreferencesPersistence(
 
   function normalize(settings: AgentSettings | null) {
     return settings && modelIds !== null
-      ? normalizeAgentSettings(settings, modelIds.map((id) => ({ id })))
+      ? normalizeAgentSettings(
+          settings,
+          modelIds.map((id) => ({ id })),
+        )
       : settings;
   }
 
@@ -110,12 +117,12 @@ export function createWorkspacePreferencesPersistence(
     if (patch.agentSettings) {
       patch = { ...patch, agentSettings: normalize(patch.agentSettings)! };
     }
-    const changedFields = fields.filter((field) =>
-      patch[field] !== undefined && (
-        field === "agentSettings"
+    const changedFields = fields.filter(
+      (field) =>
+        patch[field] !== undefined &&
+        (field === "agentSettings"
           ? !equalSettings(current.agentSettings, patch.agentSettings!)
-          : current[field] !== patch[field]
-      ),
+          : current[field] !== patch[field]),
     );
     if (changedFields.length === 0) {
       return;
@@ -140,9 +147,11 @@ export function createWorkspacePreferencesPersistence(
         if (owner !== generation) {
           return;
         }
-        commit(submittedLocaleRevision === localeSyncRevision
-          ? response
-          : { ...response, locale: confirmed.locale });
+        commit(
+          submittedLocaleRevision === localeSyncRevision
+            ? response
+            : { ...response, locale: confirmed.locale },
+        );
       } catch (error) {
         if (owner !== generation) {
           return;

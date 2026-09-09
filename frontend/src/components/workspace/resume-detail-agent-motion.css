@@ -12,7 +12,7 @@
   }
 
   .app-shell--document
-    .agent-panel-dock[aria-hidden='true']
+    .agent-panel-dock[aria-hidden="true"]
     .agent-panel-motion-layer {
     opacity: 0;
     transform: translateX(12px);
@@ -20,7 +20,7 @@
 
   @starting-style {
     .app-shell--document
-      .agent-panel-dock[aria-hidden='false']
+      .agent-panel-dock[aria-hidden="false"]
       .agent-panel-motion-layer {
       opacity: 0;
       transform: translateX(12px);
@@ -52,19 +52,19 @@
   pointer-events: none;
 }
 
-[data-agent-status='loading'] .agent-compact-status-indicator,
-[data-agent-status='responding'] .agent-compact-status-indicator {
+[data-agent-status="loading"] .agent-compact-status-indicator,
+[data-agent-status="responding"] .agent-compact-status-indicator {
   width: 7px;
   height: 3px;
   opacity: 1;
   animation: agent-compact-status-pulse 1.4s ease-in-out infinite;
 }
 
-[data-agent-draft='true'] .agent-compact-status-indicator,
-[data-agent-status='error'] .agent-compact-status-indicator {
+[data-agent-draft="true"] .agent-compact-status-indicator,
+[data-agent-status="error"] .agent-compact-status-indicator {
   opacity: 1;
 }
 
-[data-agent-status='error'] .agent-compact-status-indicator {
+[data-agent-status="error"] .agent-compact-status-indicator {
   background: var(--destructive);
 }

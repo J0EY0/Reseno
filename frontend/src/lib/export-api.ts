@@ -18,9 +18,7 @@ interface DownloadableExport {
   fileName: string;
 }
 
-export async function requestResumePdfExport(
-  request: ExportResumePdfRequest,
-) {
+export async function requestResumePdfExport(request: ExportResumePdfRequest) {
   return requestApi<ExportResumePdfResponse>(apiRoutes.resumePdfExport, {
     body: request,
     method: "POST",
@@ -60,9 +58,7 @@ export async function downloadExportedPdf(result: ExportResumePdfResponse) {
   await downloadExportedFile(result);
 }
 
-function createTemplateArtifactDefinition(
-  template: ResumeTemplateDefinition,
-) {
+function createTemplateArtifactDefinition(template: ResumeTemplateDefinition) {
   return {
     preset: template.preset,
     name: template.name,

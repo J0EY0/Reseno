@@ -1,18 +1,18 @@
-import { cn } from '@/lib/utils'
+import { cn } from "@/lib/utils";
 
 import type {
   AvatarCropRect,
   AvatarCropStageSize,
-} from './avatar-crop-geometry'
+} from "./avatar-crop-geometry";
 
 export function AvatarCropOverlay({
   crop,
   stageSize,
   isMoving,
 }: {
-  crop: AvatarCropRect
-  stageSize: AvatarCropStageSize
-  isMoving: boolean
+  crop: AvatarCropRect;
+  stageSize: AvatarCropStageSize;
+  isMoving: boolean;
 }) {
   return (
     <>
@@ -43,8 +43,8 @@ export function AvatarCropOverlay({
       />
       <div
         className={cn(
-          'pointer-events-none absolute border-2 border-dashed border-white/95',
-          isMoving && 'shadow-[0_0_0_1px_rgba(255,255,255,0.3)]',
+          "pointer-events-none absolute border-2 border-dashed border-white/95",
+          isMoving && "shadow-[0_0_0_1px_rgba(255,255,255,0.3)]",
         )}
         style={{
           left: crop.x,
@@ -62,5 +62,5 @@ export function AvatarCropOverlay({
         <div className="absolute -bottom-2 -right-2 size-4 rounded-full border border-white bg-background shadow-sm" />
       </div>
     </>
-  )
+  );
 }

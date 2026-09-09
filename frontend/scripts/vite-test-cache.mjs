@@ -24,9 +24,7 @@ function registerCleanup() {
 
 /** Keeps programmatic Vite servers away from a concurrently running dev server. */
 export function createViteTestCacheDir() {
-  const cacheDirectory = mkdtempSync(
-    join(tmpdir(), "reseno-vite-test-cache-"),
-  );
+  const cacheDirectory = mkdtempSync(join(tmpdir(), "reseno-vite-test-cache-"));
   cacheDirectories.add(cacheDirectory);
   registerCleanup();
   return cacheDirectory;

@@ -100,10 +100,14 @@ export function ModelConfigDialog({
             ref={initialFocusRef}
             tabIndex={mode === "edit" ? -1 : undefined}
           >
-            {mode === "create" ? messages.addModelConfig : messages.editModelConfig}
+            {mode === "create"
+              ? messages.addModelConfig
+              : messages.editModelConfig}
           </DialogTitle>
           <DialogDescription className="sr-only">
-            {mode === "create" ? messages.addModelConfig : messages.editModelConfig}
+            {mode === "create"
+              ? messages.addModelConfig
+              : messages.editModelConfig}
           </DialogDescription>
         </DialogHeader>
 
@@ -122,10 +126,7 @@ export function ModelConfigDialog({
             controller={controller}
             messages={messages}
           />
-          <ModelConfigModelFields
-            controller={controller}
-            messages={messages}
-          />
+          <ModelConfigModelFields controller={controller} messages={messages} />
         </FieldGroup>
 
         <DialogFooter className="shrink-0 px-6 pt-4 pb-4">

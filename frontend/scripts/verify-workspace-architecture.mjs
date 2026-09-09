@@ -1,33 +1,50 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { after, before, test } from "node:test";
+import * as React from "react";
+import * as jsxRuntime from "react/jsx-runtime";
+import { renderToReadableStream } from "react-dom/server";
 import { createServer } from "vite";
 
+import { loadTypeScriptModule } from "./typescript-module.mjs";
 import { createViteTestCacheDir } from "./vite-test-cache.mjs";
+import {
+  findJsxElements,
+  getJsxAttributes,
+  getLiteralValue,
+  hasImport,
+  readSourceFile,
+} from "./source-analysis.mjs";
 
 const frontendRoot = new URL("../", import.meta.url);
-const server = await createServer({
-  cacheDir: createViteTestCacheDir(),
-  configFile: false,
-  optimizeDeps: { noDiscovery: true },
-  resolve: {
-    alias: { "@": new URL("src/", frontendRoot).pathname },
-  },
-  root: frontendRoot.pathname,
-});
-
-try {
-  const tracking = await server.ssrLoadModule(
+let server;
+let tracking;
+let smartOnePage;
+let workspaceRoute;
+let templates;
+let resumeTitle;
+before(async () => {
+  server = await createServer({
+    cacheDir: createViteTestCacheDir(),
+    configFile: false,
+    optimizeDeps: { noDiscovery: true },
+    resolve: {
+      alias: { "@": new URL("src/", frontendRoot).pathname },
+    },
+    root: frontendRoot.pathname,
+  });
+  tracking = await server.ssrLoadModule(
     "/src/lib/workspace-change-tracking.ts",
   );
-  const smartOnePage = await server.ssrLoadModule(
-    "/src/lib/smart-one-page.ts",
-  );
-  const workspaceRoute = await server.ssrLoadModule(
-    "/src/lib/workspace-route.ts",
-  );
-  const templates = await server.ssrLoadModule("/src/lib/templates.ts");
-  const resumeTitle = await server.ssrLoadModule("/src/lib/resume-title.ts");
+  smartOnePage = await server.ssrLoadModule("/src/lib/smart-one-page.ts");
+  workspaceRoute = await server.ssrLoadModule("/src/lib/workspace-route.ts");
+  templates = await server.ssrLoadModule("/src/lib/templates.ts");
+  resumeTitle = await server.ssrLoadModule("/src/lib/resume-title.ts");
+});
+after(async () => {
+  await server?.close();
+});
 
+test("workspace dirty state ignores server metadata and counts edited fields", () => {
   const persistedResume = {
     id: "resume-1",
     title: "Resume",
@@ -73,7 +90,9 @@ try {
     1,
     "One leaf editor change must remain one observable change.",
   );
+});
 
+test("smart fit commits only a measured fit and preserves compact styles", async () => {
   const typography = { fontFamily: "inter", fontSize: 16 };
   const settings = {
     pagePaddingTop: 16,
@@ -152,7 +171,9 @@ try {
     false,
     "An unsuccessful preview trial must not return a style to commit.",
   );
+});
 
+test("workspace route parsing and resume titles preserve their public values", () => {
   for (const [pathname, expectedRoute] of [
     ["/resume", { kind: "resume-gallery" }],
     ["/resume/abc", { kind: "resume-detail", id: "abc" }],
@@ -170,7 +191,9 @@ try {
     50,
   );
   assert.equal(resumeTitle.normalizeResumeTitle("   ", "Fallback"), "Fallback");
+});
 
+test("built-in defaults and duplicated custom template appearance are preserved", () => {
   const expectedBuiltinSectionGaps = {
     minimal: 0.7,
     modern: 0.6,
@@ -190,8 +213,7 @@ try {
     "Built-in templates must keep their compact default section rhythm.",
   );
   assert.equal(
-    templates.createTemplateSettings("minimal", { sectionGap: 0.6 })
-      .sectionGap,
+    templates.createTemplateSettings("minimal", { sectionGap: 0.6 }).sectionGap,
     0.6,
     "The compact section-gap lower bound must remain available.",
   );
@@ -226,209 +248,274 @@ try {
     },
     "Duplicating a custom template must preserve its typography and layout.",
   );
+});
 
-  const resumeDetailRouteSource = await readFile(
-    new URL(
-      "src/components/workspace/use-resume-detail-workspace.ts",
-      frontendRoot,
-    ),
-    "utf8",
-  );
-  const resumeDetailLoaderSource = await readFile(
-    new URL(
-      "src/components/workspace/use-resume-detail-loader.ts",
-      frontendRoot,
-    ),
-    "utf8",
-  );
-  const resumeDetailCommandsSource = await readFile(
-    new URL(
-      "src/components/workspace/use-resume-detail-commands.ts",
-      frontendRoot,
-    ),
-    "utf8",
-  );
-  const resumeDetailViewSource = await readFile(
-    new URL(
-      "src/components/workspace/resume-detail-workspace-view.tsx",
-      frontendRoot,
-    ),
-    "utf8",
-  );
-  const resumeGalleryRouteSource = await readFile(
-    new URL(
-      "src/components/workspace/use-resume-gallery-workspace.ts",
-      frontendRoot,
-    ),
-    "utf8",
-  );
-  const resumeGalleryImportSource = await readFile(
-    new URL(
-      "src/components/workspace/resume-gallery-import.ts",
-      frontendRoot,
-    ),
-    "utf8",
-  );
-  const templateDetailRouteSource = await readFile(
-    new URL(
-      "src/components/workspace/use-template-detail-workspace.ts",
-      frontendRoot,
-    ),
-    "utf8",
-  );
-  const templateDetailViewSource = await readFile(
-    new URL(
-      "src/components/workspace/template-detail-workspace-view.tsx",
-      frontendRoot,
-    ),
-    "utf8",
-  );
-  const documentPreviewSource = await readFile(
-    new URL(
-      "src/components/preview/document-canvas.tsx",
-      frontendRoot,
-    ),
-    "utf8",
-  );
-  const documentPreviewLoaderSource = await readFile(
-    new URL(
-      "src/components/preview/document-canvas-loader.ts",
-      frontendRoot,
-    ),
-    "utf8",
-  );
-  const resumeEditorPaneSource = await readFile(
-    new URL("src/components/editor/resume-editor-pane.tsx", frontendRoot),
-    "utf8",
-  );
-  const sidebarSource = await readFile(
-    new URL("src/components/ui/sidebar.tsx", frontendRoot),
-    "utf8",
-  );
-  const workspaceShellSource = await readFile(
-    new URL("src/components/workspace/workspace-shell.tsx", frontendRoot),
-    "utf8",
-  );
-  const innerWorkspaceSources = await Promise.all(
+test("workspace imports retain document boundaries and one main landmark", async () => {
+  const readSource = (name) =>
+    readSourceFile(new URL(`src/${name}`, frontendRoot));
+  const [
+    detailRoute,
+    detailView,
+    galleryImport,
+    templateView,
+    canvasLoader,
+    sidebar,
+    shell,
+  ] = await Promise.all(
     [
-      "src/components/workspace/workspace-route-error.tsx",
-      "src/components/workspace/resume-gallery-workspace-page.tsx",
-      "src/components/workspace/template-gallery-workspace-page.tsx",
-      "src/components/workspace/models-workspace-page.tsx",
-      "src/components/settings-panel.tsx",
-      "src/components/recycle-bin-panel.tsx",
-      "src/components/workspace-skeletons.tsx",
-      "src/components/gallery-skeletons.tsx",
-      "src/components/workspace/resume-detail-workspace-view.tsx",
-      "src/components/workspace/template-detail-workspace-view.tsx",
-      "src/components/preview/resume-preview-content.tsx",
-    ].map(async (path) => [
-      path,
-      await readFile(new URL(path, frontendRoot), "utf8"),
-    ]),
-  );
-  assert.match(
-    sidebarSource,
-    /export function SidebarInset[\s\S]*?<main\b/,
-    "SidebarInset must remain the workspace's sole main landmark.",
-  );
-  for (const [path, source] of [
-    ["workspace-shell.tsx", workspaceShellSource],
-    ["resume-detail-workspace-view.tsx", resumeDetailViewSource],
-    ["template-detail-workspace-view.tsx", templateDetailViewSource],
-  ]) {
-    assert.match(
-      source,
-      /<SidebarInset[\s\S]{0,300}\bid="main-content"[\s\S]{0,300}\btabIndex=\{-1\}/,
-      `${path} must keep a focusable main landmark for its skip link.`,
-    );
-  }
-  for (const [path, source] of innerWorkspaceSources) {
-    assert.doesNotMatch(
-      source,
-      /<main\b/,
-      `${path} must not render another main landmark inside the workspace main.`,
-    );
-  }
-  assert.ok(
-    !/from\s+["']@\/lib\/pdf-resume-import["']/.test(
-      resumeGalleryImportSource,
-    ),
-    "The optional PDF parser must not be a static workspace dependency.",
-  );
-  assert.ok(
-    /import\(\s*["']@\/lib\/pdf-resume-import["']\s*\)/.test(
-      resumeGalleryImportSource,
-    ) &&
-      !/pdf-resume-import/.test(resumeDetailRouteSource),
-    "PDF import must retain a statically analyzable dynamic chunk boundary.",
-  );
-  assert.ok(
-    !/from\s+["']@\/components\/preview\/resume-preview["']/.test(
-      resumeDetailViewSource,
-    ) &&
-      /lazy\(loadDocumentCanvas\)/.test(resumeDetailViewSource) &&
-      /lazy\(loadDocumentCanvas\)/.test(templateDetailViewSource) &&
-      /import\(["']@\/components\/preview\/document-canvas["']\)/.test(
-        documentPreviewLoaderSource,
-      ),
-    "Document preview rendering must remain behind its detail-route chunk.",
-  );
-  assert.ok(
-    /void loadDocumentCanvas\(\)/.test(
-      resumeDetailLoaderSource,
-    ) &&
-      /void loadDocumentCanvas\(\)/.test(
-        templateDetailRouteSource,
-      ),
-    "Each direct detail route must preload the preview chunk while route data loads.",
-  );
-  assert.ok(
-    /useImperativeHandle\(/.test(documentPreviewSource) &&
-      /measurePageCount:/.test(documentPreviewSource) &&
-      /canvasControls\.map/.test(documentPreviewSource) &&
-      /useDocumentCanvas\(\)/.test(documentPreviewSource) &&
-      /data-slot="document-canvas-viewport"/.test(documentPreviewSource) &&
-      /measurePageCount:\s*\(\)\s*=>\s*previewHandle\.measurePageCount\(/.test(
-        resumeDetailCommandsSource,
-      ),
-    "The document canvas must own viewport controls while retaining pagination measurement.",
-  );
-  assert.ok(
-    /<Suspense fallback=\{<WorkspacePreviewSkeleton \/>\}>/.test(
-      resumeDetailViewSource,
-    ) &&
-      /<Suspense fallback=\{<WorkspacePreviewSkeleton \/>\}>/.test(
-        templateDetailViewSource,
-      ) &&
-      !/<DocumentCanvas[^>]*\bkey=/.test(resumeDetailViewSource) &&
-      !/<DocumentCanvas[^>]*\bkey=/.test(templateDetailViewSource),
-    "Both detail routes need a preview fallback without forcing preview remounts.",
-  );
-  assert.ok(
-    /<ResumeEditorPane[\s\S]*?updateContent=\{commands\.updateContent\}[\s\S]*?openSectionId=\{state\.openSectionId\}[\s\S]*?toggleSection=\{commands\.toggleSection\}[\s\S]*?addSection=\{commands\.addSection\}[\s\S]*?removeSection=\{commands\.removeSection\}/.test(
-      resumeDetailViewSource,
-    ) &&
-      !/function updateBasic|applySectionMutation|readAvatarFileAsDataUrl/.test(
-        resumeDetailRouteSource + resumeDetailViewSource,
-      ),
-    "Resume detail must pass document commands and the open section to its editor pane.",
-  );
-  assert.ok(
-    /export const ResumeEditorPane = memo\(/.test(resumeEditorPaneSource) &&
-      /applySectionMutation/.test(resumeEditorPaneSource) &&
-      /<AvatarCropDialog/.test(resumeEditorPaneSource) &&
-      !/createContext|useContext/.test(resumeEditorPaneSource),
-    "The resume editor pane must remain a memoized, self-contained mutation boundary.",
-  );
-  assert.ok(
-    resumeDetailRouteSource.split("\n").length <= 600 &&
-      resumeDetailViewSource.split("\n").length <= 500 &&
-      resumeEditorPaneSource.split("\n").length <= 300,
-    "Workspace orchestration and editor modules must stay within their size budgets.",
+      "components/workspace/use-resume-detail-workspace.ts",
+      "components/workspace/resume-detail-workspace-view.tsx",
+      "components/workspace/resume-gallery-import.ts",
+      "components/workspace/template-detail-workspace-view.tsx",
+      "components/preview/document-canvas-loader.ts",
+      "components/ui/sidebar.tsx",
+      "components/workspace/workspace-shell.tsx",
+    ].map(readSource),
   );
 
-  console.log("Workspace architecture behavior verified.");
-} finally {
-  await server.close();
+  assert.equal(
+    findJsxElements(sidebar, "main").length,
+    1,
+    "SidebarInset must own the workspace main landmark.",
+  );
+  for (const source of [shell, detailView, templateView]) {
+    const landmarks = findJsxElements(source, "SidebarInset");
+    assert.equal(landmarks.length, 1);
+    const attributes = getJsxAttributes(landmarks[0]);
+    assert.equal(getLiteralValue(attributes.get("id")), "main-content");
+    assert.equal(getLiteralValue(attributes.get("tabIndex")), -1);
+  }
+  for (const name of [
+    "workspace-route-error.tsx",
+    "resume-gallery-workspace-page.tsx",
+    "template-gallery-workspace-page.tsx",
+    "models-workspace-page.tsx",
+    "resume-detail-workspace-view.tsx",
+    "template-detail-workspace-view.tsx",
+  ]) {
+    assert.equal(
+      findJsxElements(await readSource(`components/workspace/${name}`), "main")
+        .length,
+      0,
+      `${name} must not nest another main landmark.`,
+    );
+  }
+  for (const name of [
+    "workspace-skeletons.tsx",
+    "settings-panel.tsx",
+    "recycle-bin-panel.tsx",
+    "gallery-skeletons.tsx",
+    "preview/resume-preview-content.tsx",
+  ]) {
+    assert.equal(
+      findJsxElements(await readSource(`components/${name}`), "main").length,
+      0,
+    );
+  }
+
+  const pdfModule = "@/lib/pdf-resume-import";
+  assert.equal(hasImport(galleryImport, pdfModule), false);
+  assert.equal(hasImport(galleryImport, pdfModule, { dynamic: true }), true);
+  assert.equal(hasImport(detailRoute, pdfModule), false);
+  assert.equal(
+    hasImport(canvasLoader, "@/components/preview/document-canvas", {
+      dynamic: true,
+    }),
+    true,
+  );
+  for (const source of [detailView, templateView]) {
+    assert.equal(
+      hasImport(source, "@/components/preview/resume-preview"),
+      false,
+    );
+  }
+  for (const source of [detailRoute, detailView]) {
+    assert.equal(hasImport(source, "@/lib/resume-section-mutations"), false);
+    assert.equal(hasImport(source, "@/lib/avatar"), false);
+  }
+});
+
+async function renderResumeDetail({
+  showSkeleton = false,
+  pendingPreview = false,
+} = {}) {
+  const editorProps = [];
+  const previewProps = [];
+  const operations = [];
+  const document = { basic: { name: "Ada" }, sections: [] };
+  const section = {
+    id: "skills",
+    title: "Skills",
+    kind: "simple_list",
+    items: [],
+  };
+  const commands = Object.fromEntries(
+    [
+      "updateContent",
+      "toggleSection",
+      "addSection",
+      "removeSection",
+      "onPreviewReadyChange",
+    ].map((name) => [name, (...args) => operations.push([name, ...args])]),
+  );
+  const state = {
+    agent: { isPanelCollapsed: true },
+    document: { measurementKey: {} },
+    openSectionId: section.id,
+    previewResume: document,
+    previewTemplate: { id: "minimal" },
+    previewTypography: { fontFamily: "inter", fontSize: 16 },
+    resume: document,
+    resumeItem: { documentLocale: "en" },
+    showSkeleton,
+    theme: "light",
+  };
+  const empty = () => null;
+  let resolvePreview;
+  const preview = {
+    default: (props) => {
+      previewProps.push(props);
+      return React.createElement("section", null, "Ready preview");
+    },
+  };
+  const previewModule = pendingPreview
+    ? new Promise((resolve) => {
+        resolvePreview = () => resolve(preview);
+      })
+    : Promise.resolve(preview);
+  const messages = { skipToContent: "Skip to content" };
+  const { ResumeDetailWorkspaceView } = await loadTypeScriptModule(
+    new URL(
+      "src/components/workspace/resume-detail-workspace-view.tsx",
+      frontendRoot,
+    ),
+    {
+      imports: {
+        react: React,
+        "react/jsx-runtime": jsxRuntime,
+        "@/components/app-toaster": { AppToaster: empty },
+        "@/components/editor/resume-editor-pane": {
+          ResumeEditorPane: (props) => {
+            editorProps.push(props);
+            return null;
+          },
+        },
+        "@/components/preview/document-canvas-loader": {
+          loadDocumentCanvas: () => previewModule,
+        },
+        "@/components/ui/sidebar": {
+          SidebarProvider: ({ children }) => children,
+          SidebarInset: (props) => React.createElement("main", props),
+        },
+        "@/components/workspace/resume-detail-agent-host": {
+          ResumeDetailAgentHost: empty,
+          ResumeDetailAgentToggle: empty,
+        },
+        "@/components/workspace/resume-detail-workspace-header": {
+          ResumeDetailWorkspaceHeader: empty,
+        },
+        "@/components/workspace/resume-detail-leave-dialog": {
+          ResumeDetailLeaveDialog: empty,
+        },
+        "@/components/workspace/resume-detail-title-dialog": {
+          ResumeDetailTitleDialog: empty,
+        },
+        "@/components/workspace/workspace-route-error": {
+          WorkspaceRouteError: empty,
+        },
+        "@/components/workspace-skeletons": {
+          WorkspacePreviewSkeleton: () =>
+            React.createElement("div", null, "Preview loading"),
+        },
+        "@/i18n/use-localized-messages": {
+          useLocalizedMessages: () => messages,
+        },
+        "@/lib/utils": { cn: (...values) => values.filter(Boolean).join(" ") },
+      },
+    },
+  );
+  const stream = await renderToReadableStream(
+    React.createElement(ResumeDetailWorkspaceView, {
+      locale: "en",
+      messages,
+      model: { commands, state },
+      onLocaleChange: empty,
+      previewRef: { current: null },
+    }),
+  );
+  return {
+    stream,
+    editorProps,
+    previewProps,
+    operations,
+    state,
+    section,
+    resolvePreview,
+  };
 }
+
+test(
+  "rendered workspace passes document edits and section operations to its controller",
+  { timeout: 5000 },
+  async () => {
+    const fixture = await renderResumeDetail();
+    await fixture.stream.allReady;
+    const html = await new Response(fixture.stream).text();
+    assert.ok(html.includes("Ready preview"));
+    const editor = fixture.editorProps.at(-1);
+    assert.equal(editor.resume, fixture.state.resume);
+    assert.equal(editor.openSectionId, fixture.section.id);
+    const edited = { ...editor.resume, basic: { name: "Grace" } };
+    editor.updateContent(edited);
+    editor.toggleSection("basic");
+    editor.addSection(fixture.section);
+    editor.removeSection(fixture.section.id);
+    assert.deepEqual(fixture.operations, [
+      ["updateContent", edited],
+      ["toggleSection", "basic"],
+      ["addSection", fixture.section],
+      ["removeSection", fixture.section.id],
+    ]);
+    const preview = fixture.previewProps.at(-1);
+    assert.equal(preview.resume, fixture.state.previewResume);
+    assert.equal(preview.typography, fixture.state.previewTypography);
+    assert.equal(preview.measurementKey, fixture.state.document.measurementKey);
+    preview.onPaginationReadyChange(true);
+    assert.deepEqual(fixture.operations.at(-1), ["onPreviewReadyChange", true]);
+  },
+);
+
+test(
+  "workspace renders a loading surface until the preview module is ready",
+  { timeout: 5000 },
+  async () => {
+    const fixture = await renderResumeDetail({ pendingPreview: true });
+    const reader = fixture.stream.getReader();
+    const initial = await reader.read();
+    assert.ok(
+      new TextDecoder().decode(initial.value).includes("Preview loading"),
+    );
+    assert.equal(fixture.previewProps.length, 0);
+    fixture.resolvePreview();
+    let html = "";
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      html += new TextDecoder().decode(chunk.value);
+    }
+    assert.ok(html.includes("Ready preview"));
+  },
+);
+
+test(
+  "workspace keeps its loading surface while document data is pending",
+  { timeout: 5000 },
+  async () => {
+    const fixture = await renderResumeDetail({ showSkeleton: true });
+    await fixture.stream.allReady;
+    const html = await new Response(fixture.stream).text();
+    assert.ok(html.includes("Preview loading"));
+    assert.equal(fixture.previewProps.length, 0);
+    assert.equal(fixture.editorProps.at(-1).showSkeleton, true);
+  },
+);

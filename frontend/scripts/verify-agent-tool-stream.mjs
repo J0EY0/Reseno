@@ -95,9 +95,15 @@ const toolDisplay = await loadTypeScriptModule(
   });
 
   message = messageCodec.applyAgentToolStreamEvent(message, { tool: started });
-  message = messageCodec.applyAgentToolStreamEvent(message, { tool: progressed });
-  message = messageCodec.applyAgentToolStreamEvent(message, { tool: completed });
-  message = messageCodec.applyAgentToolStreamEvent(message, { tool: completed });
+  message = messageCodec.applyAgentToolStreamEvent(message, {
+    tool: progressed,
+  });
+  message = messageCodec.applyAgentToolStreamEvent(message, {
+    tool: completed,
+  });
+  message = messageCodec.applyAgentToolStreamEvent(message, {
+    tool: completed,
+  });
 
   assert(
     message.tools.length === 1,
@@ -134,23 +140,14 @@ const toolDisplay = await loadTypeScriptModule(
 
 {
   const registrySource = await readFile(
-    join(
-      repositoryRoot,
-      "backend",
-      "app",
-      "services",
-      "agent",
-      "contracts.py",
-    ),
+    join(repositoryRoot, "backend", "app", "services", "agent", "contracts.py"),
     "utf8",
   );
   const backendToolNames = Array.from(
     registrySource.matchAll(/AgentToolSpec\(\s*"([^"]+)"/g),
     (match) => match[1],
   );
-  const frontendToolNames = Array.from(
-    toolDisplay.REGISTERED_AGENT_TOOL_NAMES,
-  );
+  const frontendToolNames = Array.from(toolDisplay.REGISTERED_AGENT_TOOL_NAMES);
 
   assert(
     JSON.stringify([...frontendToolNames].sort()) ===
@@ -166,9 +163,9 @@ const toolDisplay = await loadTypeScriptModule(
     );
     for (const phase of ["running", "complete", "error"]) {
       assert(
-        toolDisplay.getAgentToolLabelKey(invocation, phase).startsWith(
-          "agentTool",
-        ),
+        toolDisplay
+          .getAgentToolLabelKey(invocation, phase)
+          .startsWith("agentTool"),
         `Tool ${name} must have a ${phase} label fallback.`,
       );
     }
@@ -265,8 +262,7 @@ const toolDisplay = await loadTypeScriptModule(
         }),
       ])
       .map((item) => item.id)
-      .join(",") ===
-      "fetch-success-before-failure,fetch-latest-failure",
+      .join(",") === "fetch-success-before-failure,fetch-latest-failure",
     "An older success must not hide the latest failure in chronological recovery order.",
   );
 
@@ -287,8 +283,7 @@ const toolDisplay = await loadTypeScriptModule(
         }),
       ])
       .map((item) => item.id)
-      .join(",") ===
-      "fetch-success-1,fetch-success-2,fetch-success-3",
+      .join(",") === "fetch-success-1,fetch-success-2,fetch-success-3",
     "Distinct successful invocation ids must remain visible for an auditable call count.",
   );
 

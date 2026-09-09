@@ -7,12 +7,11 @@ import {
   useState,
 } from "react";
 import { Outlet, useLocation } from "react-router-dom";
-import { toast } from "sonner";
 
 import { WorkspacePreferencesContext } from "@/components/workspace/workspace-preferences-context";
 import { getMessagesSync, type AppMessages, type Locale } from "@/i18n";
 import { normalizeAgentSettings } from "@/lib/agent-settings";
-import { isApiErrorToastShown } from "@/lib/api-client";
+import { notifyApiError } from "@/lib/api-error-notifier";
 import { saveUserSettingsApi } from "@/lib/workspace-api";
 import {
   createWorkspacePreferencesPersistence,
@@ -41,9 +40,13 @@ export function WorkspacePreferencesProvider({
     return {
       locale,
       theme: prepared?.data.theme ?? loadWorkspaceThemePreference(),
-      agentSettings: prepared && "agentSettings" in prepared.data
-        ? normalizeAgentSettings(prepared.data.agentSettings, prepared.data.modelConfigs)
-        : null,
+      agentSettings:
+        prepared && "agentSettings" in prepared.data
+          ? normalizeAgentSettings(
+              prepared.data.agentSettings,
+              prepared.data.modelConfigs,
+            )
+          : null,
     };
   });
   const [snapshot, setSnapshot] = useState(initial);
@@ -55,11 +58,7 @@ export function WorkspacePreferencesProvider({
       onChange: setSnapshot,
       onError(error, errorLocale) {
         console.error("Failed to save user settings.", error);
-        if (!isApiErrorToastShown(error)) {
-          toast.error(getMessagesSync(errorLocale).loadError, {
-            closeButton: true,
-          });
-        }
+        notifyApiError(error, getMessagesSync(errorLocale).loadError);
       },
       save(patch, saveLocale) {
         const { theme, agentSettings } = patch;
@@ -96,11 +95,12 @@ export function WorkspacePreferencesProvider({
   useLayoutEffect(() => {
     const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
     const apply = () => {
-      const next = snapshot.theme === "system"
-        ? mediaQuery.matches
-          ? "dark"
-          : "light"
-        : snapshot.theme;
+      const next =
+        snapshot.theme === "system"
+          ? mediaQuery.matches
+            ? "dark"
+            : "light"
+          : snapshot.theme;
       applyWorkspaceTheme(next);
       setResolvedTheme(next);
     };

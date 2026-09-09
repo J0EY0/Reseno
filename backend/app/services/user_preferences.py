@@ -93,12 +93,15 @@ def _write_user_settings(settings: dict[str, Any]) -> None:
         temp_path.unlink(missing_ok=True)
 
 
-def save_user_settings(locale: str, settings: dict[str, Any]) -> dict[str, Any]:
+def save_user_settings(locale: str | None, settings: dict[str, Any]) -> dict[str, Any]:
     """Persist settings-page preferences as one read-modify-write transaction."""
 
     with _USER_SETTINGS_LOCK:
         next_settings = load_user_settings()
-        next_settings["locale"] = locale if locale in SUPPORTED_LOCALES else "en"
+        if locale is None:
+            next_settings.setdefault("locale", "en")
+        else:
+            next_settings["locale"] = locale if locale in SUPPORTED_LOCALES else "en"
 
         theme = normalize_theme(settings.get("theme"))
         if theme is not None:

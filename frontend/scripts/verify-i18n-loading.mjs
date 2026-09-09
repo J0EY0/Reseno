@@ -13,7 +13,9 @@ function collectJsonShape(value, path = "$") {
   if (Array.isArray(value)) {
     return [
       `${path}:array`,
-      ...value.flatMap((item, index) => collectJsonShape(item, `${path}[${index}]`)),
+      ...value.flatMap((item, index) =>
+        collectJsonShape(item, `${path}[${index}]`),
+      ),
     ];
   }
 
@@ -167,16 +169,12 @@ assert.ok(
 const enMessages = JSON.parse(enSource);
 const zhMessages = JSON.parse(zhSource);
 assert.equal(
-  enMessages.canvasPage
-    .replace("{current}", "1")
-    .replace("{total}", "3"),
+  enMessages.canvasPage.replace("{current}", "1").replace("{total}", "3"),
   "Page 1 / 3",
   "English canvas pagination must show the current and total page count.",
 );
 assert.equal(
-  zhMessages.canvasPage
-    .replace("{current}", "1")
-    .replace("{total}", "3"),
+  zhMessages.canvasPage.replace("{current}", "1").replace("{total}", "3"),
   "第 1 / 3 页",
   "Chinese canvas pagination must show the current and total page count.",
 );
@@ -222,8 +220,7 @@ assert.deepEqual(
   },
   {
     enInvalid: "Select a valid thinking mode.",
-    enUnsupported:
-      "This model cannot turn reasoning off. Select Auto instead.",
+    enUnsupported: "This model cannot turn reasoning off. Select Auto instead.",
     zhInvalid: "请选择有效的推理模式",
     zhUnsupported: "该模型无法关闭推理，请改用自动模式",
   },
@@ -251,7 +248,10 @@ const session = {
   revision: "revision-1",
 };
 const model = loadMessageModel(messageModelSource);
-const converted = model.exports.toPanelMessages(session, [enTransient, zhTransient]);
+const converted = model.exports.toPanelMessages(session, [
+  enTransient,
+  zhTransient,
+]);
 
 assert.deepEqual(
   Array.from(converted, (message) => message.text),

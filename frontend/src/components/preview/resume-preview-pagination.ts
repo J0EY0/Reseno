@@ -66,9 +66,7 @@ function collectBlockIntervals(element: HTMLElement, rootRect: DOMRect) {
 
   const intervals: VerticalInterval[] = [];
   contentElement
-    .querySelectorAll<HTMLElement>(
-      'p, li, [data-resume-page-block="true"]',
-    )
+    .querySelectorAll<HTMLElement>('p, li, [data-resume-page-block="true"]')
     .forEach((block) => {
       const interval = getInterval(block, rootRect);
       if (interval) {
@@ -189,9 +187,7 @@ function findSafePageEnd({
     pageEnd = nextPageEnd;
   }
 
-  return pageEnd > pageStart + PAGE_BREAK_EPSILON_PX
-    ? pageEnd
-    : nominalEnd;
+  return pageEnd > pageStart + PAGE_BREAK_EPSILON_PX ? pageEnd : nominalEnd;
 }
 
 function createPageSlices({
@@ -284,8 +280,9 @@ export function useResumePagination(
   const [pagination, setPagination] = useState<ResumePaginationState>({
     pages: [{ startOffsetMm: 0, visibleHeightMm: pageHeightMm }],
   });
-  const [paginationReadyToken, setPaginationReadyToken] =
-    useState<object | null>(null);
+  const [paginationReadyToken, setPaginationReadyToken] = useState<
+    object | null
+  >(null);
   const isPaginationReady = Boolean(
     resumeFontReadyToken && paginationReadyToken === resumeFontReadyToken,
   );

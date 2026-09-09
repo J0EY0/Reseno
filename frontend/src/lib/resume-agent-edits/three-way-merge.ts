@@ -13,8 +13,7 @@ import {
 } from "./transaction-core";
 
 type MergeOperationResult =
-  | { ok: true; diffs: ResumeDraftDiff[] }
-  | { ok: false; target: string };
+  { ok: true; diffs: ResumeDraftDiff[] } | { ok: false; target: string };
 
 function mergeConflict(target: string): MergeOperationResult {
   return { ok: false, target };
@@ -36,14 +35,22 @@ function sameIds(left: string[], right: string[]) {
   return isDeepEqual(left, right);
 }
 
-export function getManualResumeChanges(baseResume: ResumeData, currentResume: ResumeData) {
+export function getManualResumeChanges(
+  baseResume: ResumeData,
+  currentResume: ResumeData,
+) {
   const changes = new Set<string>();
   for (const field of ["headline", "summary"] as const) {
     if (!isDeepEqual(baseResume.basic[field], currentResume.basic[field])) {
       changes.add(`basic.${field}`);
     }
   }
-  if (!sameIds(baseResume.sections.map((section) => section.id), currentResume.sections.map((section) => section.id))) {
+  if (
+    !sameIds(
+      baseResume.sections.map((section) => section.id),
+      currentResume.sections.map((section) => section.id),
+    )
+  ) {
     changes.add("sections");
   }
   for (const section of baseResume.sections) {
@@ -52,15 +59,23 @@ export function getManualResumeChanges(baseResume: ResumeData, currentResume: Re
     if (!isDeepEqual(section, current)) changes.add(target);
     if (section.kind !== current?.kind) changes.add(`${target}.kind`);
     if (section.title !== current?.title) changes.add(`${target}.title`);
-    if (!sameIds(section.items.map((item) => item.id), current?.items.map((item) => item.id) ?? [])) {
+    if (
+      !sameIds(
+        section.items.map((item) => item.id),
+        current?.items.map((item) => item.id) ?? [],
+      )
+    ) {
       changes.add(`${target}.items`);
     }
     for (const item of section.items) {
-      const currentItem = current ? findItem(current, item.id)?.item : undefined;
+      const currentItem = current
+        ? findItem(current, item.id)?.item
+        : undefined;
       const target = itemPath(section.id, item.id);
       if (!isDeepEqual(item, currentItem)) changes.add(target);
       const baseRecord = item as unknown as Record<string, unknown>;
-      const currentRecord = currentItem as unknown as Record<string, unknown> | undefined;
+      const currentRecord = currentItem as unknown as
+        Record<string, unknown> | undefined;
       for (const field of SECTION_ITEM_FIELDS[section.kind]) {
         if (!isDeepEqual(baseRecord[field], currentRecord?.[field])) {
           changes.add(`${target}.${field}`);
@@ -87,7 +102,10 @@ export function applyOperationWithMerge(
       const baseValue = baseResume.basic[field];
       const currentValue = currentResume.basic[field];
 
-      if (manualChanges?.has(operation.path) || isDeepEqual(currentValue, operation.value)) {
+      if (
+        manualChanges?.has(operation.path) ||
+        isDeepEqual(currentValue, operation.value)
+      ) {
         return { ok: true, diffs: [] };
       }
       if (!isDeepEqual(currentValue, baseValue)) {
@@ -100,7 +118,11 @@ export function applyOperationWithMerge(
       const baseIds = baseResume.sections.map((section) => section.id);
       const currentIds = currentResume.sections.map((section) => section.id);
 
-      if (manualChanges?.has("sections") || !sameIds(baseIds, currentIds) || findSection(currentResume, operation.section.id)) {
+      if (
+        manualChanges?.has("sections") ||
+        !sameIds(baseIds, currentIds) ||
+        findSection(currentResume, operation.section.id)
+      ) {
         return mergeConflict(sectionPath(operation.section.id));
       }
       return applyMergedOperation(currentResume, edit, operation);
@@ -141,7 +163,10 @@ export function applyOperationWithMerge(
       if (!currentMatch) {
         return { ok: true, diffs: [] };
       }
-      if (manualChanges?.has(sectionPath(operation.sectionId)) || !isDeepEqual(currentMatch.section, baseMatch.section)) {
+      if (
+        manualChanges?.has(sectionPath(operation.sectionId)) ||
+        !isDeepEqual(currentMatch.section, baseMatch.section)
+      ) {
         return mergeConflict(sectionPath(operation.sectionId));
       }
       return applyMergedOperation(currentResume, edit, operation);
@@ -209,7 +234,10 @@ export function applyOperationWithMerge(
       const patchRecord = operation.patch as Record<string, unknown>;
       const pendingFields: string[] = [];
       const baseRecord = baseItem.item as unknown as Record<string, unknown>;
-      const currentRecord = currentItem.item as unknown as Record<string, unknown>;
+      const currentRecord = currentItem.item as unknown as Record<
+        string,
+        unknown
+      >;
 
       for (const field of Object.keys(patchRecord)) {
         if (!allowedFields.has(field)) {
@@ -260,7 +288,10 @@ export function applyOperationWithMerge(
       if (!currentItem) {
         return { ok: true, diffs: [] };
       }
-      if (manualChanges?.has(target) || !isDeepEqual(currentItem.item, baseItem.item)) {
+      if (
+        manualChanges?.has(target) ||
+        !isDeepEqual(currentItem.item, baseItem.item)
+      ) {
         return mergeConflict(target);
       }
       return applyMergedOperation(currentResume, edit, operation);

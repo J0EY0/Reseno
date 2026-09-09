@@ -36,9 +36,7 @@ import { useWorkspaceNavigationTransaction } from "@/components/workspace/use-wo
 import { useMediaQuery } from "@/hooks/use-media-query";
 import type { AppMessages } from "@/i18n";
 import { isAbortError } from "@/lib/api-client";
-import {
-  createWorkspaceLateralRouteHandoff,
-} from "@/lib/workspace-route-memory";
+import { createWorkspaceLateralRouteHandoff } from "@/lib/workspace-route-memory";
 import { getWorkspacePath } from "@/lib/workspace-route";
 import { deleteWorkspaceHandoffToken } from "@/lib/workspace-route-handoff";
 import type { WorkspaceView } from "@/types/resume";
@@ -115,11 +113,7 @@ export function WorkspaceShell({
         signal: intent.signal,
       });
     } catch (error) {
-      if (
-        intent.signal.aborted ||
-        isAbortError(error) ||
-        !intent.isCurrent()
-      ) {
+      if (intent.signal.aborted || isAbortError(error) || !intent.isCurrent()) {
         return;
       }
       clearPendingView();
@@ -183,9 +177,7 @@ export function WorkspaceShell({
       />
 
       <SidebarInset id="main-content" tabIndex={-1} className="app-shell">
-        <header
-          className="sticky top-0 z-20 flex h-16 shrink-0 items-center justify-between gap-3 border-b border-border bg-background px-4 print:hidden"
-        >
+        <header className="sticky top-0 z-20 flex h-16 shrink-0 items-center justify-between gap-3 border-b border-border bg-background px-4 print:hidden">
           <div className="flex min-w-0 items-center gap-2">
             <SidebarTrigger
               className="-ml-1"
@@ -237,9 +229,7 @@ export function WorkspaceShell({
                   title={messages.themeToggleLabel}
                   aria-label={messages.themeToggleLabel}
                   onClick={() =>
-                    changeTheme(
-                      resolvedTheme === "dark" ? "light" : "dark",
-                    )
+                    changeTheme(resolvedTheme === "dark" ? "light" : "dark")
                   }
                 >
                   {resolvedTheme === "dark" ? (

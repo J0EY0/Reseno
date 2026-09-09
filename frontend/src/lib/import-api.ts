@@ -1,11 +1,18 @@
 import { apiRoutes, uploadApi } from "@/lib/api-client";
-import type { ImportResumeResponse, ImportTemplatesResponse } from "@/types/api";
+import type {
+  ApiRequestOptions,
+  ImportResumeResponse,
+  ImportTemplatesResponse,
+} from "@/types/api";
 
-export async function importResumePayload(file: File) {
+export async function importResumePayload(
+  file: File,
+  options: Pick<ApiRequestOptions, "signal" | "notifyOnError"> = {},
+) {
   const body = new FormData();
   body.append("file", file);
 
-  return uploadApi<ImportResumeResponse>(apiRoutes.resumeImport, body);
+  return uploadApi<ImportResumeResponse>(apiRoutes.resumeImport, body, options);
 }
 
 export async function importTemplatePayload(file: File) {

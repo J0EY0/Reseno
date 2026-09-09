@@ -1,14 +1,13 @@
-import type { AppMessages } from '@/i18n'
+import type { AppMessages } from "@/i18n";
 import {
   builtinTemplateIds,
   getBuiltinTemplatePreset,
-} from '@/lib/template-presets'
-import { createId } from '@/lib/resume'
+} from "@/lib/template-presets";
+import { createId } from "@/lib/resume";
 import type {
   BuiltinResumeTemplateId,
   ResumeAvatarPosition,
   ResumeAvatarShape,
-  ResumeFontFamily,
   ResumeListItemLayout,
   ResumeTemplateLayout,
   ResumeTemplateDefinition,
@@ -17,19 +16,11 @@ import type {
   ResumeTemplateImageFit,
   ResumeTemplateSettings,
   ResumeTimelineItemLayout,
-  ResumeTypographySettings,
-} from '@/types/resume'
+} from "@/types/resume";
 
-const supportedFontFamilies: ResumeFontFamily[] = [
-  'inter',
-  'noto_sans_sc',
-  'serif',
-  'times',
-  'plex',
-]
-export const resumeFontSizeOptions = [12, 14, 16, 18, 20] as const
+export const resumeFontSizeOptions = [12, 14, 16, 18, 20] as const;
 
-const CSS_POINTS_PER_PIXEL = 72 / 96
+const CSS_POINTS_PER_PIXEL = 72 / 96;
 
 /**
  * Typography is persisted in CSS pixels for compatibility with existing
@@ -37,170 +28,194 @@ const CSS_POINTS_PER_PIXEL = 72 / 96
  * users of print-oriented software without changing the rendered layout.
  */
 export function getResumeFontSizeInPoints(fontSize: number) {
-  return Number((fontSize * CSS_POINTS_PER_PIXEL).toFixed(2))
+  return Number((fontSize * CSS_POINTS_PER_PIXEL).toFixed(2));
 }
 
-function clampNumber(
-  value: number,
-  min: number,
-  max: number,
-  step = 0.1,
-) {
-  const safe = Number.isFinite(value) ? value : min
-  const normalized = Math.min(max, Math.max(min, safe))
-  const precision = step >= 1 ? 1 : Math.round(1 / step)
-  return Math.round(normalized * precision) / precision
+function clampNumber(value: number, min: number, max: number, step = 0.1) {
+  const safe = Number.isFinite(value) ? value : min;
+  const normalized = Math.min(max, Math.max(min, safe));
+  const precision = step >= 1 ? 1 : Math.round(1 / step);
+  return Math.round(normalized * precision) / precision;
 }
 
 function normalizeHexColor(value: unknown, fallback: string) {
-  if (typeof value !== 'string') {
-    return fallback
+  if (typeof value !== "string") {
+    return fallback;
   }
 
-  const normalized = value.trim()
+  const normalized = value.trim();
 
   if (!/^#([\da-fA-F]{3}|[\da-fA-F]{6})$/.test(normalized)) {
-    return fallback
+    return fallback;
   }
 
   if (normalized.length === 4) {
     return `#${normalized
       .slice(1)
-      .split('')
+      .split("")
       .map((char) => `${char}${char}`)
-      .join('')
-      .toLowerCase()}`
+      .join("")
+      .toLowerCase()}`;
   }
 
-  return normalized.toLowerCase()
+  return normalized.toLowerCase();
 }
 
-function normalizeFontSize(value: unknown, fallback: number) {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    return fallback
-  }
+export const DEFAULT_TEMPLATE_IMAGE = {
+  src: "",
+  alt: "",
+  x: 166,
+  y: 18,
+  width: 30,
+  height: 20,
+  opacity: 1,
+  borderWidth: 0.8,
+  borderColor: "#d4d4d8",
+  borderRadius: 8,
+  objectFit: "contain",
+  visible: true,
+} satisfies Omit<ResumeTemplateImageElement, "id" | "name">;
 
-  return resumeFontSizeOptions.reduce((closest, current) =>
-    Math.abs(current - value) < Math.abs(closest - value) ? current : closest,
-  )
+export function createTemplateImageElement(
+  index: number,
+  defaultName: string,
+  layout?: Pick<ResumeTemplateLayout, "avatarPosition">,
+): ResumeTemplateImageElement {
+  return {
+    ...DEFAULT_TEMPLATE_IMAGE,
+    id: createId("image"),
+    name: `${defaultName} ${index}`,
+    x: layout?.avatarPosition === "right" ? 14 : DEFAULT_TEMPLATE_IMAGE.x,
+  };
 }
 
 function normalizeTemplateImageFit(value: unknown): ResumeTemplateImageFit {
-  return value === 'cover' ? 'cover' : 'contain'
+  return value === "cover" ? "cover" : DEFAULT_TEMPLATE_IMAGE.objectFit;
 }
 
 function normalizeTemplateImageSource(value: unknown) {
-  if (typeof value !== 'string') {
-    return ''
+  if (typeof value !== "string") {
+    return "";
   }
 
-  const source = value.trim()
-  return source.startsWith('data:image/') ? source : ''
+  const source = value.trim();
+  return source.startsWith("data:image/") ? source : "";
 }
 
 function normalizeTimelineItemLayout(
   value: unknown,
   fallback: ResumeTimelineItemLayout,
 ): ResumeTimelineItemLayout {
-  return value === 'split' || value === 'stacked' || value === 'compact'
+  return value === "split" || value === "stacked" || value === "compact"
     ? value
-    : fallback
+    : fallback;
 }
 
 function normalizeListItemLayout(
   value: unknown,
   fallback: ResumeListItemLayout,
 ): ResumeListItemLayout {
-  return value === 'list' || value === 'inline' || value === 'columns'
+  return value === "list" || value === "inline" || value === "columns"
     ? value
-    : fallback
+    : fallback;
 }
 
 function normalizeTemplateImages(value: unknown): ResumeTemplateImageElement[] {
   if (!Array.isArray(value)) {
-    return []
+    return [];
   }
 
   return value
     .filter((item): item is Partial<ResumeTemplateImageElement> =>
-      Boolean(item && typeof item === 'object'),
+      Boolean(item && typeof item === "object"),
     )
     .map((item) => ({
       id:
-        typeof item.id === 'string' && item.id.trim()
+        typeof item.id === "string" && item.id.trim()
           ? item.id
-          : createId('image'),
+          : createId("image"),
       name:
-        typeof item.name === 'string' && item.name.trim()
+        typeof item.name === "string" && item.name.trim()
           ? item.name.trim()
-          : 'Image',
+          : "Image",
       src: normalizeTemplateImageSource(item.src),
-      alt: typeof item.alt === 'string' ? item.alt.trim() : '',
-      x: clampNumber(Number(item.x), 0, 210, 0.5),
-      y: clampNumber(Number(item.y), 0, 297, 0.5),
-      width: clampNumber(Number(item.width), 6, 120, 0.5),
-      height: clampNumber(Number(item.height), 6, 120, 0.5),
-      opacity: clampNumber(Number(item.opacity), 0.05, 1, 0.05),
-      borderWidth: clampNumber(Number(item.borderWidth), 0, 8, 0.5),
-      borderColor: normalizeHexColor(item.borderColor, '#e5e7eb'),
-      borderRadius: clampNumber(Number(item.borderRadius), 0, 32, 1),
+      alt: typeof item.alt === "string" ? item.alt.trim() : "",
+      x: clampNumber(Number(item.x ?? DEFAULT_TEMPLATE_IMAGE.x), 0, 210, 0.5),
+      y: clampNumber(Number(item.y ?? DEFAULT_TEMPLATE_IMAGE.y), 0, 297, 0.5),
+      width: clampNumber(
+        Number(item.width ?? DEFAULT_TEMPLATE_IMAGE.width),
+        6,
+        120,
+        0.5,
+      ),
+      height: clampNumber(
+        Number(item.height ?? DEFAULT_TEMPLATE_IMAGE.height),
+        6,
+        120,
+        0.5,
+      ),
+      opacity: clampNumber(
+        Number(item.opacity ?? DEFAULT_TEMPLATE_IMAGE.opacity),
+        0.05,
+        1,
+        0.05,
+      ),
+      borderWidth: clampNumber(
+        Number(item.borderWidth ?? DEFAULT_TEMPLATE_IMAGE.borderWidth),
+        0,
+        8,
+        0.1,
+      ),
+      borderColor: normalizeHexColor(
+        item.borderColor,
+        DEFAULT_TEMPLATE_IMAGE.borderColor,
+      ),
+      borderRadius: clampNumber(
+        Number(item.borderRadius ?? DEFAULT_TEMPLATE_IMAGE.borderRadius),
+        0,
+        32,
+        1,
+      ),
       objectFit: normalizeTemplateImageFit(item.objectFit),
-      visible: typeof item.visible === 'boolean' ? item.visible : true,
-    }))
-}
-
-function createTemplateTypography(
-  preset: BuiltinResumeTemplateId,
-  overrides: Partial<ResumeTypographySettings> = {},
-): ResumeTypographySettings {
-  const defaults = getBuiltinTemplatePreset(preset).typography
-  const nextFontFamily = supportedFontFamilies.includes(
-    overrides.fontFamily as ResumeFontFamily,
-  )
-    ? (overrides.fontFamily as ResumeFontFamily)
-    : defaults.fontFamily
-
-  return {
-    fontFamily: nextFontFamily,
-    fontSize: normalizeFontSize(overrides.fontSize, defaults.fontSize),
-  }
+      visible: typeof item.visible === "boolean" ? item.visible : true,
+    }));
 }
 
 export function createTemplateLayout(
   preset: BuiltinResumeTemplateId,
   overrides: Partial<ResumeTemplateLayout> = {},
 ): ResumeTemplateLayout {
-  const defaults = getBuiltinTemplatePreset(preset).layout
+  const defaults = getBuiltinTemplatePreset(preset).layout;
   const basicInfo =
-    overrides.basicInfo === 'centered' ||
-    overrides.basicInfo === 'left' ||
-    overrides.basicInfo === 'split' ||
-    overrides.basicInfo === 'profile' ||
-    overrides.basicInfo === 'sidebar'
+    overrides.basicInfo === "centered" ||
+    overrides.basicInfo === "left" ||
+    overrides.basicInfo === "split" ||
+    overrides.basicInfo === "profile" ||
+    overrides.basicInfo === "sidebar"
       ? overrides.basicInfo
-      : defaults.basicInfo
+      : defaults.basicInfo;
   const section =
-    overrides.section === 'ruled' ||
-    overrides.section === 'underlined' ||
-    overrides.section === 'boxed' ||
-    overrides.section === 'accent' ||
-    overrides.section === 'plain' ||
-    overrides.section === 'band'
+    overrides.section === "ruled" ||
+    overrides.section === "underlined" ||
+    overrides.section === "boxed" ||
+    overrides.section === "accent" ||
+    overrides.section === "plain" ||
+    overrides.section === "band"
       ? overrides.section
-      : defaults.section
+      : defaults.section;
   const avatarPosition =
-    overrides.avatarPosition === 'none' ||
-    overrides.avatarPosition === 'right' ||
-    overrides.avatarPosition === 'left' ||
-    overrides.avatarPosition === 'center'
+    overrides.avatarPosition === "none" ||
+    overrides.avatarPosition === "right" ||
+    overrides.avatarPosition === "left" ||
+    overrides.avatarPosition === "center"
       ? (overrides.avatarPosition as ResumeAvatarPosition)
-      : defaults.avatarPosition
+      : defaults.avatarPosition;
   const avatarShape =
-    overrides.avatarShape === 'rounded' ||
-    overrides.avatarShape === 'circle' ||
-    overrides.avatarShape === 'square'
+    overrides.avatarShape === "rounded" ||
+    overrides.avatarShape === "circle" ||
+    overrides.avatarShape === "square"
       ? (overrides.avatarShape as ResumeAvatarShape)
-      : defaults.avatarShape
+      : defaults.avatarShape;
 
   return {
     basicInfo,
@@ -250,14 +265,14 @@ export function createTemplateLayout(
       defaults.avatarBorderColor,
     ),
     images: normalizeTemplateImages(overrides.images ?? defaults.images),
-  }
+  };
 }
 
 export function createTemplateSettings(
   preset: BuiltinResumeTemplateId,
   overrides: Partial<ResumeTemplateSettings> = {},
 ): ResumeTemplateSettings {
-  const defaults = getBuiltinTemplatePreset(preset).settings
+  const defaults = getBuiltinTemplatePreset(preset).settings;
 
   return {
     pagePaddingTop: clampNumber(
@@ -345,28 +360,30 @@ export function createTemplateSettings(
       3,
       0.5,
     ),
-  }
+  };
 }
 
-export function getBuiltInTemplates(t: AppMessages): ResumeTemplateDefinition[] {
+export function getBuiltInTemplates(
+  t: AppMessages,
+): ResumeTemplateDefinition[] {
   return builtinTemplateIds.map((id) => ({
     id,
     preset: id,
     name: t.templateCards[id].name,
     description: t.templateCards[id].description,
     layout: createTemplateLayout(id),
-    typography: createTemplateTypography(id),
+    typography: { ...getBuiltinTemplatePreset(id).typography },
     settings: createTemplateSettings(id),
-    updatedAt: '',
+    updatedAt: "",
     isBuiltIn: true,
-  }))
+  }));
 }
 
 export function getTemplateCatalog(
   t: AppMessages,
   customTemplates: ResumeTemplateDefinition[],
 ) {
-  return [...getBuiltInTemplates(t), ...customTemplates]
+  return [...getBuiltInTemplates(t), ...customTemplates];
 }
 
 export function getTemplateById(
@@ -375,21 +392,23 @@ export function getTemplateById(
 ) {
   const template =
     templates.find((item) => item.id === templateId) ??
-    templates.find((item) => item.id === 'minimal')
+    templates.find((item) => item.id === "minimal");
 
   if (!template) {
-    throw new Error('The built-in Minimal template is missing.')
+    throw new Error("The built-in Minimal template is missing.");
   }
 
-  return template
+  return template;
 }
 
 export function createCustomTemplateFromBase(
   base: ResumeTemplateDefinition,
-  overrides: Partial<Pick<ResumeTemplateDefinition, 'name' | 'description'>> = {},
+  overrides: Partial<
+    Pick<ResumeTemplateDefinition, "name" | "description">
+  > = {},
 ): ResumeTemplateDefinition {
   return {
-    id: createId('template'),
+    id: createId("template"),
     preset: base.preset,
     name: overrides.name?.trim() || `${base.name} Copy`,
     description: overrides.description?.trim() || base.description,
@@ -398,5 +417,5 @@ export function createCustomTemplateFromBase(
     settings: createTemplateSettings(base.preset, base.settings),
     updatedAt: new Date().toISOString(),
     isBuiltIn: false,
-  }
+  };
 }

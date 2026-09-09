@@ -46,8 +46,8 @@ function getContactItems(basic: ResumeBasicInfo) {
         id: `custom-${field.id}`,
         text: label && value ? `${label}: ${value}` : value || label,
         href: value
-          ? createContactHref(normalizeContactFieldType(field.type), value) ??
-            undefined
+          ? (createContactHref(normalizeContactFieldType(field.type), value) ??
+            undefined)
           : undefined,
       };
     }),
@@ -99,10 +99,7 @@ function ContactLine({
 
   return (
     <div
-      className={cn(
-        "flex flex-wrap justify-center gap-x-3 gap-y-1",
-        className,
-      )}
+      className={cn("flex flex-wrap justify-center gap-x-3 gap-y-1", className)}
     >
       {items.map((item, index) => (
         <span key={item.id} className="whitespace-nowrap">
@@ -204,10 +201,7 @@ export function StandardBasicInfo({
     <ContactLine
       items={contactItems}
       enableLinks={enableContactLinks}
-      className={cn(
-        "resume-tone-body mt-3",
-        isLeftAligned && "justify-start",
-      )}
+      className={cn("resume-tone-body mt-3", isLeftAligned && "justify-start")}
     />
   );
   const infoContent = (
@@ -232,8 +226,7 @@ export function StandardBasicInfo({
       className={cn(
         "min-w-0",
         shouldFloatSideAvatar && "px-[124px]",
-        isLeftAligned ||
-          (isProfile && hasAvatar && avatarPosition === "left")
+        isLeftAligned || (isProfile && hasAvatar && avatarPosition === "left")
           ? "text-left"
           : "mx-auto text-center",
       )}

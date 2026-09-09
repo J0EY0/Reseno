@@ -86,6 +86,42 @@ def _detail_to_message_key(detail: object, fallback: str) -> str:
     return fallback
 
 
+def http_error_response(
+    *,
+    status_code: int,
+    message: object,
+    data: object | None = None,
+    headers: Mapping[str, str] | None = None,
+) -> JSONResponse:
+    """Preserve HTTP status and public error details in the API envelope."""
+
+    code = _http_status_to_app_code(status_code)
+    if code == APP_CODE_UNAUTHORIZED:
+        response_headers = dict(headers or {})
+        response_headers.setdefault("WWW-Authenticate", "Bearer")
+        return app_error_response(
+            status_code=status_code,
+            code=APP_CODE_UNAUTHORIZED,
+            message=_detail_to_message_key(message, APP_MESSAGE_UNAUTHORIZED),
+            data={"loginUrl": "/login"} if data is None else data,
+            headers=response_headers,
+        )
+
+    fallback_message = {
+        APP_CODE_BAD_REQUEST: APP_MESSAGE_BAD_REQUEST,
+        APP_CODE_NOT_FOUND: APP_MESSAGE_NOT_FOUND,
+        APP_CODE_INTERNAL_ERROR: APP_MESSAGE_INTERNAL_ERROR,
+    }.get(code, APP_MESSAGE_BAD_REQUEST)
+
+    return app_error_response(
+        status_code=status_code,
+        code=code,
+        message=_detail_to_message_key(message, fallback_message),
+        data=data,
+        headers=headers,
+    )
+
+
 async def http_exception_handler(
     request: Request,
     exc: HTTPException,
@@ -99,29 +135,9 @@ async def http_exception_handler(
             headers=exc.headers,
         )
 
-    code = _http_status_to_app_code(exc.status_code)
-    if code == APP_CODE_UNAUTHORIZED:
-        headers = dict(exc.headers or {})
-        headers.setdefault("WWW-Authenticate", "Bearer")
-        return app_error_response(
-            status_code=exc.status_code,
-            code=APP_CODE_UNAUTHORIZED,
-            message=_detail_to_message_key(exc.detail, APP_MESSAGE_UNAUTHORIZED),
-            data={"loginUrl": "/login"},
-            headers=headers,
-        )
-
-    fallback_message = {
-        APP_CODE_BAD_REQUEST: APP_MESSAGE_BAD_REQUEST,
-        APP_CODE_NOT_FOUND: APP_MESSAGE_NOT_FOUND,
-        APP_CODE_INTERNAL_ERROR: APP_MESSAGE_INTERNAL_ERROR,
-    }.get(code, APP_MESSAGE_BAD_REQUEST)
-
-    return app_error_response(
+    return http_error_response(
         status_code=exc.status_code,
-        code=code,
-        message=_detail_to_message_key(exc.detail, fallback_message),
-        data=None,
+        message=exc.detail,
         headers=exc.headers,
     )
 

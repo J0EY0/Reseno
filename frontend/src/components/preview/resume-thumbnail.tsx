@@ -46,9 +46,7 @@ export const ResumeThumbnail = memo(function ResumeThumbnail({
       <ResumePageContent
         model={model}
         pageSections={model.fullPreviewSections}
-        showEmptyTemplateImagePlaceholders={
-          showEmptyTemplateImagePlaceholders
-        }
+        showEmptyTemplateImagePlaceholders={showEmptyTemplateImagePlaceholders}
         enableContactLinks={false}
       />
     </article>

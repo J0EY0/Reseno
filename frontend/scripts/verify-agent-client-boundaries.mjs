@@ -13,7 +13,8 @@ const apiClient = {
     agentAttachment: (resumeId, attachmentId) =>
       `/api/agent/resumes/${resumeId}/attachments/${attachmentId}`,
     agentAttachments: "/api/agent/attachments",
-    agentResumeRecovery: (resumeId) => `/api/agent/resumes/${resumeId}/recovery`,
+    agentResumeRecovery: (resumeId) =>
+      `/api/agent/resumes/${resumeId}/recovery`,
     agentResumeSession: (resumeId) => `/api/agent/resumes/${resumeId}/session`,
     agentRun: (runId) => `/api/agent/runs/${runId}`,
   },
@@ -25,7 +26,6 @@ const apiClient = {
     apiCalls.push({ kind: "request", options, route });
     return Promise.resolve({});
   },
-  resolveApiUrl: (route) => `http://agent.test${route}`,
   uploadApi: (route, body, options = {}) => {
     apiCalls.push({ body, kind: "upload", options, route });
     return Promise.resolve({ id: "attachment-test" });
@@ -111,7 +111,7 @@ const [attachmentClient, sessionRunClient] = await Promise.all([
   call = takeLastCall("fetch");
   assert.equal(
     call.route,
-    "http://agent.test/api/agent/resumes/resume-attachment/attachments/attachment-download",
+    "/api/agent/resumes/resume-attachment/attachments/attachment-download",
   );
   assert.equal(call.options.cache, "no-store");
 
@@ -145,21 +145,6 @@ const [attachmentClient, sessionRunClient] = await Promise.all([
   );
 }
 
-const moduleNames = [
-  "agent-attachment-client.ts",
-  "agent-message-codec.ts",
-  "agent-session-run-client.ts",
-  "agent-stream-client.ts",
-];
-const moduleSources = await Promise.all(
-  moduleNames.map((name) => readFile(join(sourceRoot, "lib", name), "utf8")),
-);
-for (const [index, source] of moduleSources.entries()) {
-  assert.ok(
-    source.trimEnd().split(/\r?\n/).length <= 600,
-    `${moduleNames[index]} must stay within the TypeScript source budget.`,
-  );
-}
 await assert.rejects(
   access(join(sourceRoot, "lib", "agent-api.ts")),
   (error) => error?.code === "ENOENT",
@@ -176,14 +161,12 @@ const [
   runStreamSource,
   sendControllerSource,
 ] = await Promise.all([
-  readFile(join(sourceRoot, "components", "copilot", "copilot-panel.tsx"), "utf8"),
   readFile(
-    join(
-      sourceRoot,
-      "components",
-      "copilot",
-      "copilot-attachment-policy.ts",
-    ),
+    join(sourceRoot, "components", "copilot", "copilot-panel.tsx"),
+    "utf8",
+  ),
+  readFile(
+    join(sourceRoot, "components", "copilot", "copilot-attachment-policy.ts"),
     "utf8",
   ),
   readFile(

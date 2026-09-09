@@ -1,6 +1,6 @@
+import { withAuthSessionLock } from "@/lib/auth-environment";
 import { apiRoutes, requestApi } from "@/lib/api-client";
 import {
-  AUTH_REFRESH_LOCK_NAME,
   clearAuthSession,
   getAccessToken,
   loadAuthSession,
@@ -9,27 +9,27 @@ import {
 } from "@/lib/auth-session";
 
 export interface AuthTokenPayload {
-  username: string
-  accessToken: string
-  expiresAt: string
-  tokenType: string
+  username: string;
+  accessToken: string;
+  expiresAt: string;
+  tokenType: string;
 }
 
 interface AuthSetupStatusPayload {
-  setupRequired: boolean
-  githubLoginAvailable: boolean
+  setupRequired: boolean;
+  githubLoginAvailable: boolean;
 }
 
 interface AuthSetupPayload {
-  username: string
-  password: string
-  confirmPassword: string
+  username: string;
+  password: string;
+  confirmPassword: string;
 }
 
 interface AuthPasswordUpdatePayload {
-  currentPassword: string
-  newPassword: string
-  confirmPassword: string
+  currentPassword: string;
+  newPassword: string;
+  confirmPassword: string;
 }
 
 export async function loginWithCredentials(username: string, password: string) {
@@ -39,11 +39,11 @@ export async function loginWithCredentials(username: string, password: string) {
       username: username.trim(),
       password,
     },
-    method: 'POST',
-  })
+    method: "POST",
+  });
 
-  saveAuthSession(result.username, result.accessToken, result.expiresAt)
-  return result.username
+  saveAuthSession(result.username, result.accessToken, result.expiresAt);
+  return result.username;
 }
 
 export function getAuthSetupStatus() {
@@ -51,62 +51,62 @@ export function getAuthSetupStatus() {
     auth: false,
     cacheTtlMs: 1_000,
     notifyOnError: false,
-  })
+  });
 }
 
 export async function setupAuthOwner(payload: AuthSetupPayload) {
   const result = await requestApi<AuthTokenPayload>(apiRoutes.authSetup, {
     auth: false,
     body: payload,
-    method: 'POST',
-  })
+    method: "POST",
+  });
 
-  saveAuthSession(result.username, result.accessToken, result.expiresAt)
-  return result.username
+  saveAuthSession(result.username, result.accessToken, result.expiresAt);
+  return result.username;
 }
 
 export async function refreshAuthSession() {
-  const previousToken = getAccessToken()
+  const previousToken = getAccessToken();
   if (!previousToken) {
-    return false
+    return false;
   }
 
-  return navigator.locks.request(AUTH_REFRESH_LOCK_NAME, async () => {
+  return withAuthSessionLock("exclusive", async () => {
     if (getAccessToken() !== previousToken) {
-      return loadAuthSession()
+      return loadAuthSession();
     }
 
     const result = await requestApi<AuthTokenPayload>(apiRoutes.authRefresh, {
       body: {},
-      method: 'POST',
-    })
+      method: "POST",
+    });
 
     if (getAccessToken() !== previousToken) {
-      return loadAuthSession()
+      return loadAuthSession();
     }
 
-    recordInvalidatedToken(previousToken)
-    saveAuthSession(result.username, result.accessToken, result.expiresAt)
-    return true
-  })
+    recordInvalidatedToken(previousToken);
+    saveAuthSession(result.username, result.accessToken, result.expiresAt);
+    return true;
+  });
 }
 
 export async function updateAuthPassword(payload: AuthPasswordUpdatePayload) {
-  const previousToken = getAccessToken()
+  const previousToken = getAccessToken();
   const result = await requestApi<{ username: string; updated: boolean }>(
     apiRoutes.authPassword,
     {
       body: payload,
-      method: 'POST',
+      method: "POST",
     },
-  )
+  );
 
   if (previousToken) {
-    recordInvalidatedToken(previousToken)
+    recordInvalidatedToken(previousToken);
   }
-  clearAuthSession()
+  clearAuthSession();
 
-  return result
+  return result;
 }
 
-export { clearAuthSession, loadAuthSession, saveAuthSession }
+export { clearAuthSession, loadAuthSession, saveAuthSession };

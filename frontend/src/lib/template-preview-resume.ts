@@ -19,10 +19,12 @@ export const TEMPLATE_PREVIEW_SCENARIOS = [
   "research",
 ] as const;
 
-type TemplatePreviewScenario =
-  (typeof TEMPLATE_PREVIEW_SCENARIOS)[number];
+type TemplatePreviewScenario = (typeof TEMPLATE_PREVIEW_SCENARIOS)[number];
 
-export type TemplatePreviewResumes = Record<TemplatePreviewScenario, ResumeData>;
+export type TemplatePreviewResumes = Record<
+  TemplatePreviewScenario,
+  ResumeData
+>;
 
 type PreviewSamples = AppMessages["templatePreviewSamples"];
 type PreviewBasicSample = PreviewSamples[TemplatePreviewScenario]["basic"];
@@ -87,17 +89,13 @@ function createBasicInfo(
   };
 }
 
-function createEducationItem(id: string, sample: EducationSample): EducationItem {
+function createEducationItem(
+  id: string,
+  sample: EducationSample,
+): EducationItem {
   return {
     id,
-    school: sample.school,
-    degree: sample.degree,
-    major: sample.major,
-    gpa: sample.gpa,
-    location: sample.location,
-    period: sample.period,
-    description: sample.description,
-    highlights: sample.highlights,
+    ...sample,
   };
 }
 
@@ -107,25 +105,15 @@ function createExperienceItem(
 ): ExperienceItem {
   return {
     id,
-    company: sample.company,
-    position: sample.position,
-    location: sample.location,
-    period: sample.period,
-    description: sample.description,
-    highlights: sample.highlights,
+    ...sample,
   };
 }
 
 function createProjectItem(id: string, sample: ProjectSample): ProjectItem {
   return {
     id,
-    name: sample.name,
-    role: sample.role,
-    techStack: sample.techStack,
-    period: sample.period,
+    ...sample,
     url: "",
-    description: sample.description,
-    highlights: sample.highlights,
   };
 }
 
@@ -135,11 +123,8 @@ function createAchievementItem(
 ): AchievementItem {
   return {
     id,
-    name: sample.name,
-    issuer: sample.issuer,
-    date: sample.date,
+    ...sample,
     url: "",
-    description: sample.description,
   };
 }
 
@@ -149,12 +134,7 @@ function createPublicationItem(
 ): PublicationItem {
   return {
     id,
-    title: sample.title,
-    authors: sample.authors,
-    venue: sample.venue,
-    date: sample.date,
-    url: sample.url,
-    description: sample.description,
+    ...sample,
   };
 }
 

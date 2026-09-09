@@ -1,7 +1,10 @@
 import type { AgentResumeEditSuggestion } from "@/types/api";
 import type { ResumeData, ResumeDraftDiff } from "@/types/resume";
 import { applyOperation } from "./resume-agent-edits/apply-operations";
-import { applyOperationWithMerge, getManualResumeChanges } from "./resume-agent-edits/three-way-merge";
+import {
+  applyOperationWithMerge,
+  getManualResumeChanges,
+} from "./resume-agent-edits/three-way-merge";
 import {
   cloneResume,
   type AgentDraftApplyError,
@@ -103,9 +106,10 @@ export function applyAgentEditsWithMerge(
     return { ...validation, resume: cloneResume(currentResume) };
   }
 
-  const manualChanges = conflictResolution === "keep-manual"
-    ? getManualResumeChanges(baseResume, currentResume)
-    : undefined;
+  const manualChanges =
+    conflictResolution === "keep-manual"
+      ? getManualResumeChanges(baseResume, currentResume)
+      : undefined;
   const baseWorking = cloneResume(baseResume);
   const currentWorking = cloneResume(currentResume);
   const diffs: ResumeDraftDiff[] = [];
@@ -127,13 +131,15 @@ export function applyAgentEditsWithMerge(
         resume: cloneResume(currentResume),
         diffs: [],
         appliedCount: 0,
-        errors: [{
-          editId: edit.id,
-          title: edit.title || edit.id,
-          operationType: operation.type,
-          target: merged.target,
-          reason: "conflict",
-        }],
+        errors: [
+          {
+            editId: edit.id,
+            title: edit.title || edit.id,
+            operationType: operation.type,
+            target: merged.target,
+            reason: "conflict",
+          },
+        ],
       };
     }
 
@@ -148,13 +154,15 @@ export function applyAgentEditsWithMerge(
         resume: cloneResume(currentResume),
         diffs: [],
         appliedCount: 0,
-        errors: [{
-          editId: edit.id,
-          title: edit.title || edit.id,
-          operationType: operation.type,
-          target: baseResult.target,
-          reason: baseResult.reason,
-        }],
+        errors: [
+          {
+            editId: edit.id,
+            title: edit.title || edit.id,
+            operationType: operation.type,
+            target: baseResult.target,
+            reason: baseResult.reason,
+          },
+        ],
       };
     }
   }

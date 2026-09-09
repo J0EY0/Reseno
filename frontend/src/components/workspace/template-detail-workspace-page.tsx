@@ -22,7 +22,11 @@ function TemplateDetailRouteOwner({
   routeState,
   templateId,
 }: TemplateDetailRouteOwnerProps) {
-  const { locale, messages, changeLocale: onLocaleChange } = useWorkspacePreferences();
+  const {
+    locale,
+    messages,
+    changeLocale: onLocaleChange,
+  } = useWorkspacePreferences();
   const location = useLocation();
   const navigate = useNavigate();
   const navigationType = useNavigationType();
@@ -34,9 +38,7 @@ function TemplateDetailRouteOwner({
     }
 
     window.scrollTo({ left: 0, top: 0, behavior: "auto" });
-    document
-      .getElementById("main-content")
-      ?.focus({ preventScroll: true });
+    document.getElementById("main-content")?.focus({ preventScroll: true });
   }, [navigationType]);
 
   useLayoutEffect(() => {

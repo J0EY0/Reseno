@@ -130,9 +130,7 @@ interface ResumeDetailWorkspaceCommands {
   toggleSection: (sectionId: string) => void;
   updateContent: (update: (current: ResumeData) => ResumeData) => void;
   setTitleDialogOpen: (open: boolean) => void;
-  updateTemplateSettings: (
-    patch: Partial<ResumeTemplateSettings>,
-  ) => void;
+  updateTemplateSettings: (patch: Partial<ResumeTemplateSettings>) => void;
   updateTypography: (typography: ResumeTypographySettings) => void;
   cancelLeave: () => void;
   discardAndLeave: () => void | Promise<void>;

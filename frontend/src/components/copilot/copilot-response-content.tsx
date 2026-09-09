@@ -12,9 +12,8 @@ const AGENT_STREAM_ANIMATION = {
   stagger: 8,
 } as const;
 
-const richMessageResponsePromise = import(
-  "@/components/ai-elements/message-response"
-).then((module) => ({
+const richMessageResponsePromise =
+  import("@/components/ai-elements/message-response").then((module) => ({
     default: module.MessageResponse,
   }));
 const RichMessageResponse = lazy(() => richMessageResponsePromise);
@@ -54,9 +53,9 @@ export function AgentRichResponse({
   isStreaming?: boolean;
   text: string;
 } & Omit<
-    MessageResponseProps,
-    "animated" | "children" | "isAnimating" | "mode"
-  >) {
+  MessageResponseProps,
+  "animated" | "children" | "isAnimating" | "mode"
+>) {
   return (
     <Suspense
       fallback={

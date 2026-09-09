@@ -3,7 +3,7 @@ import { useBlocker } from "react-router-dom";
 import { toast } from "sonner";
 
 import type { AppMessages } from "@/i18n";
-import { isApiErrorToastShown } from "@/lib/api-client";
+import { notifyApiError } from "@/lib/api-error-notifier";
 
 interface PendingLeaveAction {
   cancel?: () => void;
@@ -31,8 +31,9 @@ export function useResumeDetailLeave({
   save,
 }: ResumeDetailLeaveOptions) {
   const [isResolving, setIsResolving] = useState(false);
-  const [pendingAction, setPendingAction] =
-    useState<PendingLeaveAction | null>(null);
+  const [pendingAction, setPendingAction] = useState<PendingLeaveAction | null>(
+    null,
+  );
   const handledBlockedNavigationKeyRef = useRef<string | null>(null);
   const checkpointPromotionInFlightRef = useRef<Promise<void> | null>(null);
 
@@ -151,9 +152,7 @@ export function useResumeDetailLeave({
       action();
     } catch (error) {
       console.error("Failed to save the resume before leaving.", error);
-      if (!isApiErrorToastShown(error)) {
-        toast.error(messages.loadError, { closeButton: true });
-      }
+      notifyApiError(error, messages.loadError);
     } finally {
       setIsResolving(false);
     }
@@ -171,9 +170,7 @@ export function useResumeDetailLeave({
       action();
     } catch (error) {
       console.error("Failed to discard resume changes safely.", error);
-      if (!isApiErrorToastShown(error)) {
-        toast.error(messages.loadError, { closeButton: true });
-      }
+      notifyApiError(error, messages.loadError);
     } finally {
       setIsResolving(false);
     }

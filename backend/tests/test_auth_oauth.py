@@ -388,6 +388,7 @@ def test_manifest_setup_automatically_binds_and_persists_across_app_restarts(
     assert client.post("/api/auth/oauth/complete", json={"code": code}).json()[
         "data"
     ] == {"provider": "github", "intent": "bind", "auth": None}
+    client.__exit__(None, None, None)
     get_settings.cache_clear()
     with TestClient(create_app()) as restarted:
         start(restarted, github, "login")
@@ -901,19 +902,16 @@ def test_https_setup_and_binding_keep_secure_cookies_through_completion(
     client: TestClient,
     github: GitHub,
 ) -> None:
-    from app.main import create_app
-
     github.origin = "https://resume.example.com"
-    with TestClient(create_app(), base_url=github.origin) as secure_client:
-        secure_client.headers["Authorization"] = client.headers["Authorization"]
-        state = setup(secure_client, github)
-        result = setup_callback(secure_client, state)
-        assert_cookie(result, secure=True)
-        authorization(github, result.headers["Location"])
-        code = callback(secure_client, github)["code"][0]
-        completed = secure_client.post("/api/auth/oauth/complete", json={"code": code})
-        assert completed.status_code == 200
-        assert "; secure" in completed.headers["set-cookie"].lower()
+    client.base_url = httpx.URL(github.origin)
+    state = setup(client, github)
+    result = setup_callback(client, state)
+    assert_cookie(result, secure=True)
+    authorization(github, result.headers["Location"])
+    code = callback(client, github)["code"][0]
+    completed = client.post("/api/auth/oauth/complete", json={"code": code})
+    assert completed.status_code == 200
+    assert "; secure" in completed.headers["set-cookie"].lower()
 
 
 def test_oauth_provider_code_cannot_be_replayed(

@@ -1,10 +1,6 @@
 import type { FileUIPart } from "ai";
 import { nanoid } from "nanoid";
-import type {
-  ChangeEventHandler,
-  FormEvent,
-  FormEventHandler,
-} from "react";
+import type { ChangeEventHandler, FormEvent, FormEventHandler } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
@@ -90,9 +86,7 @@ function selectValidFiles(
   > & { currentCount: number },
 ) {
   const incoming = [...fileList];
-  const accepted = incoming.filter((file) =>
-    matchesAcceptedType(file, accept),
-  );
+  const accepted = incoming.filter((file) => matchesAcceptedType(file, accept));
 
   if (incoming.length > 0 && accepted.length === 0) {
     onError?.({
@@ -162,9 +156,9 @@ export function usePromptInputForm({
   const formRef = useRef<HTMLFormElement | null>(null);
   const mountedRef = useRef(false);
   const submissionInFlightRef = useRef(false);
-  const [localFiles, setLocalFiles] = useState<
-    (FileUIPart & { id: string })[]
-  >([]);
+  const [localFiles, setLocalFiles] = useState<(FileUIPart & { id: string })[]>(
+    [],
+  );
   const files = controller?.attachments.files ?? localFiles;
   const filesRef = useRef(files);
   const controllerRef = useRef(controller);

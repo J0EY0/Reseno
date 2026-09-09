@@ -1,10 +1,7 @@
 import { lazy, Suspense, useMemo } from "react";
 
 import { getRenderableFieldDiffs } from "@/components/preview/resume-preview-diffs";
-import {
-  isRichTextEmpty,
-  sanitizeRichTextHtml,
-} from "@/lib/rich-text";
+import { isRichTextEmpty, sanitizeRichTextHtml } from "@/lib/rich-text";
 import { cn } from "@/lib/utils";
 
 type FieldDiffs = ReturnType<typeof getRenderableFieldDiffs>;
@@ -28,9 +25,10 @@ function HighlightsFallback({
   highlights: string[];
 }) {
   const visibleHighlights = useMemo(
-    () => highlights
-      .filter((value) => !isRichTextEmpty(value))
-      .map((value) => sanitizeRichTextHtml(value)),
+    () =>
+      highlights
+        .filter((value) => !isRichTextEmpty(value))
+        .map((value) => sanitizeRichTextHtml(value)),
     [highlights],
   );
   const hasDiffs = diffs.length > 0;
@@ -89,9 +87,7 @@ export function RichListDiff({
   const sanitized = useMemo(() => sanitizeRichTextHtml(html), [html]);
   const fallback = (
     <div
-      className={cn(
-        hasDiffs && "resume-diff-field resume-diff-field--whole",
-      )}
+      className={cn(hasDiffs && "resume-diff-field resume-diff-field--whole")}
       data-resume-diff-path={
         hasDiffs ? diffs.map((diff) => diff.path).join(" ") : undefined
       }

@@ -1,5 +1,16 @@
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
+import ts from "typescript";
+import {
+  findCalls,
+  findJsxElements,
+  findNodes,
+  getJsxAttributes,
+  getLiteralValue,
+  getMemberPath,
+  hasObjectProperty,
+  parseSource,
+} from "./source-analysis.mjs";
 
 import { evaluateTypeScript } from "./typescript-module.mjs";
 
@@ -61,21 +72,11 @@ const newResumeDialog = await readFile(
   "utf8",
 );
 const resumeGalleryWorkspace = await readFile(
-  join(
-    srcDir,
-    "components",
-    "workspace",
-    "use-resume-gallery-workspace.ts",
-  ),
+  join(srcDir, "components", "workspace", "use-resume-gallery-workspace.ts"),
   "utf8",
 );
 const resumeDetailAgentHost = await readFile(
-  join(
-    srcDir,
-    "components",
-    "workspace",
-    "resume-detail-agent-host.tsx",
-  ),
+  join(srcDir, "components", "workspace", "resume-detail-agent-host.tsx"),
   "utf8",
 );
 const modelProviderIcon = await readFile(
@@ -87,21 +88,11 @@ const modelProviders = await readFile(
   "utf8",
 );
 const agentSendController = await readFile(
-  join(
-    srcDir,
-    "components",
-    "copilot",
-    "use-agent-send-controller.ts",
-  ),
+  join(srcDir, "components", "copilot", "use-agent-send-controller.ts"),
   "utf8",
 );
 const agentPromptActions = await readFile(
-  join(
-    srcDir,
-    "components",
-    "copilot",
-    "use-agent-prompt-actions.ts",
-  ),
+  join(srcDir, "components", "copilot", "use-agent-prompt-actions.ts"),
   "utf8",
 );
 const copilotAttachments = await readFile(
@@ -116,16 +107,12 @@ const promptInputForm = await readFile(
   join(srcDir, "components", "ai-elements", "use-prompt-input-form.ts"),
   "utf8",
 );
-const apiClient = await readFile(
-  join(srcDir, "lib", "api-client.ts"),
+const apiRequestCore = await readFile(
+  join(srcDir, "lib", "api-request-core.ts"),
   "utf8",
 );
 const agentAttachmentClient = await readFile(
   join(srcDir, "lib", "agent-attachment-client.ts"),
-  "utf8",
-);
-const resumePreview = await readFile(
-  join(srcDir, "components", "preview", "resume-preview.tsx"),
   "utf8",
 );
 const resumeFormatPopover = await readFile(
@@ -133,21 +120,11 @@ const resumeFormatPopover = await readFile(
   "utf8",
 );
 const resumeDetailWorkspaceHeader = await readFile(
-  join(
-    srcDir,
-    "components",
-    "workspace",
-    "resume-detail-workspace-header.tsx",
-  ),
+  join(srcDir, "components", "workspace", "resume-detail-workspace-header.tsx"),
   "utf8",
 );
 const resumeDetailHeaderActions = await readFile(
-  join(
-    srcDir,
-    "components",
-    "workspace",
-    "resume-detail-header-actions.tsx",
-  ),
+  join(srcDir, "components", "workspace", "resume-detail-header-actions.tsx"),
   "utf8",
 );
 const templateDetailWorkspaceHeader = await readFile(
@@ -171,17 +148,36 @@ const enMessages = JSON.parse(
   await readFile(join(srcDir, "i18n", "locales", "en.json"), "utf8"),
 );
 
-const createResumeSource = resumeGalleryWorkspace.slice(
-  resumeGalleryWorkspace.indexOf("const createResume"),
-  resumeGalleryWorkspace.indexOf("const importResume"),
+const newDialogFile = parseSource(newResumeDialog);
+const localeState = findNodes(newDialogFile, ts.isVariableDeclaration).find(
+  (node) =>
+    ts.isArrayBindingPattern(node.name) &&
+    node.name.elements.some(
+      (element) => getMemberPath(element.name) === "documentLocale",
+    ),
 );
 assert(
-  newResumeDialog.includes("useState<DocumentLocale | null>(null)") &&
-    newResumeDialog.includes("<FieldGroup>") &&
-    newResumeDialog.includes("<SelectValue placeholder={messages.selectResumeLanguage}") &&
-    /createResumeApi\(\{\s*documentLocale,\s*\}\)/.test(createResumeSource) &&
-    !/\b(?:locale|template|title):/.test(createResumeSource),
-  "New resumes must require an explicit document language and let the backend choose that language's default template.",
+  getLiteralValue(localeState?.initializer?.arguments?.[0]) === null,
+  "A new resume must require an explicit document language.",
+);
+assert(
+  findJsxElements(newDialogFile, "SelectValue").some(
+    (element) =>
+      getMemberPath(getJsxAttributes(element).get("placeholder")) ===
+      "messages.selectResumeLanguage",
+  ),
+  "The language selector must expose its localized placeholder.",
+);
+const createResumeCalls = findCalls(
+  parseSource(resumeGalleryWorkspace),
+  "createResumeApi",
+);
+assert(createResumeCalls.length === 1);
+assert(
+  createResumeCalls[0].arguments[0].properties
+    .map((property) => getMemberPath(property.name))
+    .join(",") === "documentLocale",
+  "New resumes must let the backend choose the language's default template.",
 );
 assert(
   enMessages.followResumeLanguage === "Match Resume Language" &&
@@ -191,14 +187,73 @@ assert(
   "The follow response-language option must describe the resume language, not the UI language.",
 );
 
+const fontFamilyType = findNodes(
+  parseSource(resumeTypes),
+  ts.isTypeAliasDeclaration,
+).find((node) => node.name.text === "ResumeFontFamily");
 assert(
-  /ResumeFontFamily\s*=\s*[^\n]*'noto_sans_sc'/.test(resumeTypes),
-  "ResumeFontFamily must include the persisted Noto Sans SC value.",
+  fontFamilyType &&
+    findNodes(fontFamilyType, ts.isStringLiteral).some(
+      (node) => node.text === "noto_sans_sc",
+    ),
+  "The persisted Noto Sans SC value must belong to the font contract.",
 );
+const fontFamilies = findNodes(fontFamilyType, ts.isStringLiteral).map(
+  (node) => node.text,
+);
+const generatedPresets = await loadTsModule(
+  join(srcDir, "lib", "template-presets.generated.ts"),
+);
+const templatePresets = evaluateTypeScript(
+  await readFile(join(srcDir, "lib", "template-presets.ts"), "utf8"),
+  { imports: { "@/lib/template-presets.generated": generatedPresets } },
+);
+const templateHelpers = evaluateTypeScript(templates, {
+  imports: {
+    "@/lib/template-presets": templatePresets,
+    "@/lib/resume": { createId: () => "generated-id" },
+  },
+});
+const backendPresets = JSON.parse(
+  await readFile(
+    join(root, "..", "backend", "app", "services", "template_presets.json"),
+    "utf8",
+  ),
+);
+const builtinTemplates = templateHelpers.getBuiltInTemplates(enMessages);
 assert(
-  /noto_sans_sc:\s*"fontNotoSans"/.test(resumeFormatPopover) &&
-    /supportedFontFamilies[\s\S]*?'noto_sans_sc'/.test(templates),
-  "Resume and template normalization must preserve Noto Sans SC.",
+  builtinTemplates.length === Object.keys(backendPresets).length,
+  "The template catalog must include every built-in preset.",
+);
+for (const template of builtinTemplates) {
+  const preset = templatePresets.getBuiltinTemplatePreset(template.id);
+  const expected = JSON.stringify(backendPresets[template.id].typography);
+  assert(
+    fontFamilies.includes(template.typography.fontFamily) &&
+      templateHelpers.resumeFontSizeOptions.includes(
+        template.typography.fontSize,
+      ) &&
+      JSON.stringify(template.typography) === expected,
+    `${template.id} must preserve its preset typography within the font and size contracts.`,
+  );
+  template.typography.fontFamily = "noto_sans_sc";
+  template.typography.fontSize = 20;
+  const nextTemplate = templateHelpers
+    .getBuiltInTemplates(enMessages)
+    .find((item) => item.id === template.id);
+  assert(
+    JSON.stringify(preset.typography) === expected &&
+      JSON.stringify(nextTemplate.typography) === expected,
+    `Editing ${template.id} typography must not change its preset or future catalog entries.`,
+  );
+}
+assert(
+  hasObjectProperty(
+    parseSource(resumeFormatPopover),
+    "noto_sans_sc",
+    "fontNotoSans",
+  ),
+  "The format selector must preserve Noto Sans SC.",
 );
 assert(
   /<SelectItem value="noto_sans_sc">/.test(templateTypographyTab) &&
@@ -335,15 +390,17 @@ assert(
 );
 
 assert(
-  /import ZAI from "@lobehub\/icons\/es\/ZAI";/.test(
-    modelProviderIcon,
-  ),
+  /import ZAI from "@lobehub\/icons\/es\/ZAI";/.test(modelProviderIcon),
   "Z.ai icon rendering must use the dedicated @lobehub/icons ZAI entrypoint.",
 );
 const providerAliases =
-  modelProviderIcon.match(/const PROVIDER_ALIASES[^=]*=\s*\{([\s\S]*?)\n};/)?.[1] ?? "";
+  modelProviderIcon.match(
+    /const PROVIDER_ALIASES[^=]*=\s*\{([\s\S]*?)\n};/,
+  )?.[1] ?? "";
 const providerIcons =
-  modelProviderIcon.match(/const PROVIDER_ICONS\s*=\s*\{([\s\S]*?)\n} as const;/)?.[1] ?? "";
+  modelProviderIcon.match(
+    /const PROVIDER_ICONS\s*=\s*\{([\s\S]*?)\n} as const;/,
+  )?.[1] ?? "";
 assert(
   /\bglm:\s*"zai"/.test(providerAliases) &&
     /\bzhipu:\s*"zai"/.test(providerAliases) &&
@@ -380,9 +437,11 @@ assert(
 const agentChatRequestType =
   apiTypes.match(/export interface AgentChatRequest \{[\s\S]*?\n\}/)?.[0] ?? "";
 const agentChatUserMessageType =
-  apiTypes.match(/export interface AgentChatUserMessage \{[\s\S]*?\n\}/)?.[0] ?? "";
+  apiTypes.match(/export interface AgentChatUserMessage \{[\s\S]*?\n\}/)?.[0] ??
+  "";
 assert(
-  agentChatRequestType.length > 0 && !/\bsettings\s*:/.test(agentChatRequestType),
+  agentChatRequestType.length > 0 &&
+    !/\bsettings\s*:/.test(agentChatRequestType),
   "The frontend Agent request contract must not expose persisted Agent preferences.",
 );
 assert(
@@ -473,8 +532,7 @@ assert(
   "Agent attachment uploads must expose reactive uploading/submitting state.",
 );
 
-const uploadStateName =
-  uploadStateDeclaration?.[1] ?? "__missingUploadState";
+const uploadStateName = uploadStateDeclaration?.[1] ?? "__missingUploadState";
 const uploadStateSetter =
   uploadStateDeclaration?.[2] ?? "__missingUploadStateSetter";
 const submitPromptStart = agentPromptActions.indexOf(
@@ -490,9 +548,9 @@ const submitPromptSource =
     : "";
 
 assert(
-  new RegExp(
-    `if\\s*\\([\\s\\S]{0,160}\\b${uploadStateName}\\b`,
-  ).test(submitPromptSource) &&
+  new RegExp(`if\\s*\\([\\s\\S]{0,160}\\b${uploadStateName}\\b`).test(
+    submitPromptSource,
+  ) &&
     new RegExp(
       `\\b${uploadStateSetter}\\(true\\)[\\s\\S]*\\b${uploadStateSetter}\\(false\\)`,
     ).test(submitPromptSource),
@@ -511,7 +569,7 @@ assert(
   "The Agent send control must be disabled while attachments are uploading.",
 );
 assert(
-  /onUploadProgress:[\s\S]{0,180}options\.onProgress/.test(apiClient) &&
+  /onUploadProgress:[\s\S]{0,180}options\.onProgress/.test(apiRequestCore) &&
     /uploadAgentAttachment\([\s\S]{0,240}onProgress[\s\S]{0,180}uploadApi<AgentChatAttachment>/.test(
       agentAttachmentClient,
     ),
@@ -534,11 +592,9 @@ assert(
     promptInputForm,
   ) &&
     /if \(result instanceof Promise\) \{\s*await result;\s*\}\s*for \(const \{ id \} of activeFiles\)[\s\S]{0,80}remove\(id\)/.test(
-    promptInputForm,
-  ) &&
-    !/await result;\s*\}\s*if \(!mountedRef\.current\)/.test(
       promptInputForm,
     ) &&
+    !/await result;\s*\}\s*if \(!mountedRef\.current\)/.test(promptInputForm) &&
     /shouldClearPromptSubmissionText\([\s\S]{0,100}latestController\.textInput\.value[\s\S]{0,100}latestController\.textInput\.clear\(\)/.test(
       promptInputForm,
     ) &&

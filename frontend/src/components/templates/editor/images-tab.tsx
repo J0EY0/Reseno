@@ -64,9 +64,7 @@ export function TemplateImagesTab({
             nameDraft={nameDraft}
             onCancelNameEdit={editor.cancelImageNameEdit}
             onCommitName={() => editor.commitImageName(image.id)}
-            onExpandedChange={(open) =>
-              editor.setImageExpanded(image.id, open)
-            }
+            onExpandedChange={(open) => editor.setImageExpanded(image.id, open)}
             onNameDraftChange={(value) =>
               editor.setImageNameDraftValue(image.id, value)
             }

@@ -1,32 +1,64 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { toast } from "sonner";
-
 import type { AppMessages } from "@/i18n";
+import { useAuthSessionToken } from "@/hooks/use-auth-session-token";
 import {
   countTemplateChanges,
   createTemplateFingerprint,
 } from "@/lib/workspace-change-tracking";
-import { saveTemplateApi } from "@/lib/workspace-api";
-import type { ApiRequestOptions } from "@/types/api";
+import {
+  discardTemplateChangesApi,
+  saveTemplateApi,
+} from "@/lib/workspace-api";
+import { notifyApiError } from "@/lib/api-error-notifier";
+import type {
+  ApiRequestOptions,
+  TemplateEditingResponse,
+  TemplateSaveMode,
+} from "@/types/api";
 import type { ResumeTemplateDefinition } from "@/types/resume";
 
 const AUTOSAVE_DELAY_MS = 5_000;
 const AUTOSAVE_MAX_WAIT_MS = 30_000;
 const AUTOSAVE_RETRY_DELAYS_MS = [2_000, 5_000] as const;
-
 export type TemplateDetailSaveState = "idle" | "saving" | "saved";
-
 interface TemplateSaveResult {
   savedAt: string;
   template: ResumeTemplateDefinition;
 }
-
 interface ActiveTemplateSave {
+  mode: TemplateSaveMode | "discard";
   promise: Promise<TemplateSaveResult>;
-  templateId: string;
 }
-
+interface PersistedTemplateState {
+  checkpoint: ResumeTemplateDefinition | null;
+  checkpointFingerprint: string;
+  fingerprint: string;
+  template: ResumeTemplateDefinition | null;
+}
+function createPersistedState(
+  template: ResumeTemplateDefinition | null,
+  checkpoint: ResumeTemplateDefinition | null,
+): PersistedTemplateState {
+  const fingerprint = createTemplateFingerprint(template);
+  return {
+    checkpoint,
+    checkpointFingerprint: checkpoint
+      ? createTemplateFingerprint(checkpoint)
+      : fingerprint,
+    fingerprint,
+    template,
+  };
+}
 interface TemplateDetailSaveOptions {
+  initialCheckpoint: ResumeTemplateDefinition | null;
   isLoading: boolean;
   messages: AppMessages;
   onAdoptSavedTemplate: (
@@ -36,215 +68,220 @@ interface TemplateDetailSaveOptions {
   onRestoreTemplate: (template: ResumeTemplateDefinition) => void;
   template: ResumeTemplateDefinition | null;
 }
-
-/** Owns the custom-template persistence transaction and its autosave policy. */
 export function useTemplateDetailSave({
+  initialCheckpoint,
   isLoading,
   messages,
   onAdoptSavedTemplate,
   onRestoreTemplate,
   template,
 }: TemplateDetailSaveOptions) {
-  const initialPersistedTemplate =
-    template && !template.isBuiltIn ? template : null;
-  const [lastSavedAt, setLastSavedAt] = useState<string | null>(
-    template?.updatedAt || null,
+  const authToken = useAuthSessionToken();
+  const live = useMemo(
+    () => ({ template, fingerprint: createTemplateFingerprint(template) }),
+    [template],
   );
-  const [saveState, setSaveState] =
-    useState<TemplateDetailSaveState>("idle");
+  const [persisted, setPersisted] = useState(() =>
+    createPersistedState(template, initialCheckpoint),
+  );
+  const [saveState, setSaveState] = useState<TemplateDetailSaveState>("idle");
   const activeRequestRef = useRef<ActiveTemplateSave | null>(null);
-  const lastSavedAtRef = useRef(lastSavedAt);
+  const persistedRef = useRef(persisted);
   const autosaveBurstStartedAtRef = useRef<number | null>(null);
   const autosaveGenerationRef = useRef(0);
   const autosaveRetryAttemptRef = useRef(0);
-  const latestTemplateRef = useRef(template);
-  const onAdoptSavedTemplateRef = useRef(onAdoptSavedTemplate);
-  const onRestoreTemplateRef = useRef(onRestoreTemplate);
-  const persistedFingerprintRef = useRef(
-    createTemplateFingerprint(initialPersistedTemplate),
-  );
-  const persistedTemplateRef = useRef<ResumeTemplateDefinition | null>(
-    initialPersistedTemplate,
-  );
-
-  latestTemplateRef.current = template;
-  onAdoptSavedTemplateRef.current = onAdoptSavedTemplate;
-  onRestoreTemplateRef.current = onRestoreTemplate;
-
-  const hasUnsavedChanges = useCallback(() => {
-    const current = latestTemplateRef.current;
-
+  const latestRef = useRef(live);
+  const callbacksRef = useRef({ onAdoptSavedTemplate, onRestoreTemplate });
+  useLayoutEffect(() => {
+    latestRef.current = live;
+  }, [live]);
+  useLayoutEffect(() => {
+    callbacksRef.current = { onAdoptSavedTemplate, onRestoreTemplate };
+  }, [onAdoptSavedTemplate, onRestoreTemplate]);
+  const hasUnpersistedChanges = useCallback(() => {
+    const current = latestRef.current;
     return Boolean(
-      current &&
-        !current.isBuiltIn &&
-        createTemplateFingerprint(current) !== persistedFingerprintRef.current,
+      current.template &&
+      !current.template.isBuiltIn &&
+      current.fingerprint !== persistedRef.current.fingerprint,
     );
   }, []);
-
+  const hasUnsavedChanges = useCallback(() => {
+    const current = latestRef.current;
+    return Boolean(
+      current.template &&
+      !current.template.isBuiltIn &&
+      (current.fingerprint !== persistedRef.current.checkpointFingerprint ||
+        current.fingerprint !== persistedRef.current.fingerprint),
+    );
+  }, []);
+  const updatePersisted = useCallback((next: PersistedTemplateState) => {
+    persistedRef.current = next;
+    setPersisted(next);
+  }, []);
   const hydratePersistedTemplate = useCallback(
-    (nextTemplate: ResumeTemplateDefinition) => {
-      const persisted = nextTemplate.isBuiltIn ? null : nextTemplate;
-
+    (
+      nextTemplate: ResumeTemplateDefinition,
+      checkpoint: ResumeTemplateDefinition | null,
+    ) => {
       autosaveGenerationRef.current += 1;
-      persistedTemplateRef.current = persisted;
-      persistedFingerprintRef.current = createTemplateFingerprint(persisted);
-      lastSavedAtRef.current = nextTemplate.updatedAt || null;
-      setLastSavedAt(lastSavedAtRef.current);
+      updatePersisted(createPersistedState(nextTemplate, checkpoint));
       setSaveState("idle");
     },
-    [],
+    [updatePersisted],
   );
-
-  const adoptPersistedTemplate = useCallback(
-    (nextTemplate: ResumeTemplateDefinition) => {
-      const fingerprint = createTemplateFingerprint(nextTemplate);
-
-      persistedTemplateRef.current = nextTemplate;
-      persistedFingerprintRef.current = fingerprint;
-      lastSavedAtRef.current = nextTemplate.updatedAt || null;
-      setLastSavedAt(lastSavedAtRef.current);
+  const adoptResponse = useCallback(
+    (response: TemplateEditingResponse, submittedFingerprint: string) => {
+      const next = createPersistedState(response.template, response.checkpoint);
+      const accepted = new Set([submittedFingerprint, next.fingerprint]);
+      updatePersisted(next);
+      if (
+        latestRef.current.template?.id === response.template.id &&
+        accepted.has(latestRef.current.fingerprint)
+      )
+        latestRef.current = {
+          template: response.template,
+          fingerprint: next.fingerprint,
+        };
+      callbacksRef.current.onAdoptSavedTemplate(response.template, accepted);
       setSaveState("saved");
-      onAdoptSavedTemplateRef.current(
-        nextTemplate,
-        new Set([fingerprint]),
-      );
+      return {
+        savedAt: response.template.updatedAt,
+        template: response.template,
+      };
     },
-    [],
+    [updatePersisted],
   );
-
-  const save = useCallback(
+  const adoptPersistedTemplate = useCallback(
+    (nextTemplate: ResumeTemplateDefinition) =>
+      adoptResponse(
+        { template: nextTemplate, checkpoint: null },
+        createTemplateFingerprint(nextTemplate),
+      ),
+    [adoptResponse],
+  );
+  const persist = useCallback(
     async (
+      mode: TemplateSaveMode,
       options: Pick<ApiRequestOptions, "notifyOnError"> = {},
     ): Promise<TemplateSaveResult> => {
       while (activeRequestRef.current) {
-        const activeRequest = activeRequestRef.current;
-
+        const active = activeRequestRef.current;
         try {
-          await activeRequest.promise;
+          await active.promise;
         } catch {
-          // A queued save is a new intent and must retry the latest snapshot.
+          /* A queued save owns its retry. */
         } finally {
-          if (activeRequestRef.current === activeRequest) {
+          if (activeRequestRef.current === active)
             activeRequestRef.current = null;
-          }
         }
       }
-
-      const snapshot = latestTemplateRef.current;
-      if (!snapshot) {
+      const snapshot = latestRef.current;
+      if (!snapshot.template)
         throw new Error("No template is available to save.");
-      }
-      if (snapshot.isBuiltIn) {
-        return { savedAt: snapshot.updatedAt, template: snapshot };
-      }
-
-      const submittedFingerprint = createTemplateFingerprint(snapshot);
       if (
-        submittedFingerprint === persistedFingerprintRef.current &&
-        lastSavedAtRef.current
+        snapshot.template.isBuiltIn ||
+        (snapshot.fingerprint === persistedRef.current.fingerprint &&
+          (mode === "autosave" || persistedRef.current.checkpoint === null))
       ) {
-        setSaveState("saved");
-        return { savedAt: lastSavedAtRef.current, template: snapshot };
+        if (!snapshot.template.isBuiltIn) {
+          setSaveState("saved");
+        }
+        return {
+          savedAt: snapshot.template.updatedAt,
+          template: snapshot.template,
+        };
       }
-
-      const request = (async (): Promise<TemplateSaveResult> => {
+      const submittedTemplate = snapshot.template;
+      const request = (async () => {
         setSaveState("saving");
-
         try {
-          const response = await saveTemplateApi(
-            snapshot.id,
-            snapshot,
-            options,
+          return adoptResponse(
+            await saveTemplateApi(submittedTemplate.id, submittedTemplate, {
+              ...options,
+              saveMode: mode,
+            }),
+            snapshot.fingerprint,
           );
-          const savedTemplate = response.template;
-          const savedFingerprint = createTemplateFingerprint(savedTemplate);
-          const savedAt =
-            savedTemplate.updatedAt || new Date().toISOString();
-          const acceptedFingerprints = new Set([
-            submittedFingerprint,
-            savedFingerprint,
-          ]);
-
-          persistedTemplateRef.current = savedTemplate;
-          persistedFingerprintRef.current = savedFingerprint;
-          onAdoptSavedTemplateRef.current(
-            savedTemplate,
-            acceptedFingerprints,
-          );
-          if (latestTemplateRef.current?.id === savedTemplate.id) {
-            lastSavedAtRef.current = savedAt;
-            setLastSavedAt(lastSavedAtRef.current);
-            setSaveState("saved");
-          }
-
-          return {
-            savedAt,
-            template: savedTemplate,
-          };
         } catch (error) {
           setSaveState("idle");
           throw error;
         }
       })();
-      const trackedRequest = { promise: request, templateId: snapshot.id };
-      activeRequestRef.current = trackedRequest;
-
+      const active = {
+        mode,
+        promise: request,
+      };
+      activeRequestRef.current = active;
       try {
         return await request;
       } finally {
-        if (activeRequestRef.current === trackedRequest) {
+        if (activeRequestRef.current === active)
           activeRequestRef.current = null;
-        }
       }
     },
-    [],
+    [adoptResponse],
   );
-
+  const save = useCallback(
+    (options: Pick<ApiRequestOptions, "notifyOnError"> = {}) =>
+      persist("checkpoint", options),
+    [persist],
+  );
   const discard = useCallback(async () => {
-    const persistedTemplate = persistedTemplateRef.current;
-    if (!persistedTemplate) {
-      return;
-    }
-
-    const activeRequest = activeRequestRef.current;
-    const hasActiveSave =
-      activeRequest?.templateId === persistedTemplate.id;
-
+    const state = persistedRef.current;
+    const target = state.checkpoint ?? state.template;
+    if (!target || target.isBuiltIn) return;
     autosaveGenerationRef.current += 1;
-    onRestoreTemplateRef.current(persistedTemplate);
-    setSaveState("saved");
-
-    if (!hasActiveSave) {
-      return;
-    }
-
+    const previous = activeRequestRef.current;
+    const request = (async (): Promise<TemplateSaveResult> => {
+      if (previous) {
+        try {
+          await previous.promise;
+        } catch {
+          /* The explicit checkpoint remains the discard target. */
+        }
+      }
+      const response =
+        previous?.mode === "checkpoint"
+          ? await saveTemplateApi(target.id, target)
+          : await discardTemplateChangesApi(target.id);
+      const next = createPersistedState(response.template, response.checkpoint);
+      updatePersisted(next);
+      latestRef.current = {
+        template: response.template,
+        fingerprint: next.fingerprint,
+      };
+      callbacksRef.current.onRestoreTemplate(response.template);
+      setSaveState("saved");
+      return {
+        savedAt: response.template.updatedAt,
+        template: response.template,
+      };
+    })();
+    const active: ActiveTemplateSave = {
+      mode: "discard",
+      promise: request,
+    };
+    activeRequestRef.current = active;
     try {
-      await activeRequest.promise;
-    } catch {
-      // The captured persisted snapshot below remains the discard source of truth.
+      await request;
+    } finally {
+      if (activeRequestRef.current === active) activeRequestRef.current = null;
     }
-
-    const response = await saveTemplateApi(
-      persistedTemplate.id,
-      persistedTemplate,
-    );
-    adoptPersistedTemplate(response.template);
-  }, [adoptPersistedTemplate]);
-
+  }, [updatePersisted]);
   useEffect(() => {
     autosaveGenerationRef.current += 1;
     autosaveBurstStartedAtRef.current = null;
     autosaveRetryAttemptRef.current = 0;
     toast.dismiss("autosave-failed");
-  }, [template?.id]);
+  }, [template?.id, authToken]);
 
   useEffect(() => {
-    if (isLoading || !template || template.isBuiltIn) {
+    if (!authToken || isLoading || !template || template.isBuiltIn) {
       return;
     }
 
-    const activeFingerprint = createTemplateFingerprint(template);
-    if (activeFingerprint === persistedFingerprintRef.current) {
+    if (live.fingerprint === persisted.fingerprint) {
       autosaveBurstStartedAtRef.current = null;
       autosaveRetryAttemptRef.current = 0;
       toast.dismiss("autosave-failed");
@@ -269,13 +306,13 @@ export function useTemplateDetailSave({
       if (
         cancelled ||
         generation !== autosaveGenerationRef.current ||
-        !hasUnsavedChanges()
+        !hasUnpersistedChanges()
       ) {
         return;
       }
 
       try {
-        await save({ notifyOnError: false });
+        await persist("autosave", { notifyOnError: false });
         if (cancelled || generation !== autosaveGenerationRef.current) {
           return;
         }
@@ -286,7 +323,7 @@ export function useTemplateDetailSave({
         if (
           cancelled ||
           generation !== autosaveGenerationRef.current ||
-          !hasUnsavedChanges()
+          !hasUnpersistedChanges()
         ) {
           return;
         }
@@ -314,14 +351,23 @@ export function useTemplateDetailSave({
         window.clearTimeout(timer);
       }
     };
-  }, [hasUnsavedChanges, isLoading, messages.loadError, save, template]);
+  }, [
+    authToken,
+    hasUnpersistedChanges,
+    isLoading,
+    messages.loadError,
+    persist,
+    live.fingerprint,
+    persisted.fingerprint,
+    template,
+  ]);
 
   useEffect(() => {
-    if (isLoading || saveState === "saving" || !hasUnsavedChanges()) {
+    if (isLoading || saveState === "saving" || !hasUnpersistedChanges()) {
       return;
     }
     setSaveState("idle");
-  }, [hasUnsavedChanges, isLoading, saveState, template]);
+  }, [hasUnpersistedChanges, isLoading, saveState, template]);
 
   useEffect(() => {
     if (saveState !== "saved") {
@@ -330,6 +376,8 @@ export function useTemplateDetailSave({
     const timer = window.setTimeout(() => setSaveState("idle"), 1_800);
     return () => window.clearTimeout(timer);
   }, [saveState]);
+
+  const saveManually = useCallback(() => save().catch(notifyApiError), [save]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -341,25 +389,33 @@ export function useTemplateDetailSave({
       }
       event.preventDefault();
       if (!isLoading && template && !template.isBuiltIn) {
-        void save();
+        saveManually();
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isLoading, save, template]);
+  }, [isLoading, saveManually, template]);
 
+  const changeCount = useMemo(
+    () =>
+      template && !template.isBuiltIn
+        ? countTemplateChanges(
+            persisted.checkpoint ?? persisted.template,
+            template,
+          )
+        : 0,
+    [persisted.checkpoint, persisted.template, template],
+  );
   return {
     adoptPersistedTemplate,
-    changeCount:
-      template && !template.isBuiltIn
-        ? countTemplateChanges(persistedTemplateRef.current, template)
-        : 0,
+    changeCount,
     discard,
     hasUnsavedChanges,
     hydratePersistedTemplate,
-    lastSavedAt,
+    lastSavedAt: persisted.template?.updatedAt ?? null,
     save,
+    saveManually,
     saveState,
   };
 }

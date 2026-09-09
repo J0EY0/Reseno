@@ -11,10 +11,7 @@ import { Empty, EmptyDescription } from "@/components/ui/empty";
 import { Spinner } from "@/components/ui/spinner";
 import type { AppMessages } from "@/i18n";
 import type { TemplatePreviewResumes } from "@/lib/template-preview-resume";
-import type {
-  DocumentLocale,
-  ResumeTemplateDefinition,
-} from "@/types/resume";
+import type { DocumentLocale, ResumeTemplateDefinition } from "@/types/resume";
 
 import { TemplateGalleryGrid } from "./template-gallery-grid";
 import { TemplateLocaleSelect } from "./template-locale-select";
@@ -160,9 +157,7 @@ export function TemplateGallery({
       {gallery.paginatedTemplates.length === 0 ? (
         <Empty className="min-h-[390px]">
           <EmptyDescription className="font-medium">
-            {templates.length === 0
-              ? t.emptyTemplates
-              : t.emptyTemplateSearch}
+            {templates.length === 0 ? t.emptyTemplates : t.emptyTemplateSearch}
           </EmptyDescription>
         </Empty>
       ) : null}

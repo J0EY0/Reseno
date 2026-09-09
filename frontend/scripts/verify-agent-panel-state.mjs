@@ -1,5 +1,7 @@
 import { join } from "node:path";
 import { readFile } from "node:fs/promises";
+import ts from "typescript";
+import { findNodes, getMemberPath, parseSource } from "./source-analysis.mjs";
 
 import { evaluateTypeScript } from "./typescript-module.mjs";
 
@@ -31,10 +33,10 @@ const [panelSource, conversationViewSource, promptActionsSource, sendSource] =
 
 assert(
   panelState
-    .mergeStreamingAgentMessage(
-      [{ id: "assistant-1", text: "persisted" }],
-      { id: "assistant-2", text: "streaming" },
-    )
+    .mergeStreamingAgentMessage([{ id: "assistant-1", text: "persisted" }], {
+      id: "assistant-2",
+      text: "streaming",
+    })
     .map((message) => message.id)
     .join(",") === "assistant-1,assistant-2",
   "A new streaming message must appear after persisted history.",
@@ -167,24 +169,46 @@ assert(
   promptActionsSource.includes("activeUploadAbortRef.current.abort()"),
   "The stop action must cancel an in-flight attachment upload.",
 );
-assert(
-  /if\s*\(activeUploadAbortRef\.current\s*===\s*uploadAbortController\)\s*\{\s*activeUploadAbortRef\.current\s*=\s*null\s*\}[\s\S]{0,500}const\s+sendOperation\s*=\s*sendPrompt\(/.test(
-    promptActionsSource,
-  ) &&
-    /const\s+stopResponding[\s\S]*activeUploadAbortRef\.current\.abort\(\)[\s\S]{0,120}return[\s\S]{0,160}stopConversation\(\)/.test(
-      promptActionsSource,
-    ),
-  "Once upload ownership ends, Stop must target the Agent conversation instead of the completed upload.",
-);
+const stopDeclaration = findNodes(
+  parseSource(promptActionsSource),
+  ts.isVariableDeclaration,
+).find((node) => getMemberPath(node.name) === "stopResponding");
+const stopCallback = stopDeclaration?.initializer?.arguments?.[0];
+assert(stopCallback, "The composer must expose its stop action.");
+for (const [isSubmittingPrompt, ownsUpload, expected] of [
+  [true, true, "upload"],
+  [false, true, "conversation"],
+  [true, false, "conversation"],
+]) {
+  const events = [];
+  const { stop } = evaluateTypeScript(
+    `export const stop = ${stopCallback.getText()};`,
+    {
+      globals: {
+        isSubmittingPrompt,
+        activeUploadAbortRef: {
+          current: ownsUpload ? { abort: () => events.push("upload") } : null,
+        },
+        stopConversation: () => events.push("conversation"),
+      },
+    },
+  );
+  stop();
+  assert(
+    JSON.stringify(events) === JSON.stringify([expected]),
+    "Stop must cancel the current upload or the accepted conversation exactly once.",
+  );
+}
+
 assert(
   sendSource.includes("revision,"),
   "Edited history replacement must carry the loaded session revision.",
 );
 assert(
-  sendSource.includes("'AGENT_SESSION_REVISION_CONFLICT'"),
+  findNodes(parseSource(sendSource), ts.isStringLiteral).some(
+    (node) => node.text === "AGENT_SESSION_REVISION_CONFLICT",
+  ),
   "A stale history edit must reconcile with the authoritative session.",
 );
 
 console.log("Agent panel state checks passed.");
-
-await import("./verify-agent-panel-races.mjs");

@@ -1,15 +1,15 @@
-import { Input } from '@/components/ui/input'
-import type { ProjectItem } from '@/types/resume'
+import { Input } from "@/components/ui/input";
+import type { ProjectItem } from "@/types/resume";
 
-import { FormField } from './form-field'
-import { InlineTextInput } from './inline-text-input'
-import { InlineTextListInput } from './inline-text-list-input'
-import { ResumeItemEditorShell } from './resume-item-editor-shell'
+import { FormField } from "./form-field";
+import { InlineTextInput } from "./inline-text-input";
+import { InlineTextListInput } from "./inline-text-list-input";
+import { ResumeItemEditorShell } from "./resume-item-editor-shell";
 import {
   HighlightsField,
   compactResumeFieldClassName,
-} from './resume-section-editor-fields'
-import type { TypedSectionEditorProps } from './resume-section-editor-types'
+} from "./resume-section-editor-fields";
+import type { TypedSectionEditorProps } from "./resume-section-editor-types";
 
 export function ProjectSectionEditor({
   t,
@@ -18,18 +18,18 @@ export function ProjectSectionEditor({
   onUpdateItem,
   onRemoveItem,
   onMoveItem,
-}: TypedSectionEditorProps<'project'>) {
+}: TypedSectionEditorProps<"project">) {
   function updateItem(
     item: ProjectItem,
-    patch: Partial<Omit<ProjectItem, 'id'>>,
+    patch: Partial<Omit<ProjectItem, "id">>,
   ) {
     onUpdateItem({
-      type: 'item.update',
+      type: "item.update",
       sectionId: section.id,
-      sectionKind: 'project',
+      sectionKind: "project",
       itemId: item.id,
       patch,
-    })
+    });
   }
 
   return section.items.map((item, index) => (
@@ -45,8 +45,8 @@ export function ProjectSectionEditor({
       moveDownLabel={t.moveItemDown}
       toggleLabel={t.toggleItem}
       onRemove={() => onRemoveItem(item.id)}
-      onMoveUp={() => onMoveItem(item.id, 'up')}
-      onMoveDown={() => onMoveItem(item.id, 'down')}
+      onMoveUp={() => onMoveItem(item.id, "up")}
+      onMoveDown={() => onMoveItem(item.id, "down")}
     >
       <div className="grid min-w-0 gap-3 md:grid-cols-2">
         <FormField label={t.fieldLabels.projectName}>
@@ -117,5 +117,5 @@ export function ProjectSectionEditor({
         />
       </div>
     </ResumeItemEditorShell>
-  ))
+  ));
 }
