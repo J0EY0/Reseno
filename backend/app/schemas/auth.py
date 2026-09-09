@@ -38,6 +38,13 @@ class AuthLoginResponse(BaseModel):
     token_type: str = Field(default="bearer", alias="tokenType")
 
 
+class AuthUsernameUpdateRequest(BaseModel):
+    """Username change request submitted from settings."""
+
+    new_username: str = Field(alias="newUsername")
+    current_password: str = Field(alias="currentPassword")
+
+
 class AuthPasswordUpdateRequest(BaseModel):
     """Password change request submitted from settings."""
 

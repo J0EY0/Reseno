@@ -11,6 +11,7 @@ from app.schemas.auth import (
     AuthPasswordUpdateResponse,
     AuthSetupRequest,
     AuthSetupStatusResponse,
+    AuthUsernameUpdateRequest,
 )
 from app.schemas.common import (
     APP_MESSAGE_INVALID_CREDENTIALS,
@@ -27,17 +28,21 @@ from app.schemas.common import (
     ok_response,
 )
 from app.services.auth_accounts import (
+    InvalidOwnerPasswordError,
     OwnerAccount,
     OwnerAlreadyExistsError,
+    OwnerChangedError,
     authenticate_owner,
     create_owner,
     is_setup_required,
     update_owner_password,
+    update_owner_username,
 )
 from app.services.auth_github_app import github_app_configured
 from app.services.auth_identities import list_identities
 from app.services.auth_tokens import (
     AuthTokenError,
+    AuthTokenPayload,
     create_access_token,
     format_token_expiry,
     refresh_access_token,
@@ -202,6 +207,39 @@ def post_auth_refresh(request: Request) -> ApiResponse[AuthLoginResponse]:
             tokenType="bearer",
         ),
     )
+
+
+@router.post("/username", response_model=ApiResponse[AuthLoginResponse])
+def post_auth_username(
+    request: Request,
+    payload: AuthUsernameUpdateRequest,
+) -> ApiResponse[AuthLoginResponse]:
+    """Rename the authenticated owner and return replacement credentials."""
+
+    auth_payload = getattr(request.state, "auth_payload", None)
+    if not isinstance(auth_payload, AuthTokenPayload):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=APP_MESSAGE_UNAUTHORIZED,
+        )
+    username = _validate_username(payload.new_username)
+    expected_owner = OwnerAccount(auth_payload.subject, auth_payload.auth_revision)
+    try:
+        with update_owner_username(
+            expected_owner, payload.current_password, username
+        ) as owner:
+            response = _token_response(owner)
+    except OwnerChangedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=APP_MESSAGE_UNAUTHORIZED,
+        ) from exc
+    except InvalidOwnerPasswordError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=APP_MESSAGE_INVALID_CREDENTIALS,
+        ) from exc
+    return ok_response(response)
 
 
 @router.post("/password", response_model=ApiResponse[AuthPasswordUpdateResponse])

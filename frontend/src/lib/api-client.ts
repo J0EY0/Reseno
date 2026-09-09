@@ -1,5 +1,5 @@
 import type { ApiRequestOptions } from "@/types/api";
-import { AUTH_REFRESH_ROUTE } from "@/lib/api-auth";
+import { AUTH_REFRESH_ROUTE, AUTH_USERNAME_ROUTE } from "@/lib/api-auth";
 import { notifyApiError } from "@/lib/api-error-notifier";
 import {
   clearApiCache,
@@ -23,6 +23,7 @@ export const apiRoutes = {
   authLogin: "/api/auth/login",
   authRefresh: AUTH_REFRESH_ROUTE,
   authPassword: "/api/auth/password",
+  authUsername: AUTH_USERNAME_ROUTE,
   workspaceDefaultTemplate: "/api/workspace/default-template",
   workspaceUserSettings: "/api/workspace/user-settings",
   resumes: "/api/resumes",

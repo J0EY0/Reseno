@@ -4,6 +4,7 @@ import {
   fetchApiResource,
   getApiErrorStatus,
 } from "@/lib/api-client";
+import { getAccessToken } from "@/lib/auth-session";
 import {
   applyAgentTextStreamEvent,
   applyAgentToolStreamEvent,
@@ -347,13 +348,31 @@ async function fetchAgentRunEvents(
   signal: AbortSignal | undefined,
 ) {
   const route = apiRoutes.agentRunEvents(runId);
-  const response = await fetchApiResource(`${route}?after=${after}`, {
-    cache: "no-store",
-    notifyOnError: false,
-    headers: { Accept: "text/event-stream" },
-    method: "GET",
-    signal,
-  });
+  const request = () =>
+    fetchApiResource(`${route}?after=${after}`, {
+      cache: "no-store",
+      notifyOnError: false,
+      headers: { Accept: "text/event-stream" },
+      method: "GET",
+      signal,
+    });
+  const requestToken = getAccessToken();
+  let response: Response;
+  try {
+    response = await request();
+  } catch (error) {
+    const currentToken = getAccessToken();
+    if (
+      getApiErrorStatus(error) !== 401 ||
+      !requestToken ||
+      !currentToken ||
+      currentToken === requestToken
+    ) {
+      throw error;
+    }
+    throwIfAborted(signal);
+    response = await request();
+  }
   assertEventStreamResponse(response, route);
   return response;
 }

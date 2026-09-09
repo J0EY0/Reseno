@@ -1,6 +1,7 @@
 import secrets
 import sqlite3
-from contextlib import closing
+from collections.abc import Iterator
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from hmac import compare_digest
 from pathlib import Path
@@ -73,6 +74,14 @@ _auth_db_init_lock = Lock()
 
 class OwnerAlreadyExistsError(RuntimeError):
     """Raised when setup is attempted after the owner has been created."""
+
+
+class OwnerChangedError(RuntimeError):
+    """Raised when a request no longer identifies the current owner."""
+
+
+class InvalidOwnerPasswordError(ValueError):
+    """Raised when the submitted password does not match the owner."""
 
 
 @dataclass(frozen=True)
@@ -288,3 +297,43 @@ def update_owner_password(
             raise
 
     return OwnerAccount(username=username, auth_revision=auth_revision)
+
+
+@contextmanager
+def update_owner_username(
+    expected_owner: OwnerAccount,
+    current_password: str,
+    new_username: str,
+) -> Iterator[OwnerAccount]:
+    """Commit the new name after the caller prepares replacement credentials."""
+
+    with closing(connect_auth_database()) as conn, conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = _owner_row(conn)
+        if (
+            row is None
+            or not compare_digest(
+                str(row["username"]).encode("utf-8"),
+                expected_owner.username.encode("utf-8"),
+            )
+            or not compare_digest(
+                str(row["auth_revision"]).encode("utf-8"),
+                expected_owner.auth_revision.encode("utf-8"),
+            )
+        ):
+            raise OwnerChangedError
+        if not _verify_password(current_password, str(row["password_hash"])):
+            raise InvalidOwnerPasswordError
+
+        owner = _account_from_row(row)
+        if new_username != owner.username:
+            owner = OwnerAccount(new_username, _new_auth_revision())
+            conn.execute(
+                """
+                UPDATE auth_owner
+                SET username = ?, auth_revision = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = 1
+                """,
+                (owner.username, owner.auth_revision),
+            )
+        yield owner

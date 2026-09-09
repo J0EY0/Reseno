@@ -21,10 +21,12 @@ const modules = [
   "settings-panel-types.ts",
   "settings-panel.tsx",
   "site-settings-tab.tsx",
+  "username-settings-dialog.tsx",
   "use-password-settings.ts",
   "use-recycle-bin-actions.ts",
   "use-recycle-bin-controller.ts",
   "use-recycle-bin-selection.ts",
+  "use-username-settings.ts",
 ];
 
 function resolvePanelImport(moduleName, specifier) {
@@ -237,9 +239,10 @@ assert.equal(
 );
 assert.equal(
   (securitySettingsSection.match(/<SettingsRow\b/g) ?? []).length,
-  1,
-  "Account security must remain a focused single-row card.",
+  2,
+  "Account security must provide separate username and password rows.",
 );
+assert.match(securitySettingsSection, /<UsernameSettingsDialog\b/);
 assert.match(securitySettingsSection, /<PasswordSettingsDialog\b/);
 assert.equal(
   (agentSettings.match(/<SettingsSection\b/g) ?? []).length,

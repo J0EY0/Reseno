@@ -16,6 +16,8 @@ const testState = {
 };
 globalThis.__RESENO_API_CLIENT_TEST_STATE__ = testState;
 globalThis.window = {
+  clearTimeout,
+  setTimeout,
   isSecureContext: true,
   dispatchEvent(event) {
     testState.invalidations.push(event.type);
@@ -436,15 +438,31 @@ try {
     assert.deepEqual(testState.lockRequests, []);
   }
 
-  reset(api);
-  testState.refreshPending = new Promise(() => {});
-  enqueueJson(unauthorizedPayload, 401);
-  await assert.rejects(
-    api.requestApi(api.apiRoutes.authRefresh, { method: "POST", body: {} }),
-    /localized:UNAUTHORIZED_REQUEST/,
-  );
-  assert.equal(testState.clearedAuthCount, 1);
-  assert.deepEqual(testState.lockRequests, []);
+  for (const route of [api.apiRoutes.authRefresh, api.apiRoutes.authUsername]) {
+    reset(api);
+    testState.refreshPending = new Promise(() => {});
+    enqueueJson(unauthorizedPayload, 401);
+    let timeout;
+    try {
+      await assert.rejects(
+        Promise.race([
+          api.requestApi(route, { method: "POST", body: {} }),
+          new Promise((_, reject) => {
+            timeout = setTimeout(
+              () =>
+                reject(new Error("Auth mutation deadlocked on its own lock.")),
+              1_000,
+            );
+          }),
+        ]),
+        /localized:UNAUTHORIZED_REQUEST/,
+      );
+    } finally {
+      clearTimeout(timeout);
+    }
+    assert.equal(testState.clearedAuthCount, 1);
+    assert.deepEqual(testState.lockRequests, []);
+  }
 
   reset(api);
   enqueueJson({ code: 40002, data: null, message: "VALIDATION_ERROR" }, 422);
@@ -842,6 +860,110 @@ try {
   const attachmentClient = await server.ssrLoadModule(
     "/src/lib/agent-attachment-client.ts",
   );
+  reset(api);
+  let finishUsernameChange;
+  testState.refreshPending = new Promise((resolve) => {
+    finishUsernameChange = resolve;
+  });
+  replies.push({
+    body: 'id: 7\nevent: text_delta\ndata: {"delta":"partial","timelinePartId":"text-1"}\n\n',
+    contentType: "text/event-stream",
+    status: 200,
+  });
+  const staleStreamResponse = enqueueDeferred();
+  replies.push({
+    body: 'id: 8\nevent: run_done\ndata: {"status":"completed","executionState":"succeeded"}\n\n',
+    contentType: "text/event-stream",
+    status: 200,
+  });
+  const renameRun = {
+    id: "run-rename",
+    resumeId: "resume-rename",
+    baseResume: null,
+    errorCode: null,
+    executionState: "running",
+    lastEventId: 0,
+    status: "active",
+  };
+  const reconnectResult = streamClient.connectAgentRun(renameRun).then(
+    (value) => ({ value }),
+    (error) => ({ error }),
+  );
+  for (let attempt = 0; attempt < 100 && requests.length < 2; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(requests.length, 2);
+  staleStreamResponse.resolveJson(unauthorizedPayload, 401);
+  for (
+    let attempt = 0;
+    attempt < 20 && !testState.lockRequests.length;
+    attempt += 1
+  ) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.deepEqual(testState.lockRequests, [
+    { name: "reseno-auth-refresh", options: { mode: "shared" } },
+  ]);
+  assert.equal(testState.clearedAuthCount, 0);
+  testState.token = "renamed-token";
+  finishUsernameChange();
+  const reconnectedAfterRename = await reconnectResult;
+  assert.equal(testState.token, "renamed-token");
+  assert.deepEqual(testState.invalidations, []);
+  assert.equal(
+    reconnectedAfterRename.error,
+    undefined,
+    "An SSE reconnect rejected with a replaced token must retry after the username change.",
+  );
+  assert.equal(reconnectedAfterRename.value.status, "completed");
+  assert.equal(reconnectedAfterRename.value.message.text, "partial");
+  assert.deepEqual(
+    requests.map((request) =>
+      new URL(request.url, "http://api.test").searchParams.get("after"),
+    ),
+    ["0", "7", "7"],
+  );
+  assert.deepEqual(
+    requests.map((request) => request.headers.get("Authorization")),
+    ["Bearer token-a", "Bearer token-a", "Bearer renamed-token"],
+  );
+  assert.deepEqual(testState.toasts, []);
+
+  reset(api);
+  enqueueJson(unauthorizedPayload, 401);
+  await assert.rejects(streamClient.connectAgentRun(renameRun), (error) => {
+    assert.equal(api.getApiErrorStatus(error), 401);
+    return true;
+  });
+  assert.equal(requests.length, 1);
+  assert.equal(testState.token, null);
+  assert.equal(testState.clearedAuthCount, 1);
+
+  reset(api);
+  const firstExpiredStream = enqueueDeferred();
+  const secondExpiredStream = enqueueDeferred();
+  const boundedReconnect = assert.rejects(
+    streamClient.connectAgentRun(renameRun),
+    (error) => {
+      assert.equal(api.getApiErrorStatus(error), 401);
+      return true;
+    },
+  );
+  await waitForRequestCount(1);
+  testState.token = "token-b";
+  firstExpiredStream.resolveJson(unauthorizedPayload, 401);
+  await waitForRequestCount(2);
+  testState.token = "token-c";
+  secondExpiredStream.resolveJson(unauthorizedPayload, 401);
+  await boundedReconnect;
+  assert.equal(
+    requests.length,
+    2,
+    "One SSE subscription must retry a replaced token only once.",
+  );
+  assert.equal(testState.token, "token-c");
+  assert.deepEqual(testState.invalidations, []);
+
   for (const base of [
     "",
     "https://api.example",

@@ -1,6 +1,10 @@
 import { useSyncExternalStore } from "react";
 
-import { AUTH_SESSION_KEY, getAccessToken } from "@/lib/auth-session";
+import {
+  AUTH_SESSION_KEY,
+  AUTH_SESSION_UPDATED_EVENT,
+  getAccessToken,
+} from "@/lib/auth-session";
 import {
   AUTH_SESSION_INVALIDATED_EVENT,
   AUTH_SESSION_RESTORED_EVENT,
@@ -15,11 +19,13 @@ function subscribe(listener: () => void) {
       listener();
     }
   };
+  window.addEventListener(AUTH_SESSION_UPDATED_EVENT, listener);
   window.addEventListener(AUTH_SESSION_INVALIDATED_EVENT, listener);
   window.addEventListener(AUTH_SESSION_RESTORED_EVENT, listener);
   window.addEventListener("focus", listener);
   window.addEventListener("storage", onStorage);
   return () => {
+    window.removeEventListener(AUTH_SESSION_UPDATED_EVENT, listener);
     window.removeEventListener(AUTH_SESSION_INVALIDATED_EVENT, listener);
     window.removeEventListener(AUTH_SESSION_RESTORED_EVENT, listener);
     window.removeEventListener("focus", listener);

@@ -85,6 +85,7 @@ async function createConversation({
   const messageCodec = await load("lib/agent-message-codec.ts");
   const streamClient = await load("lib/agent-stream-client.ts", {
     "@/lib/api-client": api,
+    "@/lib/auth-session": { getAccessToken: () => "agent-test-token" },
     "@/lib/api-error-notifier": { notifyApiError: () => false },
     "@/lib/agent-message-codec": messageCodec,
   });

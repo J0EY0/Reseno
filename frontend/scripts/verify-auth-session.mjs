@@ -43,7 +43,7 @@ function fixture({
       return now;
     }
   }
-  const window = { localStorage };
+  const window = Object.assign(new EventTarget(), { localStorage });
   Object.defineProperty(window, "sessionStorage", {
     get() {
       if (storageError) throw storageError;
@@ -53,6 +53,7 @@ function fixture({
   const auth = evaluateTypeScript(source, {
     globals: {
       window,
+      Event,
       Date: Clock,
       JSON: {
         parse(value) {
@@ -91,6 +92,36 @@ test("token reads never write storage and reuse parsed unchanged sessions", () =
   assert.equal(f.parseCount, parseCount);
 });
 
+test("session update listeners read the saved username and token on the same page", () => {
+  const f = fixture();
+  const observed = [];
+  f.window.addEventListener(f.auth.AUTH_SESSION_UPDATED_EVENT, () => {
+    observed.push({
+      username: f.auth.getAuthUsername(),
+      accessToken: f.auth.getAccessToken(),
+      stored: JSON.parse(f.localStorage.getItem(f.auth.AUTH_SESSION_KEY)),
+    });
+  });
+  assert.equal(f.auth.getAuthUsername(), null);
+  for (const [username, accessToken] of [
+    ["owner", "token-1"],
+    ["renamed-owner", "token-2"],
+  ]) {
+    f.auth.saveAuthSession(` ${username} `, accessToken, expiresAt);
+    assert.deepEqual(observed.at(-1), {
+      username,
+      accessToken,
+      stored: { username, accessToken, expiresAt },
+    });
+  }
+  assert.equal(observed.length, 2);
+  f.auth.recordInvalidatedToken("token-2");
+  assert.equal(f.auth.getAuthUsername(), null);
+  f.auth.saveAuthSession("renamed-owner", "token-3", expiresAt);
+  f.auth.clearAuthSession();
+  assert.equal(f.auth.getAuthUsername(), null);
+});
+
 test("cached sessions immediately observe another tab's token replacement and logout", () => {
   const f = fixture();
   f.auth.saveAuthSession("owner", "token-1", expiresAt);
@@ -98,6 +129,7 @@ test("cached sessions immediately observe another tab's token replacement and lo
   const secondTab = fixture({ localStorage: f.localStorage });
   secondTab.auth.saveAuthSession("owner", "token-2", expiresAt);
   assert.equal(f.auth.getAccessToken(), "token-2");
+  assert.equal(f.auth.getAuthUsername(), "owner");
   secondTab.auth.clearAuthSession();
   assert.equal(f.auth.loadAuthSession(), false);
   f.localStorage.values.set(f.auth.AUTH_SESSION_KEY, "not-json");
@@ -112,6 +144,7 @@ test("cache hits still reject expired sessions", () => {
   assert.equal(f.auth.getAccessToken(), "token-1");
   f.advance(60 * 60 * 1000);
   assert.equal(f.auth.getAccessToken(), null);
+  assert.equal(f.auth.getAuthUsername(), null);
 });
 
 test("invalidations survive reload, expire on reads, and prune on the next write", () => {
@@ -283,6 +316,7 @@ test("a response after local expiry invalidates the session unless a new valid t
     f.advance(60 * 60 * 1000);
     assert.equal(f.auth.getAccessToken(), null);
     if (replaced) f.auth.saveAuthSession("owner", "new-token", expiresAt);
+    events.length = 0;
     await apiAuth.handleUnauthorizedResponse(
       { code: 40001, message: "UNAUTHORIZED_REQUEST", data: null },
       headers,

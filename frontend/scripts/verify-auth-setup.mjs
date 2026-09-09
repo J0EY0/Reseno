@@ -6,7 +6,9 @@ import { createServer } from "vite";
 import { createViteTestCacheDir } from "./vite-test-cache.mjs";
 
 const testState = {
+  now: Date.parse("2026-09-09T00:00:00Z"),
   requests: [],
+  requestTokens: [],
   responses: [],
   savedSessions: [],
   session: null,
@@ -14,6 +16,16 @@ const testState = {
   lockNames: [],
 };
 globalThis.__RESENO_AUTH_SETUP_TEST_STATE__ = testState;
+const previousWindow = globalThis.window;
+globalThis.window = {
+  isSecureContext: true,
+  localStorage: {
+    getItem(key) {
+      assert.equal(key, "reseno-auth-session");
+      return testState.session ? JSON.stringify(testState.session) : null;
+    },
+  },
+};
 const navigatorDescriptor = Object.getOwnPropertyDescriptor(
   globalThis,
   "navigator",
@@ -50,18 +62,25 @@ const virtualModules = {
       authPassword: "/api/auth/password",
       authRefresh: "/api/auth/refresh",
       authSetup: "/api/auth/setup",
+      authUsername: "/api/auth/username",
     };
     export async function requestApi(route, options = {}) {
       state.requests.push({ route, options });
+      state.requestTokens.push(state.session?.accessToken ?? null);
       return state.responses.shift();
     }
   `,
   "@/lib/auth-session": `
     const state = globalThis.__RESENO_AUTH_SETUP_TEST_STATE__;
+    export const AUTH_SESSION_KEY = "reseno-auth-session";
     export const AUTH_REFRESH_LOCK_NAME = "reseno-auth-refresh";
     export function clearAuthSession() { state.session = null; }
-    export function getAccessToken() { return state.session?.accessToken ?? null; }
-    export function loadAuthSession() { return state.session !== null; }
+    export function getAccessToken() {
+      return Date.parse(state.session?.expiresAt ?? "") > state.now
+        ? state.session.accessToken
+        : null;
+    }
+    export function loadAuthSession() { return Boolean(getAccessToken()); }
     export function recordInvalidatedToken(token) {
       state.invalidatedTokens.push(token);
     }
@@ -364,6 +383,131 @@ try {
   assert.equal(testState.requests.length, 0);
   assert.equal(testState.savedSessions.length, savesBeforeAbortedStart);
 
+  const usernamePayload = {
+    currentPassword: "password1",
+    newUsername: " renamed-owner ",
+  };
+  const renamedSession = {
+    username: "renamed-owner",
+    accessToken: "renamed-token",
+    expiresAt: refreshedSession.expiresAt,
+  };
+  auth.saveAuthSession("owner", "before-rename", refreshedSession.expiresAt);
+  const locksBeforeRename = testState.lockNames.length;
+  testState.responses.push(renamedSession);
+  assert.equal(await auth.updateAuthUsername(usernamePayload), "renamed-owner");
+  assert.deepEqual(testState.requests.shift(), {
+    route: "/api/auth/username",
+    options: {
+      body: { ...usernamePayload, newUsername: "renamed-owner" },
+      method: "POST",
+      notifyOnError: false,
+    },
+  });
+  assert.equal(testState.requestTokens.at(-1), "before-rename");
+  assert.deepEqual(testState.session, renamedSession);
+  assert.equal(testState.invalidatedTokens.at(-1), "before-rename");
+  assert.deepEqual(testState.lockNames.slice(locksBeforeRename), [
+    "reseno-auth-refresh",
+  ]);
+
+  const refreshAhead = deferredResponse();
+  const sessionAfterRefresh = {
+    ...renamedSession,
+    accessToken: "refresh-ahead",
+  };
+  const sessionAfterQueuedRename = {
+    ...renamedSession,
+    username: "queued-owner",
+    accessToken: "queued-rename",
+  };
+  testState.responses.push(refreshAhead.promise, sessionAfterQueuedRename);
+  const refreshBeforeRename = auth.refreshAuthSession();
+  const queuedRename = auth.updateAuthUsername({
+    ...usernamePayload,
+    newUsername: "queued-owner",
+  });
+  await setImmediate();
+  assert.equal(testState.requests.length, 1);
+  assert.equal(testState.requests.shift().route, "/api/auth/refresh");
+  refreshAhead.resolve(sessionAfterRefresh);
+  assert.equal(await refreshBeforeRename, true);
+  assert.equal(await queuedRename, "queued-owner");
+  assert.equal(testState.requests.shift().route, "/api/auth/username");
+  assert.equal(testState.requestTokens.at(-1), "refresh-ahead");
+  assert.deepEqual(testState.session, sessionAfterQueuedRename);
+  assert.deepEqual(testState.invalidatedTokens.slice(-2), [
+    "renamed-token",
+    "refresh-ahead",
+  ]);
+
+  const renameAhead = deferredResponse();
+  testState.responses.push(renameAhead.promise);
+  const renameBeforeRefresh = auth.updateAuthUsername(usernamePayload);
+  const queuedRefresh = auth.refreshAuthSession();
+  await setImmediate();
+  assert.equal(testState.requests.shift().route, "/api/auth/username");
+  renameAhead.resolve({ ...renamedSession, accessToken: "rename-ahead" });
+  assert.equal(await renameBeforeRefresh, "renamed-owner");
+  assert.equal(await queuedRefresh, true);
+  assert.equal(testState.requests.length, 0);
+  assert.equal(testState.session.accessToken, "rename-ahead");
+  assert.equal(testState.invalidatedTokens.at(-1), "queued-rename");
+
+  auth.saveAuthSession(
+    "owner",
+    "expiring-rename",
+    new Date(testState.now + 1_000).toISOString(),
+  );
+  const expiryResponse = deferredResponse();
+  testState.responses.push(expiryResponse.promise);
+  const renameDuringExpiry = auth.updateAuthUsername(usernamePayload);
+  await setImmediate();
+  assert.equal(testState.requests.shift().route, "/api/auth/username");
+  assert.equal(testState.requestTokens.at(-1), "expiring-rename");
+  testState.now += 1_000;
+  assert.equal(auth.loadAuthSession(), false);
+  const sessionAfterExpiry = { ...renamedSession, accessToken: "after-expiry" };
+  expiryResponse.resolve(sessionAfterExpiry);
+  assert.equal(await renameDuringExpiry, "renamed-owner");
+  assert.deepEqual(testState.session, sessionAfterExpiry);
+  assert.equal(auth.loadAuthSession(), true);
+  assert.equal(testState.invalidatedTokens.at(-1), "expiring-rename");
+
+  for (const replaceWithLogin of [false, true]) {
+    auth.saveAuthSession("owner", "pending-rename", refreshedSession.expiresAt);
+    const renameResponse = deferredResponse();
+    testState.responses.push(renameResponse.promise);
+    const lateRename = assert.rejects(
+      auth.updateAuthUsername(usernamePayload),
+      {
+        name: "AbortError",
+      },
+    );
+    await setImmediate();
+    assert.equal(testState.requests.shift().route, "/api/auth/username");
+    if (replaceWithLogin) {
+      testState.responses.push(newLoginSession);
+      assert.equal(
+        await auth.loginWithCredentials("owner", "password1"),
+        "owner",
+      );
+      assert.equal(testState.requests.shift().route, "/api/auth/login");
+    } else {
+      auth.clearAuthSession();
+    }
+    const savesBeforeLateRename = testState.savedSessions.length;
+    const invalidatedBeforeLateRename = [...testState.invalidatedTokens];
+    renameResponse.resolve({ ...renamedSession, accessToken: "stale-rename" });
+    await lateRename;
+    assert.deepEqual(
+      testState.session,
+      replaceWithLogin ? newLoginSession : null,
+    );
+    assert.equal(testState.savedSessions.length, savesBeforeLateRename);
+    assert.deepEqual(testState.invalidatedTokens, invalidatedBeforeLateRename);
+  }
+
   const messages = {
     loginUsernameRequired: "username-required",
     loginUsernameTooShort: "username-short",
@@ -402,6 +546,29 @@ try {
     {},
     "Login must only require non-empty credentials; setup owns format rules.",
   );
+
+  for (const [currentPassword, newUsername, expected] of [
+    ["x", " owner_2 ", {}],
+    [
+      "",
+      "",
+      {
+        currentPassword: "password-required",
+        newUsername: "username-required",
+      },
+    ],
+    ["password1", "ab", { newUsername: "username-short" }],
+    ["password1", "owner!", { newUsername: "username-invalid" }],
+  ]) {
+    assert.deepEqual(
+      validation.validateUsernameUpdateForm(
+        currentPassword,
+        newUsername,
+        messages,
+      ),
+      expected,
+    );
+  }
 
   const appSource = await readFile(
     new URL("../src/App.tsx", import.meta.url),
@@ -454,9 +621,16 @@ try {
 
   assert.equal(testState.requests.length, 0);
   assert.equal(testState.responses.length, 0);
-  console.log("Authentication setup and refresh coordination verified.");
+  console.log(
+    "Authentication setup, username changes, and refresh coordination verified.",
+  );
 } finally {
   delete globalThis.__RESENO_AUTH_SETUP_TEST_STATE__;
+  if (previousWindow === undefined) {
+    delete globalThis.window;
+  } else {
+    globalThis.window = previousWindow;
+  }
   if (navigatorDescriptor) {
     Object.defineProperty(globalThis, "navigator", navigatorDescriptor);
   } else {

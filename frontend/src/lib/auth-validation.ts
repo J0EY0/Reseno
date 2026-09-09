@@ -5,6 +5,11 @@ export type LoginFormErrors = {
   password?: string;
 };
 
+export type UsernameUpdateFormErrors = {
+  currentPassword?: string;
+  newUsername?: string;
+};
+
 export type PasswordUpdateFormErrors = {
   currentPassword?: string;
   newPassword?: string;
@@ -20,6 +25,14 @@ export type SetupFormErrors = {
 const usernamePattern = /^[A-Za-z0-9_-]+$/;
 const hasPasswordLetter = /[A-Za-z]/;
 const hasPasswordNumber = /\d/;
+
+function validateUsername(username: string, t: AppMessages) {
+  const trimmedUsername = username.trim();
+  if (!trimmedUsername) return t.loginUsernameRequired;
+  if (trimmedUsername.length < 3) return t.loginUsernameTooShort;
+  if (!usernamePattern.test(trimmedUsername)) return t.loginUsernameInvalid;
+  return undefined;
+}
 
 function validateRequiredPassword(password: string, t: AppMessages) {
   if (!password) {
@@ -73,15 +86,8 @@ export function validateSetupForm(
   t: AppMessages,
 ) {
   const errors: SetupFormErrors = {};
-  const trimmedUsername = username.trim();
-
-  if (!trimmedUsername) {
-    errors.username = t.loginUsernameRequired;
-  } else if (trimmedUsername.length < 3) {
-    errors.username = t.loginUsernameTooShort;
-  } else if (!usernamePattern.test(trimmedUsername)) {
-    errors.username = t.loginUsernameInvalid;
-  }
+  const usernameError = validateUsername(username, t);
+  if (usernameError) errors.username = usernameError;
 
   const passwordError = validateNewPassword(password, t);
   if (passwordError) {
@@ -121,5 +127,18 @@ export function validatePasswordUpdateForm(
     errors.confirmPassword = t.apiMessages.PASSWORD_CONFIRMATION_MISMATCH;
   }
 
+  return errors;
+}
+
+export function validateUsernameUpdateForm(
+  currentPassword: string,
+  newUsername: string,
+  t: AppMessages,
+) {
+  const errors: UsernameUpdateFormErrors = {};
+  const usernameError = validateUsername(newUsername, t);
+  if (usernameError) errors.newUsername = usernameError;
+  const passwordError = validateRequiredPassword(currentPassword, t);
+  if (passwordError) errors.currentPassword = passwordError;
   return errors;
 }

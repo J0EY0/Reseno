@@ -1,6 +1,7 @@
 import { withAuthSessionLock } from "@/lib/auth-environment";
 import { apiRoutes, requestApi } from "@/lib/api-client";
 import {
+  AUTH_SESSION_KEY,
   clearAuthSession,
   getAccessToken,
   loadAuthSession,
@@ -24,6 +25,11 @@ interface AuthSetupPayload {
   username: string;
   password: string;
   confirmPassword: string;
+}
+
+interface AuthUsernameUpdatePayload {
+  currentPassword: string;
+  newUsername: string;
 }
 
 interface AuthPasswordUpdatePayload {
@@ -88,6 +94,26 @@ export async function refreshAuthSession() {
     recordInvalidatedToken(previousToken);
     saveAuthSession(result.username, result.accessToken, result.expiresAt);
     return true;
+  });
+}
+
+export async function updateAuthUsername(payload: AuthUsernameUpdatePayload) {
+  return withAuthSessionLock("exclusive", async () => {
+    const previousSession = window.localStorage.getItem(AUTH_SESSION_KEY);
+    const previousToken = getAccessToken();
+    const result = await requestApi<AuthTokenPayload>(apiRoutes.authUsername, {
+      body: { ...payload, newUsername: payload.newUsername.trim() },
+      method: "POST",
+      notifyOnError: false,
+    });
+
+    if (window.localStorage.getItem(AUTH_SESSION_KEY) !== previousSession) {
+      throw new DOMException("Authentication session changed.", "AbortError");
+    }
+
+    saveAuthSession(result.username, result.accessToken, result.expiresAt);
+    if (previousToken) recordInvalidatedToken(previousToken);
+    return result.username;
   });
 }
 

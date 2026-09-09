@@ -1,5 +1,14 @@
-import { KeyRound, Languages, Monitor, Moon, Sun } from "lucide-react";
+import {
+  KeyRound,
+  Languages,
+  Monitor,
+  Moon,
+  Sun,
+  UserRound,
+} from "lucide-react";
 
+import { UsernameSettingsDialog } from "@/components/username-settings-dialog";
+import { useUsernameSettings } from "@/components/use-username-settings";
 import { PasswordSettingsDialog } from "@/components/password-settings-dialog";
 import { OAuthConnectionDialog } from "@/components/auth/oauth-connection-dialog";
 import { OAuthIdentitySettings } from "@/components/auth/oauth-identity-settings";
@@ -42,6 +51,7 @@ export function SiteSettingsTab({
   // the original behavior where password dialog state lived above TabsContent.
   const passwordController = usePasswordSettings({ t, onPasswordChanged });
   const oauthController = useOAuthIdentitySettings(t);
+  const usernameController = useUsernameSettings(t);
   const themeItems: Array<{
     value: ThemeMode;
     label: string;
@@ -106,6 +116,16 @@ export function SiteSettingsTab({
         </SettingsSection>
 
         <SettingsSection title={t.accountSecuritySettingsTitle}>
+          <SettingsRow
+            icon={<UserRound />}
+            label={t.usernameSettingsTitle}
+            description={t.usernameSettingsDescription}
+          >
+            <div className="flex justify-end">
+              <UsernameSettingsDialog t={t} controller={usernameController} />
+            </div>
+          </SettingsRow>
+          <Separator className="mx-5 w-auto sm:mx-6" />
           <SettingsRow
             icon={<KeyRound />}
             label={t.passwordSettingsTitle}

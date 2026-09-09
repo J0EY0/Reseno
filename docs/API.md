@@ -89,11 +89,14 @@ JSON envelope 不适用于 Agent SSE、附件和导出文件下载、OAuth HTML/
 | POST | `/api/auth/setup` | `AuthSetupRequest`：`username`、`password`、`confirmPassword`；公开 | 从 loopback 客户端创建唯一 owner，返回 `AuthLoginResponse`；非本机 403，已初始化 409 |
 | POST | `/api/auth/login` | `AuthLoginRequest`：`username`、`password`；公开 | `AuthLoginResponse`；凭据错误 401 |
 | POST | `/api/auth/refresh` | 有效 Bearer；无请求体 | `AuthLoginResponse`；续签并撤销旧 token |
+| POST | `/api/auth/username` | `AuthUsernameUpdateRequest`：`newUsername`、`currentPassword`；有效 Bearer | `AuthLoginResponse`；验证当前密码后修改用户名；用户名或密码无效 400，会话失效或 owner 已变化 401 |
 | POST | `/api/auth/password` | `AuthPasswordUpdateRequest`：`currentPassword`、`newPassword`、`confirmPassword` | `AuthPasswordUpdateResponse`：`username`、`updated: true`；原密码错误 400 |
 
 用户名去除首尾空白后至少 3 个字符，只允许 ASCII 字母、数字、`_`、`-`。新密码至少 8 个字符，包含 ASCII 字母和数字，并与确认值一致。首次设置判断的是后端收到的客户端地址。
 
 `AuthLoginResponse` 包含 `username`、`accessToken`、`expiresAt`、`tokenType: "bearer"`。JWT 有效期为签发起 36 小时；续签要求旧 token 仍有效。旧 token 的 `jwt_id` 与原到期时间写入 `auth.db` 的 `auth_revoked_tokens`，撤销在后端重启后仍有效，同一 token 只能成功续签一次。
+
+用户名修改在同一事务中核对当前 owner 与请求的认证 revision、验证当前密码，并更新用户名和认证 revision；替换凭证签发成功后才提交。实际改名会使全部已有 JWT 失效，客户端使用响应中的新凭证继续登录；改回曾用名也不会恢复旧 JWT。去除首尾空白后与当前用户名相同的请求仍验证会话和密码，但不更新 owner 或认证 revision，并返回新的有效凭证。改名保留当前密码、GitHub 身份绑定和简历数据；之后使用新用户名和原密码登录。
 
 密码修改会更新 owner 的认证 revision，使全部已有 JWT 失效。前端将会话存入同源 localStorage，并协调标签页之间的续签、登录和退出；客户端退出清理本地会话，没有单独的服务端 logout 接口。会话客户端见 [auth.ts](../frontend/src/lib/auth.ts)、[auth-session.ts](../frontend/src/lib/auth-session.ts)。
 

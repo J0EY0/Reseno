@@ -87,6 +87,7 @@ const messageCodec = await loadTypeScriptModule("agent-message-codec.ts");
 const agentStreamClient = await loadTypeScriptModule("agent-stream-client.ts", {
   "@/lib/agent-message-codec": messageCodec,
   "@/lib/api-client": apiClient,
+  "@/lib/auth-session": { getAccessToken: () => "agent-test-token" },
 });
 const agentRunStreamHook = await loadTypeScriptModule(
   "../components/copilot/use-agent-run-stream.ts",

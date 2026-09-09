@@ -1,4 +1,5 @@
 export const AUTH_SESSION_KEY = "reseno-auth-session";
+export const AUTH_SESSION_UPDATED_EVENT = "reseno:auth-session-updated";
 export const AUTH_REFRESH_LOCK_NAME = "reseno-auth-refresh";
 const INVALIDATED_TOKEN_CACHE_KEY = "reseno-invalidated-jwts";
 const INVALIDATED_TOKEN_TTL_MS = 4 * 60 * 60 * 1000;
@@ -109,6 +110,10 @@ export function getAccessToken(): string | null {
   }
 }
 
+export function getAuthUsername(): string | null {
+  return getAccessToken() ? (cachedSession?.username ?? null) : null;
+}
+
 export function saveAuthSession(
   username: string,
   accessToken: string,
@@ -126,6 +131,7 @@ export function saveAuthSession(
       expiresAt,
     } satisfies AuthSession),
   );
+  window.dispatchEvent(new Event(AUTH_SESSION_UPDATED_EVENT));
 }
 
 export function clearAuthSession() {

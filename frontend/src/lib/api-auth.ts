@@ -7,6 +7,7 @@ import { withAuthSessionLock } from "@/lib/auth-environment";
 import type { ApiRequestOptions } from "@/types/api";
 
 export const AUTH_REFRESH_ROUTE = "/api/auth/refresh";
+export const AUTH_USERNAME_ROUTE = "/api/auth/username";
 const APP_CODE_UNAUTHORIZED = 40001;
 
 export const AUTH_SESSION_INVALIDATED_EVENT = "reseno:auth-session-invalidated";
@@ -74,7 +75,7 @@ export async function handleUnauthorizedResponse(
     }
   };
 
-  if (route === AUTH_REFRESH_ROUTE) {
+  if (route === AUTH_REFRESH_ROUTE || route === AUTH_USERNAME_ROUTE) {
     invalidateSession();
     return;
   }

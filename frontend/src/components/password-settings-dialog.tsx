@@ -23,7 +23,11 @@ export function PasswordSettingsDialog({
   return (
     <Dialog open={controller.isOpen} onOpenChange={controller.changeOpen}>
       <DialogTrigger asChild>
-        <Button type="button" variant="outline" className="w-full sm:w-auto">
+        <Button
+          type="button"
+          variant="outline"
+          className="w-40 max-w-full [&:lang(zh)]:w-28"
+        >
           {t.updatePassword}
         </Button>
       </DialogTrigger>
