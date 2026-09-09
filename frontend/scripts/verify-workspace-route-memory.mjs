@@ -1,8 +1,24 @@
 import assert from "node:assert/strict";
 import { loadTypeScriptModule } from "./typescript-module.mjs";
 
+let historyState = null;
+let historyUrl = "http://localhost/settings?tab=models#active";
+let historyWrites = 0;
+const history = {
+  get state() {
+    return historyState;
+  },
+  replaceState(state, _unused, url) {
+    historyState = structuredClone(state);
+    if (url !== undefined) {
+      historyUrl = new URL(url, historyUrl).href;
+    }
+    historyWrites += 1;
+  },
+};
 const handoffs = await loadTypeScriptModule(
   new URL("../src/lib/workspace-route-handoff.ts", import.meta.url),
+  { globals: { window: { history } } },
 );
 const {
   clearWorkspaceRouteMemory,
@@ -38,6 +54,40 @@ const settings = {
 
 rememberWorkspaceLateralRoute(resume);
 const settingsState = createWorkspaceLateralRouteHandoff(settings);
+const currentHistoryState = {
+  idx: 3,
+  key: "settings-current",
+  masked: { pathname: "/workspace" },
+  usr: settingsState,
+};
+historyState = currentHistoryState;
+handoffs.clearWorkspaceRouteHistoryState("resume-stale");
+assert.equal(
+  historyState,
+  currentHistoryState,
+  "A delayed cleanup from another entry must preserve the current handoff.",
+);
+assert.equal(historyWrites, 0);
+
+handoffs.clearWorkspaceRouteHistoryState("settings-current");
+assert.deepEqual(
+  historyState,
+  { ...currentHistoryState, usr: null },
+  "Consuming the current handoff must preserve Router keys, indices, and metadata.",
+);
+assert.equal(
+  historyUrl,
+  "http://localhost/settings?tab=models#active",
+  "History cleanup must preserve the current pathname, query, and hash.",
+);
+assert.equal(currentHistoryState.usr, settingsState);
+assert.equal(historyWrites, 1);
+
+handoffs.clearWorkspaceRouteHistoryState("settings-current");
+historyState = null;
+handoffs.clearWorkspaceRouteHistoryState("settings-current");
+assert.equal(historyWrites, 1, "Empty history state must not be rewritten.");
+
 assert.equal(getWorkspaceLateralRouteHandoff(settingsState), settings);
 assert.equal(
   getWorkspaceLateralRouteHandoff(settingsState),

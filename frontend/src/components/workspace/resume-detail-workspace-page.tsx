@@ -1,15 +1,13 @@
 import { useLayoutEffect, useState } from "react";
-import {
-  useLocation,
-  useNavigate,
-  useNavigationType,
-  useParams,
-} from "react-router-dom";
+import { useLocation, useNavigationType, useParams } from "react-router-dom";
 
 import { ResumeDetailWorkspaceView } from "@/components/workspace/resume-detail-workspace-view";
 import { useResumeDetailWorkspace } from "@/components/workspace/use-resume-detail-workspace";
 import { useWorkspacePreferences } from "@/components/workspace/workspace-preferences-context";
-import { releaseWorkspaceRouteHandoff } from "@/lib/workspace-route-handoff";
+import {
+  clearWorkspaceRouteHistoryState,
+  releaseWorkspaceRouteHandoff,
+} from "@/lib/workspace-route-handoff";
 
 interface ResumeDetailRouteOwnerProps {
   onLogout: () => void;
@@ -28,7 +26,6 @@ function ResumeDetailRouteOwner({
     changeLocale: onLocaleChange,
   } = useWorkspacePreferences();
   const location = useLocation();
-  const navigate = useNavigate();
   const navigationType = useNavigationType();
   const [initialRouteState] = useState(routeState);
 
@@ -49,15 +46,8 @@ function ResumeDetailRouteOwner({
     // Keep the seed for this mount, but do not let browser history resurrect
     // it after a newer checkpoint has become the server authority.
     releaseWorkspaceRouteHandoff(routeState);
-    navigate(
-      {
-        hash: location.hash,
-        pathname: location.pathname,
-        search: location.search,
-      },
-      { replace: true, state: null },
-    );
-  }, [location.hash, location.pathname, location.search, navigate, routeState]);
+    clearWorkspaceRouteHistoryState(location.key);
+  }, [location.key, routeState]);
 
   const workspace = useResumeDetailWorkspace({
     locale,

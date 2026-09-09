@@ -237,8 +237,6 @@ class TabFlow:
             name=(
                 "Continue with GitHub"
                 if self.intent == "login"
-                else "Set up and connect GitHub"
-                if self.mode == "setup"
                 else "Connect GitHub"
             ),
             exact=True,

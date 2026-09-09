@@ -1,15 +1,13 @@
 import { useLayoutEffect, useState } from "react";
-import {
-  useLocation,
-  useNavigate,
-  useNavigationType,
-  useParams,
-} from "react-router-dom";
+import { useLocation, useNavigationType, useParams } from "react-router-dom";
 
 import { TemplateDetailWorkspaceView } from "@/components/workspace/template-detail-workspace-view";
 import { useTemplateDetailWorkspace } from "@/components/workspace/use-template-detail-workspace";
 import { useWorkspacePreferences } from "@/components/workspace/workspace-preferences-context";
-import { releaseWorkspaceRouteHandoff } from "@/lib/workspace-route-handoff";
+import {
+  clearWorkspaceRouteHistoryState,
+  releaseWorkspaceRouteHandoff,
+} from "@/lib/workspace-route-handoff";
 
 interface TemplateDetailRouteOwnerProps {
   onLogout: () => void;
@@ -28,7 +26,6 @@ function TemplateDetailRouteOwner({
     changeLocale: onLocaleChange,
   } = useWorkspacePreferences();
   const location = useLocation();
-  const navigate = useNavigate();
   const navigationType = useNavigationType();
   const [initialRouteState] = useState(routeState);
 
@@ -47,15 +44,8 @@ function TemplateDetailRouteOwner({
     }
 
     releaseWorkspaceRouteHandoff(routeState);
-    navigate(
-      {
-        hash: location.hash,
-        pathname: location.pathname,
-        search: location.search,
-      },
-      { replace: true, state: null },
-    );
-  }, [location.hash, location.pathname, location.search, navigate, routeState]);
+    clearWorkspaceRouteHistoryState(location.key);
+  }, [location.key, routeState]);
 
   const controller = useTemplateDetailWorkspace({
     locale,

@@ -356,7 +356,7 @@ assert.doesNotMatch(
 );
 assert.match(
   lateralRouteDataSource,
-  /const \[resolution\] = useState\(\(\) =>[\s\S]{0,120}resolveWorkspaceLateralRoute\(location\.state, view\)[\s\S]{0,300}resolution\.shouldScrubHistory[\s\S]{0,300}deleteWorkspaceHandoffToken\(resolution\.tokenToDelete\)[\s\S]{0,300}replace:\s*true, state:\s*null[\s\S]*return resolution\.data/,
+  /const \[resolution\] = useState\(\(\) =>[\s\S]{0,120}resolveWorkspaceLateralRoute\(location\.state, view\)[\s\S]{0,300}resolution\.shouldScrubHistory[\s\S]{0,300}deleteWorkspaceHandoffToken\(resolution\.tokenToDelete\)[\s\S]{0,100}clearWorkspaceRouteHistoryState\(location\.key\)[\s\S]*return resolution\.data/,
   "The consumer must freeze its first frame from a handoff or committed view memory and scrub one-time or dead tokens before paint.",
 );
 assert.match(
@@ -747,7 +747,7 @@ assert.doesNotMatch(
 );
 assert.match(
   templateDetailPageSource,
-  /useState\(routeState\)[\s\S]{0,600}replace:\s*true, state:\s*null[\s\S]{0,500}routeState:\s*initialRouteState/,
+  /useState\(routeState\)[\s\S]{0,600}releaseWorkspaceRouteHandoff\(routeState\)[\s\S]{0,100}clearWorkspaceRouteHistoryState\(location\.key\)[\s\S]{0,500}routeState:\s*initialRouteState/,
   "Template detail must consume complete handoff state once and scrub it from history.",
 );
 assert.match(
@@ -920,7 +920,7 @@ assert.match(
 );
 assert.match(
   resumeDetailPageSource,
-  /useState\(routeState\)[\s\S]{0,600}navigate\([\s\S]{0,260}replace:\s*true, state:\s*null[\s\S]{0,500}routeState:\s*initialRouteState/,
+  /useState\(routeState\)[\s\S]{0,600}releaseWorkspaceRouteHandoff\(routeState\)[\s\S]{0,100}clearWorkspaceRouteHistoryState\(location\.key\)[\s\S]{0,500}routeState:\s*initialRouteState/,
   "Resume detail must consume the handoff from history without dropping the current mount's first-frame seed.",
 );
 assert.match(

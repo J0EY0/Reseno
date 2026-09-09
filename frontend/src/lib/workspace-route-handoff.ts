@@ -29,6 +29,15 @@ export function releaseWorkspaceRouteHandoff(state: unknown) {
   }
 }
 
+export function clearWorkspaceRouteHistoryState(locationKey: string) {
+  const state = window.history.state;
+  if (state?.key !== locationKey || state.usr == null) {
+    return;
+  }
+
+  window.history.replaceState({ ...state, usr: null }, "");
+}
+
 export function clearWorkspaceRouteHandoffs() {
   payloads.clear();
 }

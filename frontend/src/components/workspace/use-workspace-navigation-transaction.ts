@@ -13,6 +13,11 @@ interface ActiveWorkspaceNavigation {
   id: number;
 }
 
+interface OwnedWorkspaceNavigation {
+  intent: WorkspaceNavigationIntent;
+  locationKey: string | undefined;
+}
+
 let activeNavigation: ActiveWorkspaceNavigation | null = null;
 let nextNavigationId = 0;
 
@@ -48,23 +53,26 @@ function beginWorkspaceNavigation(): WorkspaceNavigationIntent {
 /** Gives every same-tab workspace entrance one shared latest-intent owner. */
 export function useWorkspaceNavigationTransaction() {
   const location = useLocation();
-  const ownedNavigationRef = useRef<WorkspaceNavigationIntent | null>(null);
+  const ownedNavigationRef = useRef<OwnedWorkspaceNavigation | null>(null);
 
   const beginNavigation = useCallback(() => {
     const intent = beginWorkspaceNavigation();
-    ownedNavigationRef.current = intent;
+    ownedNavigationRef.current = {
+      intent,
+      locationKey: window.history.state?.key,
+    };
     return intent;
   }, []);
 
   const cancelNavigation = useCallback(() => {
-    ownedNavigationRef.current?.cancel();
+    ownedNavigationRef.current?.intent.cancel();
     ownedNavigationRef.current = null;
   }, []);
 
   useLayoutEffect(() => {
-    // Query-only and browser history navigation do not necessarily unmount
-    // the owner, but they are still newer same-tab navigation intents.
-    cancelNavigation();
+    if (ownedNavigationRef.current?.locationKey !== window.history.state?.key) {
+      cancelNavigation();
+    }
   }, [cancelNavigation, location.key]);
 
   useEffect(

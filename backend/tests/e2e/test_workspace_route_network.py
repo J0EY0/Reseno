@@ -8164,6 +8164,52 @@ def test_model_config_advanced_settings_keep_dialog_frame_stable_and_visible(
         context.close()
 
 
+@pytest.mark.browser_smoke
+def test_sidebar_navigation_during_route_commit_keeps_latest_destination(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser, locale="zh-CN", viewport={"width": 1440, "height": 900}
+    )
+    page = context.new_page()
+
+    try:
+        page.goto(f"{frontend_url}/settings", wait_until="networkidle")
+        page.evaluate(
+            """
+            () => {
+              const pushState = history.pushState;
+              history.pushState = function (...args) {
+                const result = pushState.apply(this, args);
+                if (location.pathname === "/resume") {
+                  history.pushState = pushState;
+                  setTimeout(() => {
+                    document.querySelector('a[href="/templates"]').click();
+                  }, 0);
+                }
+                return result;
+              };
+            }
+            """,
+        )
+        page.locator('a[href="/resume"]').click()
+        page.wait_for_url(f"{frontend_url}/templates", timeout=5_000)
+        expect(page.locator('[data-workspace-view="templates"]')).to_be_visible()
+        expect(page.locator('a[href="/templates"]')).to_have_attribute(
+            "aria-current", "page"
+        )
+        page.wait_for_function("history.state.usr === null")
+        assert page.url == f"{frontend_url}/templates"
+
+        page.go_back()
+        page.wait_for_url(f"{frontend_url}/resume")
+        expect(page.locator('input[name="resume-search"]')).to_be_visible()
+    finally:
+        context.close()
+
+
 def test_latest_workspace_navigation_wins_across_card_and_sidebar_owners(
     browser: Browser,
     workspace_servers: tuple[str, str],
@@ -16548,6 +16594,7 @@ def test_workspace_preferences_locale_changes_share_persistence_and_rollback(
 
     page.locator('a[href="/settings"]').click()
     page.wait_for_url(f"{frontend_url}/settings")
+    expect(page.locator('[data-workspace-view="settings"]')).to_be_visible()
     language = page.get_by_role("combobox", name="Language", exact=True)
     expect(language).to_have_text("EN")
     language.click()
@@ -16559,7 +16606,7 @@ def test_workspace_preferences_locale_changes_share_persistence_and_rollback(
 
     page.locator('a[href="/templates"]').click()
     page.wait_for_url(f"{frontend_url}/templates")
-    page.wait_for_load_state("networkidle")
+    expect(page.locator('[data-workspace-view="templates"]')).to_be_visible()
     language = page.get_by_role("combobox", name="语言", exact=True)
     expect(language).to_have_text("中文")
     failed_writes: list[Request] = []
@@ -16581,6 +16628,7 @@ def test_workspace_preferences_locale_changes_share_persistence_and_rollback(
     assert preferences["localeWrites"] == ["en", "zh"]
     page.locator('a[href="/settings"]').click()
     page.wait_for_url(f"{frontend_url}/settings")
+    expect(page.locator('[data-workspace-view="settings"]')).to_be_visible()
     expect(page.get_by_role("combobox", name="语言", exact=True)).to_have_text("中文")
     assert preferences["settings"]["agentSettings"]["behaviorMode"] == "strict"
 
