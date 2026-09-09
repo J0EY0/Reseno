@@ -11,5 +11,6 @@
 # Personal AI Related 
 .agents/
 .codex/
+.claude/
 AGENTS.md
 skills-lock.json
