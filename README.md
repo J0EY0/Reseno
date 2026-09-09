@@ -125,6 +125,50 @@ pnpm dev
 
 The frontend listens on `http://127.0.0.1:5173`.
 
+## Docker
+
+Build from the repository root, then start one container:
+
+```bash
+DOCKER_BUILDKIT=1 docker build --pull -t reseno:local .
+docker run -d --name reseno --init --restart unless-stopped \
+  -p 127.0.0.1:8000:8000 \
+  --mount type=volume,source=reseno-data,target=/data \
+  --shm-size=256m \
+  reseno:local
+```
+
+The image serves the production frontend and API together on port 8000 and
+includes Chromium headless shell for exports and dynamic web pages. Build tools,
+development dependencies, local configuration and runtime data are excluded.
+The container runs as UID/GID 10001; existing bind-mounted directories must be
+writable by that user.
+
+Create the owner once from inside the running container:
+
+```bash
+docker exec -it reseno python -m app.setup_owner
+```
+
+The command prompts for credentials with hidden password input. Open
+`http://localhost:8000` and sign in. Browser requests forwarded through Docker's
+network do not qualify as loopback requests for first-owner setup.
+
+The `/data` volume contains the databases, files, settings and generated `.env`
+keys. Keep this volume when replacing the container and back up its complete
+contents with the container stopped. Use a separate volume for each workspace.
+
+Change the host-side port in `-p` to use another local port. For remote access,
+put the container behind an HTTPS reverse proxy that forwards the entire site,
+including `/api`, and supports unbuffered SSE responses. Serve Reseno at the
+domain root. The internal port remains 8000; changing the public hostname or
+port does not require changing the render URL or CORS configuration.
+
+Docker sets `FRONTEND_RENDER_BASE_URL=http://127.0.0.1:8000` so exports render
+through the same container, and leaves `BACKEND_CORS_ORIGINS` empty because the
+frontend and API share an origin. `PDF_RENDER_TIMEOUT_MS` defaults to 30000;
+override it with `-e PDF_RENDER_TIMEOUT_MS=60000` if exports need more time.
+
 ## License
 
 MIT License. See `LICENSE`.

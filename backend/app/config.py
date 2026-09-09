@@ -39,6 +39,7 @@ class Settings:
     chromium_executable: str | None
     master_key: str = field(repr=False)
     jwt_secret: str = field(repr=False)
+    frontend_dist_dir: Path | None = None
 
 
 def expand_path(value: str | Path) -> Path:
@@ -62,7 +63,7 @@ def _configuration_values(path: Path) -> dict[str, str]:
 def _parse_origins(value: str | None) -> tuple[str, ...]:
     """Parse the comma-separated CORS origin list."""
 
-    if not value:
+    if value is None:
         return (
             "http://127.0.0.1:5173",
             "http://localhost:5173",
@@ -113,6 +114,11 @@ def get_settings() -> Settings:
         chromium_executable=values.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE") or None,
         master_key=values.get(MASTER_KEY_ENV_NAME, ""),
         jwt_secret=values.get(JWT_SECRET_ENV_NAME, ""),
+        frontend_dist_dir=(
+            expand_path(values["FRONTEND_DIST_DIR"])
+            if values.get("FRONTEND_DIST_DIR")
+            else None
+        ),
     )
 
 

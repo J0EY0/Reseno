@@ -9,6 +9,7 @@ def runtime_environment(data_dir: Path) -> dict[str, str]:
         "APP_ENV_FILE": str(data_dir / ".env"),
         "APP_USER_SETTINGS_PATH": str(data_dir / "user_settings.json"),
         "EXPORT_DIR": str(data_dir / "storage" / "exports"),
+        "FRONTEND_DIST_DIR": "",
         "RESENO_MASTER_KEY": "",
         "RESENO_JWT_SECRET": "",
     }

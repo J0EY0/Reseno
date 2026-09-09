@@ -19,6 +19,7 @@ from app.exceptions import (
     unhandled_exception_handler,
     validation_exception_handler,
 )
+from app.frontend import FrontendFiles
 from app.middleware.auth import jwt_auth_middleware
 from app.middleware.oauth_session import OAuthSessionMiddleware
 from app.routers import (
@@ -133,5 +134,8 @@ def create_app() -> FastAPI:
     app.include_router(section_registry.router)
     app.include_router(agent.router)
     app.include_router(exports.router)
+
+    if settings.frontend_dist_dir is not None:
+        app.mount("/", FrontendFiles(settings.frontend_dist_dir), name="frontend")
 
     return app

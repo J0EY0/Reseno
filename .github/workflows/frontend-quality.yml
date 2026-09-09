@@ -95,6 +95,12 @@ jobs:
       - name: Install Chromium
         working-directory: backend
         run: uv run --locked playwright install --with-deps chromium
+      - name: Build production frontend
+        working-directory: frontend
+        run: pnpm build
+      - name: Test production frontend hosting
+        working-directory: backend
+        run: RUN_BROWSER_E2E=1 uv run --locked pytest tests/e2e/test_production_frontend.py -q
       - name: Run browser smoke tests
         working-directory: frontend
         run: pnpm test:workspace-network:smoke

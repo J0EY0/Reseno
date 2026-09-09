@@ -97,7 +97,7 @@ export function OAuthIdentitySettings({
               <Button
                 type="button"
                 variant="outline"
-                className="shrink-0"
+                className="w-40 max-w-full [&:lang(zh)]:w-28"
                 disabled={isPending}
                 aria-busy={isPending}
                 aria-label={identity ? `${actionLabel} GitHub` : actionLabel}

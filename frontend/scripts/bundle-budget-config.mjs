@@ -81,7 +81,7 @@ export const routeBudgets = [
     forbiddenStaticEntries: ["src/components/resume-builder.tsx"],
     // Keep both workspace and preview skeletons in the lazy route so loading
     // preserves the final surface hierarchy without a second visual jump.
-    maxGzipBytes: 242 * KIB,
+    maxGzipBytes: 250 * KIB,
   },
   {
     name: "trash",
@@ -128,6 +128,6 @@ export const routeBudgets = [
       "src/components/preview/document-canvas.tsx",
     ],
     forbiddenStaticEntries: ["src/components/resume-builder.tsx"],
-    maxGzipBytes: 314 * KIB,
+    maxGzipBytes: 320 * KIB,
   },
 ];

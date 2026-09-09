@@ -18,7 +18,7 @@
   "loginInvalidCredentials": "Incorrect username or password.",
   "loginSubmitting": "Signing in…",
   "loginSubmit": "Sign In",
-  "oauthSetupGithub": "Set up and connect GitHub",
+  "oauthSetupGithub": "Connect GitHub",
   "oauthSetupDescription": "Continue to GitHub to confirm app creation and authorize access. Your configuration will be saved automatically.",
   "oauthConnectGithub": "Connect GitHub",
   "oauthContinueGithub": "Continue with GitHub",
