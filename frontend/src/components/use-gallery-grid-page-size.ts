@@ -224,6 +224,9 @@ export function useGalleryGridPageSize({
     }
 
     const sidebarWrapper = element.closest('[data-slot="sidebar-wrapper"]');
+    const motionPreference = window.matchMedia(
+      "(prefers-reduced-motion: reduce)",
+    );
     let hasMeasuredInitialLayout = false;
     let originalGridTemplateColumns: string | null = null;
     let lockedTransition: CSSTransition | null = null;
@@ -257,6 +260,10 @@ export function useGalleryGridPageSize({
     };
 
     const prepareExpandedGrid = () => {
+      if (motionPreference.matches) {
+        return true;
+      }
+
       const sidebar = sidebarWrapper?.querySelector<HTMLElement>(
         '[data-slot="sidebar"][data-state]',
       );
@@ -378,7 +385,22 @@ export function useGalleryGridPageSize({
       }
     };
 
+    const handleMotionPreferenceChange = () => {
+      if (!motionPreference.matches) {
+        return;
+      }
+
+      if (pendingFrame !== null) {
+        cancelAnimationFrame(pendingFrame);
+        pendingFrame = null;
+      }
+      cancelAnimations(activeAnimations);
+      releaseGridTemplate();
+      syncColumnCount();
+    };
+
     syncColumnCount();
+    motionPreference.addEventListener("change", handleMotionPreferenceChange);
 
     const resizeObserver = new ResizeObserver(syncColumnCount);
     const sidebarObserver = sidebarWrapper
@@ -395,6 +417,10 @@ export function useGalleryGridPageSize({
 
     return () => {
       disposed = true;
+      motionPreference.removeEventListener(
+        "change",
+        handleMotionPreferenceChange,
+      );
       resizeObserver.disconnect();
       sidebarObserver?.disconnect();
       if (pendingFrame !== null) {

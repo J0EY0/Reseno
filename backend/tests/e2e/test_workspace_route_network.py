@@ -11400,18 +11400,29 @@ def test_gallery_expand_motion_stays_in_phase_with_sidebar(
             )
             """
         )
-        page.emulate_media(reduced_motion="reduce")
-        page.wait_for_timeout(50)
-        reduced_motion_state = page.locator('[data-slot="gallery-grid"]').evaluate(
+        page.evaluate(
             """
-            grid => ({
-              inlineTemplate: grid.style.gridTemplateColumns,
-              activeReflows: document.getAnimations().filter(
-                animation => animation.id === 'gallery-grid-reflow'
-              ).length,
-            })
+            () => {
+              window.__galleryReducedMotionState = null;
+              matchMedia('(prefers-reduced-motion: reduce)').addEventListener(
+                'change',
+                () => queueMicrotask(() => {
+                  const grid = document.querySelector('[data-slot="gallery-grid"]');
+                  window.__galleryReducedMotionState = {
+                    inlineTemplate: grid.style.gridTemplateColumns,
+                    activeReflows: document.getAnimations().filter(
+                      animation => animation.id === 'gallery-grid-reflow'
+                    ).length,
+                  };
+                }),
+                { once: true },
+              );
+            }
             """
         )
+        page.emulate_media(reduced_motion="reduce")
+        page.wait_for_function("window.__galleryReducedMotionState !== null")
+        reduced_motion_state = page.evaluate("window.__galleryReducedMotionState")
         assert reduced_motion_state == {
             "inlineTemplate": "",
             "activeReflows": 0,
