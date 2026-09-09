@@ -43,8 +43,11 @@ def test_agent_prompt_keeps_the_edit_surface_and_project_facts_focused() -> None
     assert "description holds identity/scope" in AGENT_PROMPT
     assert "`techStack` normalized technology names" in AGENT_PROMPT
     assert "highlights distinct action/method contributions" in AGENT_PROMPT
-    assert "Foreground action/method" in AGENT_PROMPT
-    assert "only supported results/deliverables/constraints" in AGENT_PROMPT
+    assert "foreground concrete action and method" in AGENT_PROMPT
+    assert (
+        "include supported results, deliverables, quality changes, or constraints"
+        in AGENT_PROMPT
+    )
     assert "Tie components/APIs/state/mechanisms to that contribution" in AGENT_PROMPT
     assert "Infer neither audience nor missing highlights" in AGENT_PROMPT
     assert "Public sources and application goals guide emphasis" in AGENT_PROMPT
@@ -60,10 +63,9 @@ def test_agent_prompt_collects_and_preserves_material_facts_before_rewriting() -
 
 
 def test_agent_prompt_requests_material_technical_evidence() -> None:
-    assert "Technical labels do not prove contribution/action–method facts" in (
-        AGENT_PROMPT
-    )
-    assert "If this blocks rewriting" in AGENT_PROMPT
+    assert "Feature/technology labels prove only themselves" in AGENT_PROMPT
+    assert "never convert them into ownership, implementation" in AGENT_PROMPT
+    assert "If gaps block rewriting" in AGENT_PROMPT
     assert "ask one neutral contribution/method question" in AGENT_PROMPT
     assert "including role only in scope" in AGENT_PROMPT
     assert "Normalization cannot invent facts" in AGENT_PROMPT
