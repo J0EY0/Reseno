@@ -2,6 +2,7 @@ import json
 import os
 import time
 from collections.abc import Callable, Iterator
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -331,6 +332,7 @@ def tab_flow(
 def test_github_tab_completes_in_parent_without_document_navigation(
     tab_flow: Callable[..., TabFlow],
     mode: str,
+    tmp_path: Path,
 ) -> None:
     width = 1440
     reduced_motion = "no-preference"
@@ -427,8 +429,8 @@ def test_github_tab_completes_in_parent_without_document_navigation(
     assert not flow.completions
     assert not tab.is_closed()
     if width == 1440 and reduced_motion == "no-preference":
-        flow.page.screenshot(path=f"/private/tmp/reseno-tab-{mode}-parent.png")
-        tab.screenshot(path=f"/private/tmp/reseno-tab-{mode}-provider-mock.png")
+        flow.page.screenshot(path=tmp_path / f"reseno-tab-{mode}-parent.png")
+        tab.screenshot(path=tmp_path / f"reseno-tab-{mode}-provider-mock.png")
     flow.confirm(tab)
     expect(tab).to_have_url(f"{flow.url}/api/auth/oauth/github/callback")
     sample("completion")
@@ -503,7 +505,7 @@ def test_github_tab_completes_in_parent_without_document_navigation(
             for frame in stage_frames
         ), (stage, stage_frames)
     if width == 1440 and reduced_motion == "no-preference":
-        flow.page.screenshot(path=f"/private/tmp/reseno-tab-{mode}-complete.png")
+        flow.page.screenshot(path=tmp_path / f"reseno-tab-{mode}-complete.png")
     assert flow.page.evaluate("document.documentElement.scrollWidth <= innerWidth")
 
 
