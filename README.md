@@ -41,30 +41,35 @@ Review the Agent's proposed edits and choose which changes to apply.
 
 ### Docker
 
-From a local checkout, build and start the container at the repository root:
+Install and start [Docker](https://docs.docker.com/get-started/get-docker/), then
+pull and run the published image. It includes the application dependencies and
+supports Linux AMD64 and ARM64. No source checkout or local Python/Node.js
+installation is required.
 
 ```bash
-DOCKER_BUILDKIT=1 docker build --pull -t reseno:local .
+docker pull ghcr.io/j0ey0/reseno:latest
 docker run -d --name reseno --init --restart unless-stopped \
   -p 127.0.0.1:8000:8000 \
   --mount type=volume,source=reseno-data,target=/data \
   --shm-size=256m \
-  reseno:local
+  ghcr.io/j0ey0/reseno:latest
 ```
 
 The image serves the production frontend and API on port 8000 and includes
-Playwright Chromium for exports and dynamic web pages. Once the container is
-running, create the owner account:
+Playwright Chromium for exports and dynamic web pages. Once `docker ps` shows
+the `reseno` container as `healthy`, create the owner account:
 
 ```bash
 docker exec -it reseno python -m app.setup_owner
 ```
 
-The command prompts for a username and a password with hidden input. Open
+Enter a username and password when prompted; password input is hidden. Open
 `http://localhost:8000` and sign in. There are no default credentials.
 First-owner setup accepts loopback requests only, so Docker setup uses the
 command inside the container rather than the browser setup page.
 
+With these defaults, the first startup generates the required keys in
+`/data/.env`; no env file needs to be prepared manually.
 The `reseno-data` volume holds databases, files, settings and generated keys.
 Keep it when replacing the container, and use a separate volume for each
 workspace. See [keys and backups](#keys-and-backups) before moving your data.
@@ -230,6 +235,17 @@ Before browser tests, run `pnpm build` in `frontend` and
 `uv run --locked playwright install chromium` in `backend` (add `--with-deps`
 on Linux). Browser tests skipped without `RUN_BROWSER_E2E=1` do not count as
 passed; the smoke command sets it automatically.
+
+### Build a local image (optional)
+
+To build an image from your own checkout, run this at the repository root:
+
+```bash
+DOCKER_BUILDKIT=1 docker build --pull -t reseno:local .
+```
+
+Use `reseno:local` in place of `ghcr.io/j0ey0/reseno:latest` in the
+[Docker startup command](#docker). Owner setup and data storage are the same.
 
 ### Releases and container images
 

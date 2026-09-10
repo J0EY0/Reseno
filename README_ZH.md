@@ -36,18 +36,20 @@ Reseno 是一个自托管的简历工作区，AI 只提出修改建议，从不�
 
 ### Docker
 
-在本地仓库根目录构建并启动容器：
+安装并启动 [Docker](https://docs.docker.com/get-started/get-docker/)，然后直接拉取并运行已发布的镜像。
+镜像包含应用所需依赖，支持 Linux AMD64 和 ARM64，无需克隆源码或在宿主机安装 Python、Node.js。
 
 ```bash
-DOCKER_BUILDKIT=1 docker build --pull -t reseno:local .
+docker pull ghcr.io/j0ey0/reseno:latest
 docker run -d --name reseno --init --restart unless-stopped \
   -p 127.0.0.1:8000:8000 \
   --mount type=volume,source=reseno-data,target=/data \
   --shm-size=256m \
-  reseno:local
+  ghcr.io/j0ey0/reseno:latest
 ```
 
-镜像在端口 8000 同时提供生产前端和 API，并内置 Playwright Chromium，用于导出和动态网页访问。容器启动后，创建管理员账号：
+镜像在端口 8000 同时提供生产前端和 API，并内置 Playwright Chromium，用于导出和动态网页访问。
+等 `docker ps` 中的 `reseno` 容器状态显示为 `healthy` 后，创建管理员账号：
 
 ```bash
 docker exec -it reseno python -m app.setup_owner
@@ -56,6 +58,7 @@ docker exec -it reseno python -m app.setup_owner
 按提示输入用户名和密码，密码输入不会显示。打开 `http://localhost:8000` 登录。系统没有默认账号密码。
 首次创建管理员只接受回环地址请求，因此 Docker 部署需在容器内运行上述命令。
 
+按上述默认配置首次启动时，会自动生成所需密钥并写入 `/data/.env`，无需手动准备 env 文件。
 `reseno-data` 卷保存数据库、文件、设置和生成的密钥。更换容器时保留该卷，每个工作区使用独立的数据卷。
 迁移数据前请阅读[密钥与备份](#密钥与备份)。
 
@@ -179,6 +182,17 @@ Reseno 通过 GitHub App Manifest 流程创建归你所有的私有 GitHub App�
 
 浏览器测试前，在 `frontend` 中运行 `pnpm build`，在 `backend` 中运行 `uv run --locked playwright install chromium`（Linux 上添加 `--with-deps`）。
 未设置 `RUN_BROWSER_E2E=1` 而跳过的浏览器测试不算通过；冒烟测试命令会自动设置此变量。
+
+### 本地构建镜像（可选）
+
+如需从自己的源码构建镜像，在本地仓库根目录运行：
+
+```bash
+DOCKER_BUILDKIT=1 docker build --pull -t reseno:local .
+```
+
+将 [Docker 启动命令](#docker) 中的 `ghcr.io/j0ey0/reseno:latest` 替换为 `reseno:local` 即可。
+管理员初始化和数据保存方式相同。
 
 ### 版本发布与容器镜像
 
