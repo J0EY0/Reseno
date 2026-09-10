@@ -40,12 +40,12 @@ Reseno 是一个自托管的简历工作区，AI 只提出修改建议，从不�
 镜像包含应用所需依赖，支持 Linux AMD64 和 ARM64，无需克隆源码或在宿主机安装 Python、Node.js。
 
 ```bash
-docker pull ghcr.io/j0ey0/reseno:0.1.0
+docker pull ghcr.io/j0ey0/reseno:latest
 docker run -d --name reseno --init --restart unless-stopped \
   -p 127.0.0.1:8000:8000 \
   --mount type=volume,source=reseno-data,target=/data \
   --shm-size=256m \
-  ghcr.io/j0ey0/reseno:0.1.0
+  ghcr.io/j0ey0/reseno:latest
 ```
 
 镜像在端口 8000 同时提供生产前端和 API，并内置 Playwright Chromium，用于导出和动态网页访问。
@@ -191,7 +191,7 @@ Reseno 通过 GitHub App Manifest 流程创建归你所有的私有 GitHub App�
 DOCKER_BUILDKIT=1 docker build --pull -t reseno:local .
 ```
 
-将 [Docker 启动命令](#docker) 中的 `ghcr.io/j0ey0/reseno:0.1.0` 替换为 `reseno:local` 即可。
+将 [Docker 启动命令](#docker) 中的 `ghcr.io/j0ey0/reseno:latest` 替换为 `reseno:local` 即可。
 管理员初始化和数据保存方式相同。
 
 ### 版本发布与容器镜像

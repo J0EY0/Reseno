@@ -47,12 +47,12 @@ supports Linux AMD64 and ARM64. No source checkout or local Python/Node.js
 installation is required.
 
 ```bash
-docker pull ghcr.io/j0ey0/reseno:0.1.0
+docker pull ghcr.io/j0ey0/reseno:latest
 docker run -d --name reseno --init --restart unless-stopped \
   -p 127.0.0.1:8000:8000 \
   --mount type=volume,source=reseno-data,target=/data \
   --shm-size=256m \
-  ghcr.io/j0ey0/reseno:0.1.0
+  ghcr.io/j0ey0/reseno:latest
 ```
 
 The image serves the production frontend and API on port 8000 and includes
@@ -244,7 +244,7 @@ To build an image from your own checkout, run this at the repository root:
 DOCKER_BUILDKIT=1 docker build --pull -t reseno:local .
 ```
 
-Use `reseno:local` in place of `ghcr.io/j0ey0/reseno:0.1.0` in the
+Use `reseno:local` in place of `ghcr.io/j0ey0/reseno:latest` in the
 [Docker startup command](#docker). Owner setup and data storage are the same.
 
 ### Releases and container images
