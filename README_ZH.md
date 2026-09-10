@@ -190,6 +190,9 @@ Reseno 通过 GitHub App Manifest 流程创建归你所有的私有 GitHub App�
 | 推送到 `main`，包括合并 Pull request | `main`、`sha-<完整 commit SHA>`            |
 | 推送 `v0.1.0` 这样的发布 tag         | `0.1.0`、`latest`、`sha-<完整 commit SHA>` |
 
+仅修改根目录 `README.md`、`README_ZH.md` 和 `docs/` 下文件的 push 或 Pull request 会跳过后端、前端及浏览器检查，也不发布镜像。
+其他 Markdown 文件（包括 Agent 提示词）的变更仍触发检查。发布 tag 始终执行完整质量检查。
+
 发布 tag 必须采用 `vMAJOR.MINOR.PATCH` 格式，且指向已合入 `main` 的提交。预发布 tag 不会发布镜像。
 `latest` 指向最近一次发布的正式版本，`main` 指向最近一次构建成功的主线版本。需要固定版本的部署应使用版本标签或镜像 digest。
 
@@ -207,8 +210,8 @@ git push origin v0.1.0
 
 ## 文档
 
-- [项目概览](docs/PROJECT_CONTEXT.md)：产品范围、架构、数据契约、保存语义与运行时约束
-- [API 参考](docs/API.md)：HTTP 路由、身份验证、响应格式、Agent SSE 与草稿审核
+- [项目概览](docs/PROJECT_CONTEXT_ZH.md)：产品范围、架构、数据契约、保存语义与运行时约束
+- [API 参考](docs/API_ZH.md)：HTTP 路由、身份验证、响应格式、Agent SSE 与草稿审核
 
 ## 致谢
 

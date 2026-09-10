@@ -1,26 +1,28 @@
 # Reseno API
 
-本文描述前端与 FastAPI 后端之间的 HTTP 接口。默认基址为同源 `/api`；开发环境由 Vite 代理到后端。前端可用 `VITE_API_BASE_URL` 指定 API 基址，开发代理目标可用 `VITE_DEV_API_TARGET` 指定。启动、密钥和存储配置见 [README](../README.md)。
+English | [简体中文](API_ZH.md)
 
-## 契约来源
+This document describes the HTTP interface between the frontend and the FastAPI backend. The default base URL is the same-origin `/api`; Vite proxies requests to the backend during development. Set `VITE_API_BASE_URL` to override the frontend API base URL and `VITE_DEV_API_TARGET` to override the development proxy target. See the [README](../README.md) for startup, secret, and storage configuration.
 
-下文表格中的响应类型均指 JSON envelope 的 `data`，标明 SSE、文件、HTML 或重定向的接口除外。JSON 字段使用 schema 声明的别名，例如 `documentLocale`、`savedAt`。
+## Contract sources
 
-| 内容 | 精确字段与实现 |
+Response types in the tables below refer to the JSON envelope's `data` field, except for endpoints marked as SSE, file, HTML, or redirect responses. JSON fields use the aliases declared in the schemas, such as `documentLocale` and `savedAt`.
+
+| Subject | Exact fields and implementation |
 | --- | --- |
-| HTTP 路由、查询参数、状态码 | [backend/app/routers](../backend/app/routers) |
-| 请求与响应校验 | [backend/app/schemas](../backend/app/schemas) |
-| 前端 API 类型 | [frontend/src/types/api.ts](../frontend/src/types/api.ts) |
-| 简历文档结构 | [resume_document.schema.json](../backend/app/services/resume_document.schema.json) |
-| Agent 编辑操作 | [resume_edit_operation.schema.json](../backend/app/services/agent/resume_edit_operation.schema.json) |
-| 前端简历、模板和工作区类型 | [frontend/src/types/resume.ts](../frontend/src/types/resume.ts) |
-| 内置模板定义 | [template_presets.json](../backend/app/services/template_presets.json) |
+| HTTP routes, query parameters, and status codes | [backend/app/routers](../backend/app/routers) |
+| Request and response validation | [backend/app/schemas](../backend/app/schemas) |
+| Frontend API types | [frontend/src/types/api.ts](../frontend/src/types/api.ts) |
+| Resume document structure | [resume_document.schema.json](../backend/app/services/resume_document.schema.json) |
+| Agent edit operations | [resume_edit_operation.schema.json](../backend/app/services/agent/resume_edit_operation.schema.json) |
+| Frontend resume, template, and workspace types | [frontend/src/types/resume.ts](../frontend/src/types/resume.ts) |
+| Built-in template definitions | [template_presets.json](../backend/app/services/template_presets.json) |
 
-服务通过 `app.main:create_app` 创建。`/docs`、`/redoc` 和 `/openapi.json` 未公开；契约工具可对应用对象调用 `app.openapi()`。SSE、手工文件响应及认证中间件规则还需参照对应实现。
+The service is created through `app.main:create_app`. `/docs`, `/redoc`, and `/openapi.json` are not exposed; contract tooling can call `app.openapi()` on the application object. Consult the corresponding implementations for SSE, manually constructed file responses, and authentication middleware rules.
 
-## HTTP 与认证约定
+## HTTP and authentication conventions
 
-普通 JSON 成功响应为：
+A standard successful JSON response is:
 
 ```json
 {
@@ -31,26 +33,26 @@
 }
 ```
 
-`requestId` 可以为空或省略。`message` 是稳定的消息标识，由客户端本地化。错误保留实际 HTTP 状态，不通过 HTTP 200 表示失败。
+`requestId` can be null or omitted. `message` is a stable message identifier localized by the client. Errors retain their actual HTTP status; failures are not reported as HTTP 200.
 
-| HTTP 状态 | 含义 | 常见 `code` |
+| HTTP status | Meaning | Common `code` |
 | --- | --- | --- |
-| 2xx | 成功 | `0` |
-| 400、403、409、413、429 | 无效请求、禁止操作、冲突、上传过大、运行容量不足 | `40000` |
-| 401 | 登录失败或会话无效 | `40001` |
-| 404 | 资源不存在 | `40004` |
-| 422 | 请求结构或字段校验失败 | 请求模型校验为 `40002` |
-| 5xx | 服务端或上游错误 | `50000` |
+| 2xx | Success | `0` |
+| 400, 403, 409, 413, 429 | Invalid request, forbidden operation, conflict, oversized upload, or insufficient run capacity | `40000` |
+| 401 | Login failure or invalid session | `40001` |
+| 404 | Resource not found | `40004` |
+| 422 | Invalid request structure or fields | `40002` for request model validation |
+| 5xx | Server or upstream error | `50000` |
 
-Pydantic 请求校验失败返回 `message: "VALIDATION_ERROR"`，`data.errors` 包含字段错误。手工抛出的 HTTP 错误按 HTTP 状态映射；例如 Agent 会话替换校验失败使用 HTTP 422、`code: 40000`、`message: "AGENT_SESSION_REPLACEMENT_INVALID"`。完整规则见 [exceptions.py](../backend/app/exceptions.py)。
+Pydantic request validation failures return `message: "VALIDATION_ERROR"`, with field errors in `data.errors`. Manually raised HTTP errors are mapped by HTTP status; for example, invalid Agent session replacement uses HTTP 422, `code: 40000`, and `message: "AGENT_SESSION_REPLACEMENT_INVALID"`. See [exceptions.py](../backend/app/exceptions.py) for the complete rules.
 
-受保护接口要求：
+Protected endpoints require:
 
 ```http
 Authorization: Bearer <accessToken>
 ```
 
-[认证中间件](../backend/app/middleware/auth.py) 仅对下列实际 API 路径免除 Bearer 校验：
+The [authentication middleware](../backend/app/middleware/auth.py) exempts only these actual API paths from Bearer validation:
 
 - `/api/auth/setup`
 - `/api/auth/login`
@@ -59,9 +61,9 @@ Authorization: Bearer <accessToken>
 - `/api/auth/oauth/github/setup/callback`
 - `/api/auth/oauth/complete`
 
-`OPTIONS` 请求也不经过 Bearer 校验。GitHub 回调和兑换仍校验 OAuth 流程状态及浏览器会话，公开不等于无校验。`/health` 位于 API 前缀之外。
+`OPTIONS` requests also bypass Bearer validation. GitHub callbacks and code exchange still validate OAuth flow state and the browser session; public access does not mean validation is skipped. `/health` is outside the API prefix.
 
-认证中间件拒绝请求时返回 HTTP 401、`WWW-Authenticate: Bearer`，以及：
+When the authentication middleware rejects a request, it returns HTTP 401, `WWW-Authenticate: Bearer`, and:
 
 ```json
 {
@@ -75,310 +77,310 @@ Authorization: Bearer <accessToken>
 }
 ```
 
-`reason` 为 `missing_token`、`invalid_or_expired_token` 或 `owner_missing_or_changed`。密码错误则使用 `INVALID_CREDENTIALS`。客户端应按状态码和消息标识处理，不依赖英文错误句子。
+`reason` is `missing_token`, `invalid_or_expired_token`, or `owner_missing_or_changed`. An incorrect password uses `INVALID_CREDENTIALS`. Clients should handle errors by status code and message identifier, without depending on English error sentences.
 
-JSON envelope 不适用于 Agent SSE、附件和导出文件下载、OAuth HTML/303 回调、`/health`。`/api/*` 接口交给通用异常处理器的错误使用 JSON 错误 envelope；OAuth 流程失败沿对应回调格式返回，SSE 已建立后的运行错误通过流事件报告。
+The JSON envelope does not apply to Agent SSE, attachment and export file downloads, OAuth HTML/303 callbacks, or `/health`. Errors from `/api/*` endpoints that reach the shared exception handlers use the JSON error envelope. OAuth flow failures use the corresponding callback format; run errors after an SSE stream has been established are reported through stream events.
 
-## Owner 与登录会话
+## Owner and login sessions
 
-契约：[auth.py schema](../backend/app/schemas/auth.py)、[auth 路由](../backend/app/routers/auth.py)、[auth_tokens.py](../backend/app/services/auth_tokens.py)。实例只有一个 owner，没有公开注册或默认密码。
+Contracts: [auth.py schema](../backend/app/schemas/auth.py), [auth routes](../backend/app/routers/auth.py), and [auth_tokens.py](../backend/app/services/auth_tokens.py). An instance has one owner, with no public registration or default password.
 
-| 方法 | 路径 | 请求 | 响应与行为 |
+| Method | Path | Request | Response and behavior |
 | --- | --- | --- | --- |
-| GET | `/api/auth/setup` | 无；公开 | `AuthSetupStatusResponse`：`setupRequired`、`githubLoginAvailable`；`Cache-Control: no-store` |
-| POST | `/api/auth/setup` | `AuthSetupRequest`：`username`、`password`、`confirmPassword`；公开 | 从 loopback 客户端创建唯一 owner，返回 `AuthLoginResponse`；非本机 403，已初始化 409 |
-| POST | `/api/auth/login` | `AuthLoginRequest`：`username`、`password`；公开 | `AuthLoginResponse`；凭据错误 401 |
-| POST | `/api/auth/refresh` | 有效 Bearer；无请求体 | `AuthLoginResponse`；续签并撤销旧 token |
-| POST | `/api/auth/username` | `AuthUsernameUpdateRequest`：`newUsername`、`currentPassword`；有效 Bearer | `AuthLoginResponse`；验证当前密码后修改用户名；用户名或密码无效 400，会话失效或 owner 已变化 401 |
-| POST | `/api/auth/password` | `AuthPasswordUpdateRequest`：`currentPassword`、`newPassword`、`confirmPassword` | `AuthPasswordUpdateResponse`：`username`、`updated: true`；原密码错误 400 |
+| GET | `/api/auth/setup` | None; public | `AuthSetupStatusResponse`: `setupRequired`, `githubLoginAvailable`; `Cache-Control: no-store` |
+| POST | `/api/auth/setup` | `AuthSetupRequest`: `username`, `password`, `confirmPassword`; public | Creates the sole owner from a loopback client and returns `AuthLoginResponse`; 403 for non-local clients, 409 if already initialized |
+| POST | `/api/auth/login` | `AuthLoginRequest`: `username`, `password`; public | `AuthLoginResponse`; 401 for invalid credentials |
+| POST | `/api/auth/refresh` | Valid Bearer; no body | `AuthLoginResponse`; renews the session and revokes the old token |
+| POST | `/api/auth/username` | `AuthUsernameUpdateRequest`: `newUsername`, `currentPassword`; valid Bearer | `AuthLoginResponse`; changes the username after verifying the current password; 400 for an invalid username or password, 401 if the session is invalid or the owner has changed |
+| POST | `/api/auth/password` | `AuthPasswordUpdateRequest`: `currentPassword`, `newPassword`, `confirmPassword` | `AuthPasswordUpdateResponse`: `username`, `updated: true`; 400 for an incorrect current password |
 
-用户名去除首尾空白后至少 3 个字符，只允许 ASCII 字母、数字、`_`、`-`。新密码至少 8 个字符，包含 ASCII 字母和数字，并与确认值一致。首次设置判断的是后端收到的客户端地址。
+After trimming surrounding whitespace, usernames must contain at least 3 characters and may use only ASCII letters, digits, `_`, and `-`. New passwords must contain at least 8 characters, including ASCII letters and digits, and must match the confirmation value. Initial setup checks the client address received by the backend.
 
-`AuthLoginResponse` 包含 `username`、`accessToken`、`expiresAt`、`tokenType: "bearer"`。JWT 有效期为签发起 36 小时；续签要求旧 token 仍有效。旧 token 的 `jwt_id` 与原到期时间写入 `auth.db` 的 `auth_revoked_tokens`，撤销在后端重启后仍有效，同一 token 只能成功续签一次。
+`AuthLoginResponse` contains `username`, `accessToken`, `expiresAt`, and `tokenType: "bearer"`. JWTs expire 36 hours after issuance; renewal requires the old token to remain valid. The old token's `jwt_id` and original expiry time are stored in `auth_revoked_tokens` in `auth.db`, so revocation survives backend restarts. Each token can be renewed successfully only once.
 
-用户名修改在同一事务中核对当前 owner 与请求的认证 revision、验证当前密码，并更新用户名和认证 revision；替换凭证签发成功后才提交。实际改名会使全部已有 JWT 失效，客户端使用响应中的新凭证继续登录；改回曾用名也不会恢复旧 JWT。去除首尾空白后与当前用户名相同的请求仍验证会话和密码，但不更新 owner 或认证 revision，并返回新的有效凭证。改名保留当前密码、GitHub 身份绑定和简历数据；之后使用新用户名和原密码登录。
+A username update verifies the current owner and the request's authentication revision, checks the current password, and updates the username and authentication revision in one transaction. The transaction commits only after replacement credentials have been issued successfully. An actual rename invalidates all existing JWTs; the client continues the session with the new credentials in the response. Reverting to a previous username does not restore old JWTs. A request whose trimmed username matches the current username still validates the session and password, but does not update the owner or authentication revision, and returns fresh valid credentials. Renaming preserves the current password, linked GitHub identity, and resume data; subsequent login uses the new username and the original password.
 
-密码修改会更新 owner 的认证 revision，使全部已有 JWT 失效。前端将会话存入同源 localStorage，并协调标签页之间的续签、登录和退出；客户端退出清理本地会话，没有单独的服务端 logout 接口。会话客户端见 [auth.ts](../frontend/src/lib/auth.ts)、[auth-session.ts](../frontend/src/lib/auth-session.ts)。
+A password update changes the owner's authentication revision, invalidating all existing JWTs. The frontend stores the session in same-origin localStorage and coordinates renewal, login, and logout across tabs. Client logout clears the local session; there is no separate server logout endpoint. See [auth.ts](../frontend/src/lib/auth.ts) and [auth-session.ts](../frontend/src/lib/auth-session.ts) for the session client.
 
-### GitHub App 与身份绑定
+### GitHub App and identity linking
 
-契约：[auth_oauth.py](../backend/app/routers/auth_oauth.py)、[auth.py schema](../backend/app/schemas/auth.py)。`provider` 当前只接受 `github`。
+Contracts: [auth_oauth.py](../backend/app/routers/auth_oauth.py) and [auth.py schema](../backend/app/schemas/auth.py). `provider` currently accepts only `github`.
 
-| 方法 | 路径 | 请求与认证 | 响应 |
+| Method | Path | Request and authentication | Response |
 | --- | --- | --- | --- |
-| GET | `/api/auth/oauth/identities` | Bearer | `OAuthIdentitiesResponse`：已绑定身份 `identities` 与 provider 配置状态 `providers` |
-| POST | `/api/auth/oauth/{provider}/login` | GitHub 路径公开；无请求体 | `OAuthStartResponse.authorizationUrl` |
-| POST | `/api/auth/oauth/{provider}/bind` | Bearer；无请求体 | `OAuthStartResponse.authorizationUrl` |
-| GET | `/api/auth/oauth/{provider}/callback` | GitHub 路径公开；供 provider 回调 | 登录为 303 重定向；绑定为 HTML 通知页 |
-| POST | `/api/auth/oauth/complete` | 公开；`{ "code": "一次性交换码" }`；保留发起流程的浏览器 cookie | `OAuthCompleteResponse`：`provider`、`intent: "login" / "bind"`、`auth`；仅登录返回新本地 token，绑定时 `auth: null` |
-| DELETE | `/api/auth/oauth/{provider}/binding` | Bearer；无请求体 | `OAuthDeleteResponse`：`deleted: true` |
-| POST | `/api/auth/oauth/github/setup` | Bearer；`{ "publicBaseUrl": "https://实例地址" }` | `OAuthSetupResponse`：`registrationUrl`、`manifest` |
-| GET | `/api/auth/oauth/github/setup/callback` | 公开；供 GitHub App Manifest 回调 | 成功 303 进入授权流程；失败 HTML 通知页 |
+| GET | `/api/auth/oauth/identities` | Bearer | `OAuthIdentitiesResponse`: linked `identities` and provider configuration status in `providers` |
+| POST | `/api/auth/oauth/{provider}/login` | The GitHub path is public; no body | `OAuthStartResponse.authorizationUrl` |
+| POST | `/api/auth/oauth/{provider}/bind` | Bearer; no body | `OAuthStartResponse.authorizationUrl` |
+| GET | `/api/auth/oauth/{provider}/callback` | The GitHub path is public; provider callback | 303 redirect for login; HTML notification page for linking |
+| POST | `/api/auth/oauth/complete` | Public; `{ "code": "one-time-exchange-code" }`; retain the browser cookie from the start of the flow | `OAuthCompleteResponse`: `provider`, `intent: "login" / "bind"`, `auth`; only login returns a new local token, while linking returns `auth: null` |
+| DELETE | `/api/auth/oauth/{provider}/binding` | Bearer; no body | `OAuthDeleteResponse`: `deleted: true` |
+| POST | `/api/auth/oauth/github/setup` | Bearer; `{ "publicBaseUrl": "https://instance.example" }` | `OAuthSetupResponse`: `registrationUrl`, `manifest` |
+| GET | `/api/auth/oauth/github/setup/callback` | Public; GitHub App Manifest callback | 303 redirect into the authorization flow on success; HTML notification page on failure |
 
-owner 先使用密码登录，再创建实例自己的 GitHub App 并绑定身份。`publicBaseUrl` 使用实例正常浏览器地址：远端要求 HTTPS，本机 localhost/loopback 可用 HTTP。前端与 `/api` 使用同源地址；OAuth 使用签名浏览器会话记录流程，流程有效期 10 分钟。
+The owner first logs in with a password, then creates the instance's own GitHub App and links an identity. `publicBaseUrl` is the instance's normal browser URL: remote instances require HTTPS, while local localhost/loopback addresses may use HTTP. The frontend and `/api` share an origin. OAuth tracks the flow in a signed browser session, with a 10-minute lifetime.
 
-登录回调跳转至 `/login#oauth_code=...`，失败使用 `#oauth_error=...`。绑定回调页面通过带来源校验的 `postMessage` 与发起窗口交接。客户端再调用 `/complete` 消费与当前浏览器关联的交换码；交换码有效期 60 秒且只能使用一次。JWT 不放入回调 URL。配置和回调响应带 `Cache-Control: no-store`；回调带 `Referrer-Policy: no-referrer`。
+The login callback redirects to `/login#oauth_code=...`, or uses `#oauth_error=...` on failure. The linking callback page communicates with the initiating window through origin-checked `postMessage`. The client then calls `/complete` to consume an exchange code tied to the current browser. The code expires after 60 seconds and can be used only once. JWTs are never placed in callback URLs. Configuration and callback responses carry `Cache-Control: no-store`; callbacks also carry `Referrer-Policy: no-referrer`.
 
-## 简历、模板与语言的数据边界
+## Resume, template, and language data boundaries
 
-`ResumeData` 是简历正文，结构为 `schemaVersion: 2`、`basic`、`sections`。每个 section 有 `id`、`kind`、`title`、`items`；`kind` 是 `education`、`experience`、`project`、`publication`、`achievement`、`simple_list`。section 不存放模板布局字段。
+`ResumeData` is the resume document body, containing `schemaVersion: 2`, `basic`, and `sections`. Each section has `id`, `kind`, `title`, and `items`; `kind` is one of `education`, `experience`, `project`, `publication`, `achievement`, and `simple_list`. Sections do not store template layout fields.
 
-每种 section 的 item 使用自己的字段。例如 project 的 `techStack` 是字符串数组；`simple_list` 恰有一个 `{id, content}` item，可见条目保存在 `content` 的富文本中。基本信息包含 `customFields`，每项有 `id`、`type`、`label`、`value`。完整规则以 [文档 JSON schema](../backend/app/services/resume_document.schema.json) 为准。
+Each section kind has its own item fields. For example, a project's `techStack` is a string array; `simple_list` has exactly one `{id, content}` item, with visible entries stored as rich text in `content`. Basic information includes `customFields`, whose entries each have `id`, `type`, `label`, and `value`. The [document JSON schema](../backend/app/services/resume_document.schema.json) defines the complete rules.
 
-`ResumeWorkspaceItemResponse` 在正文外保存 `id`、`title`、`updatedAt`、`documentLocale`、`jobBrief`、`typography`、`template`、`templateSettings`。`documentLocale` 为 `zh` 或 `en`，独立于界面语言；`template` 是模板 ID，`templateSettings` 为视觉覆盖或 `null`。`typography` 包含 `fontFamily` 与 CSS 像素单位的 `fontSize`。
+`ResumeWorkspaceItemResponse` stores `id`, `title`, `updatedAt`, `documentLocale`, `jobBrief`, `typography`, `template`, and `templateSettings` outside the document body. `documentLocale` is `zh` or `en`, independently of the interface language. `template` is a template ID, and `templateSettings` contains visual overrides or `null`. `typography` includes `fontFamily` and `fontSize` in CSS pixels.
 
-模板定义包含 `preset`、`name`、`description`、`layout`、`typography`、`settings`。`preset` 必须引用内置模板；布局、头像与装饰图片字段在 `layout` 中，视觉参数在 `settings` 中。便携模板不含服务端的 `id`、`updatedAt`、`isBuiltIn`。字段与数值约束见 [imports.py](../backend/app/schemas/imports.py)、[templates.py](../backend/app/schemas/templates.py)。
+A template definition contains `preset`, `name`, `description`, `layout`, `typography`, and `settings`. `preset` must reference a built-in template. Layout, avatar, and decorative image fields belong to `layout`, while visual parameters belong to `settings`. Portable templates omit the server fields `id`, `updatedAt`, and `isBuiltIn`. See [imports.py](../backend/app/schemas/imports.py) and [templates.py](../backend/app/schemas/templates.py) for field and value constraints.
 
-## 工作区页面与偏好
+## Workspace pages and preferences
 
-契约：[workspace.py schema](../backend/app/schemas/workspace.py)、[workspace 路由](../backend/app/routers/workspace.py)。页面查询仅聚合初始化所需资源；单份简历正文、Agent 会话和模板编辑状态通过各自资源接口读取。
+Contracts: [workspace.py schema](../backend/app/schemas/workspace.py) and [workspace routes](../backend/app/routers/workspace.py). Page queries aggregate only the resources needed for initialization. Individual resume documents, Agent sessions, and template editing state are read through their respective resource endpoints.
 
-| 方法 | 路径 | 请求 | `data` |
+| Method | Path | Request | `data` |
 | --- | --- | --- | --- |
-| GET | `/api/workspace/pages/resumes` | 无 | `ResumesPageResponse`：`resumes`、`customTemplates`、`defaultTemplateIds`、可选 `theme` |
-| GET | `/api/workspace/pages/resume-editor` | 无 | `ResumeEditorPageResponse`：`customTemplates`、`defaultTemplateIds`、`modelConfigs`、`agentSettings`、可选 `theme` |
-| GET | `/api/workspace/pages/templates` | 无 | `TemplatesPageResponse`：`customTemplates`、`defaultTemplateIds`、可选 `theme` |
-| GET | `/api/workspace/pages/trash` | 无 | `TrashPageResponse`：`deletedResumes`、`deletedTemplates`、`customTemplates`、`defaultTemplateIds`、可选 `theme` |
-| GET | `/api/workspace/pages/models` | 无 | `ModelsPageResponse`：`modelConfigs`、`agentSettings`、可选 `theme` |
-| GET | `/api/workspace/pages/settings` | 无 | `SettingsPageResponse`：`modelConfigs`、`agentSettings`、可选 `theme` |
-| PUT | `/api/workspace/user-settings` | `{settings: UserSettingsUpdate}`；可选查询 `locale=zh/en` | `UserSettingsSaveResponse`：保存后的 `locale`、可选 `theme`、`agentSettings` |
+| GET | `/api/workspace/pages/resumes` | None | `ResumesPageResponse`: `resumes`, `customTemplates`, `defaultTemplateIds`, optional `theme` |
+| GET | `/api/workspace/pages/resume-editor` | None | `ResumeEditorPageResponse`: `customTemplates`, `defaultTemplateIds`, `modelConfigs`, `agentSettings`, optional `theme` |
+| GET | `/api/workspace/pages/templates` | None | `TemplatesPageResponse`: `customTemplates`, `defaultTemplateIds`, optional `theme` |
+| GET | `/api/workspace/pages/trash` | None | `TrashPageResponse`: `deletedResumes`, `deletedTemplates`, `customTemplates`, `defaultTemplateIds`, optional `theme` |
+| GET | `/api/workspace/pages/models` | None | `ModelsPageResponse`: `modelConfigs`, `agentSettings`, optional `theme` |
+| GET | `/api/workspace/pages/settings` | None | `SettingsPageResponse`: `modelConfigs`, `agentSettings`, optional `theme` |
+| PUT | `/api/workspace/user-settings` | `{settings: UserSettingsUpdate}`; optional `locale=zh/en` query | `UserSettingsSaveResponse`: saved `locale`, optional `theme`, `agentSettings` |
 | PUT | `/api/workspace/default-template` | `{documentLocale, templateId}` | `{defaultTemplateIds: {zh, en}}` |
 
-`theme` 为 `light`、`dark`、`system`。省略 `locale` 会保留既有偏好，首次未设置时为 `en`。`defaultTemplateIds` 为中文、英文简历分别保存默认模板 ID，不是单一全局模板。
+`theme` is `light`, `dark`, or `system`. Omitting `locale` preserves the existing preference, or uses `en` if none has been set. `defaultTemplateIds` stores separate default template IDs for Chinese and English resumes, rather than a single global template.
 
-`agentSettings` 的准确结构见 [agent_settings.py](../backend/app/schemas/agent_settings.py)：
+See [agent_settings.py](../backend/app/schemas/agent_settings.py) for the exact `agentSettings` structure:
 
-- `defaultModelConfigId`：默认模型配置 ID。
-- `responseLanguage`：`follow`、`zh`、`en`。
-- `behaviorMode`：`balanced`、`strict`、`aggressive`。
-- `confirmationMode`：`always`、`suggestOnly`。
+- `defaultModelConfigId`: the default model configuration ID.
+- `responseLanguage`: `follow`, `zh`, or `en`.
+- `behaviorMode`: `balanced`, `strict`, or `aggressive`.
+- `confirmationMode`: `always` or `suggestOnly`.
 
-Agent 在接受一次运行时读取并固定这些偏好，运行期间修改设置作用于之后的运行。正式简历仍通过审核应用接口提交。
+The Agent reads and fixes these preferences when accepting a run. Changes made during a run affect subsequent runs. Changes to the saved resume still go through the draft review and application endpoint.
 
-## 简历与版本
+## Resumes and versions
 
-契约：[resumes.py schema](../backend/app/schemas/resumes.py)、[resumes 路由](../backend/app/routers/resumes.py)。
+Contracts: [resumes.py schema](../backend/app/schemas/resumes.py) and [resumes routes](../backend/app/routers/resumes.py).
 
-| 方法 | 路径 | 请求 | `data` |
+| Method | Path | Request | `data` |
 | --- | --- | --- | --- |
-| GET | `/api/resumes` | 查询 `status=active/deleted`，默认 `active` | `ResumeListResponse`：`resumes`；已删除项附带 `deletedAt` |
+| GET | `/api/resumes` | `status=active/deleted` query; defaults to `active` | `ResumeListResponse`: `resumes`; deleted items include `deletedAt` |
 | POST | `/api/resumes` | `ResumeCreateRequest` | `ResumeDetailResponse` |
-| GET | `/api/resumes/{resume_id}` | 无 | 当前活动简历的 `ResumeDetailResponse` |
-| PUT | `/api/resumes/{resume_id}` | `ResumeSaveRequest`；查询 `saveMode=autosave/checkpoint`，默认 `checkpoint` | `ResumeDetailResponse` |
-| POST | `/api/resumes/{resume_id}/duplicate` | 无请求体 | 独立副本的 `ResumeDetailResponse` |
-| POST | `/api/resumes/{resume_id}/trash` | 无请求体 | `{resume: DeletedResumeWorkspaceItemResponse}`；移入回收站 |
-| POST | `/api/resumes/{resume_id}/restore` | 无请求体 | 恢复后的 `ResumeDetailResponse` |
-| DELETE | `/api/resumes/{resume_id}` | 无请求体；目标须已在回收站 | `ResumeDeleteResponse`：`{id}` |
-| DELETE | `/api/resumes/trash` | 无请求体 | `ResumeTrashEmptyResponse`：`{deletedCount}` |
-| GET | `/api/resumes/{resume_id}/versions` | 无 | `ResumeVersionsResponse`：`versions`，每项含 `versionId`、`savedAt` |
-| GET | `/api/resumes/{resume_id}/versions/{version_id}` | 无 | 历史快照的 `ResumeDetailResponse` |
+| GET | `/api/resumes/{resume_id}` | None | `ResumeDetailResponse` for the current active resume |
+| PUT | `/api/resumes/{resume_id}` | `ResumeSaveRequest`; `saveMode=autosave/checkpoint` query, defaults to `checkpoint` | `ResumeDetailResponse` |
+| POST | `/api/resumes/{resume_id}/duplicate` | No body | `ResumeDetailResponse` for an independent copy |
+| POST | `/api/resumes/{resume_id}/trash` | No body | `{resume: DeletedResumeWorkspaceItemResponse}`; moves the resume to trash |
+| POST | `/api/resumes/{resume_id}/restore` | No body | `ResumeDetailResponse` for the restored resume |
+| DELETE | `/api/resumes/{resume_id}` | No body; the target must already be in trash | `ResumeDeleteResponse`: `{id}` |
+| DELETE | `/api/resumes/trash` | No body | `ResumeTrashEmptyResponse`: `{deletedCount}` |
+| GET | `/api/resumes/{resume_id}/versions` | None | `ResumeVersionsResponse`: `versions`, each containing `versionId` and `savedAt` |
+| GET | `/api/resumes/{resume_id}/versions/{version_id}` | None | `ResumeDetailResponse` for a historical snapshot |
 
-创建最小请求：
+Minimal creation request:
 
 ```json
 {"documentLocale":"zh"}
 ```
 
-服务端分配简历 ID、时间与版本，按所选语言和模板生成起始内容。可以通过 `ResumeCreateRequest` 提供标题、正文、模板及排版覆盖。标题最长 50 个字符。
+The server assigns the resume ID, timestamps, and version, and generates initial content from the selected language and template. `ResumeCreateRequest` can supply a title, document body, template, and typography overrides. Titles are limited to 50 characters.
 
-保存是整份替换请求，包含 `title`、`documentLocale`、`resume`、`jobBrief`、`typography`、`template`、`templateSettings`；不要把 `ResumeDetailResponse` 或服务端身份字段直接当请求体。`ResumeDetailResponse` 为 `{resume: ResumeWorkspaceItemResponse, savedAt, versionId}`，`versionId` 是字符串。
+Saving replaces the complete resource with a request containing `title`, `documentLocale`, `resume`, `jobBrief`, `typography`, `template`, and `templateSettings`. Do not use `ResumeDetailResponse` or server identity fields directly as the request body. `ResumeDetailResponse` is `{resume: ResumeWorkspaceItemResponse, savedAt, versionId}`, where `versionId` is a string.
 
-`autosave` 保存当前工作内容，后续保存会替换未固定的自动保存版本；`checkpoint` 固定显式历史节点。同内容保存不会无条件创建新版本，当前 autosave 可被提升为 checkpoint。历史列表只列 checkpoint。普通 PUT 没有 `expectedVersionId` 查询参数；Agent 审核应用的版本并发控制见后文。
+`autosave` saves the current working content; later saves replace the unpinned autosave version. `checkpoint` pins an explicit history entry. Saving unchanged content does not unconditionally create a new version, and the current autosave can be promoted to a checkpoint. The history list includes only checkpoints. A normal PUT has no `expectedVersionId` query parameter; version concurrency control for applying Agent drafts is described below.
 
-彻底删除同时清理版本、关联 Agent 会话与附件。有仍在执行的 Agent turn 时，彻底删除或清空回收站返回 409 `AGENT_RUN_CONFLICT`。回收站列表提供预览数据，不能通过活动详情接口编辑已删除简历。
+Permanent deletion also removes versions, associated Agent sessions, and attachments. If an Agent turn is still executing, permanent deletion or emptying the trash returns 409 `AGENT_RUN_CONFLICT`. The trash list provides preview data; deleted resumes cannot be edited through the active detail endpoint.
 
-## 自定义模板
+## Custom templates
 
-契约：[templates.py schema](../backend/app/schemas/templates.py)、[templates 路由](../backend/app/routers/templates.py)。这些资源接口管理自定义模板；内置模板由共享预设提供，不通过这些接口修改。
+Contracts: [templates.py schema](../backend/app/schemas/templates.py) and [templates routes](../backend/app/routers/templates.py). These resource endpoints manage custom templates. Built-in templates come from shared presets and cannot be modified through these endpoints.
 
-| 方法 | 路径 | 请求 | `data` |
+| Method | Path | Request | `data` |
 | --- | --- | --- | --- |
-| GET | `/api/templates` | 查询 `status=active/deleted`，默认 `active` | `TemplateListResponse`：`templates` |
-| POST | `/api/templates` | `{template: TemplateArtifactItem}` | `TemplateResponse`：新建 `{template}` |
-| GET | `/api/templates/{template_id}` | 无 | `TemplateEditingResponse`：`{template, checkpoint}` |
+| GET | `/api/templates` | `status=active/deleted` query; defaults to `active` | `TemplateListResponse`: `templates` |
+| POST | `/api/templates` | `{template: TemplateArtifactItem}` | `TemplateResponse`: newly created `{template}` |
+| GET | `/api/templates/{template_id}` | None | `TemplateEditingResponse`: `{template, checkpoint}` |
 | PUT | `/api/templates/{template_id}` | `{template: TemplateArtifactItem, saveMode?: "autosave" / "checkpoint"}` | `TemplateEditingResponse` |
-| POST | `/api/templates/{template_id}/discard` | 无请求体 | 恢复后的 `TemplateEditingResponse` |
-| POST | `/api/templates/{template_id}/trash` | 无请求体 | `TemplateResponse`；已删除模板附带 `deletedAt` |
-| POST | `/api/templates/{template_id}/restore` | 无请求体 | `TemplateResponse` |
-| DELETE | `/api/templates/{template_id}` | 无请求体；目标须已在回收站 | `TemplateDeleteResponse`：`{id}` |
-| DELETE | `/api/templates/trash` | 无请求体 | `TemplateTrashEmptyResponse`：`{deletedCount}` |
+| POST | `/api/templates/{template_id}/discard` | No body | Restored `TemplateEditingResponse` |
+| POST | `/api/templates/{template_id}/trash` | No body | `TemplateResponse`; deleted templates include `deletedAt` |
+| POST | `/api/templates/{template_id}/restore` | No body | `TemplateResponse` |
+| DELETE | `/api/templates/{template_id}` | No body; the target must already be in trash | `TemplateDeleteResponse`: `{id}` |
+| DELETE | `/api/templates/trash` | No body | `TemplateTrashEmptyResponse`: `{deletedCount}` |
 
-模板 PUT 的 `saveMode` 在 JSON 请求体中，默认 `checkpoint`。首次 autosave 保存此前显式内容为 `checkpoint`，后续 autosave 保留同一个 checkpoint；显式保存确认当前内容并使 `checkpoint` 为 `null`。`discard` 恢复该 checkpoint，没有待处理 checkpoint 时返回现有内容。编辑状态保存在后端，重新进入页面仍可恢复；模板没有简历式的历史版本列表。
+For template PUT requests, `saveMode` belongs in the JSON body and defaults to `checkpoint`. The first autosave stores the previously explicitly saved content as `checkpoint`; subsequent autosaves retain that same checkpoint. An explicit save confirms the current content and sets `checkpoint` to `null`. `discard` restores that checkpoint, or returns the existing content if no checkpoint is pending. Editing state is stored in the backend and can be recovered when returning to the page. Templates do not have the history version list available for resumes.
 
-创建和保存请求中的 `template` 使用便携内容形状，不携带 `id`、`updatedAt`、`isBuiltIn`、`deletedAt` 或内部 `_checkpoint` 字段。创建得到的新 ID 才是工作区引用 ID。
+The `template` in creation and save requests uses the portable content shape, without `id`, `updatedAt`, `isBuiltIn`, `deletedAt`, or the internal `_checkpoint` field. The newly created ID is the ID used for workspace references.
 
-## 模型提供商与配置
+## Model providers and configurations
 
-契约：[model_configs.py schema](../backend/app/schemas/model_configs.py)、[model_providers 路由](../backend/app/routers/model_providers.py)、[model_configs 路由](../backend/app/routers/model_configs.py)。
+Contracts: [model_configs.py schema](../backend/app/schemas/model_configs.py), [model_providers routes](../backend/app/routers/model_providers.py), and [model_configs routes](../backend/app/routers/model_configs.py).
 
-| 方法 | 路径 | 请求 | `data` |
+| Method | Path | Request | `data` |
 | --- | --- | --- | --- |
-| GET | `/api/model-providers` | 无 | `ModelProvidersResponse`：`providers` manifest |
-| POST | `/api/model-providers/discover-models` | `DiscoverModelsRequest` | `DiscoverModelsResponse`：`models`、`source: "cache" / "provider"` |
-| POST | `/api/model-providers/context-window` | `{provider, model}`；用于 local/custom provider | `ModelContextReferenceResponse`：`status`、`contextWindowTokens`、`matchedModel`、`source` |
-| GET | `/api/model-configs` | 无 | `ModelConfigsResponse`：启用的 `configs` |
-| POST | `/api/model-configs` | `ModelConfigUpsertRequest`；`id` 命中已有配置则更新，否则由服务端分配新 ID 创建 | `ModelConfigResponse` |
-| POST | `/api/model-configs/bulk-delete` | `{ids: string[]}`；非空、无重复 | `ModelConfigBulkDeleteResponse`：`{ids}`；原子软删除，ID 不存在返回 404 |
-| DELETE | `/api/model-configs/{client_id}` | 无请求体 | `{id}`；停用单个配置 |
+| GET | `/api/model-providers` | None | `ModelProvidersResponse`: `providers` manifest |
+| POST | `/api/model-providers/discover-models` | `DiscoverModelsRequest` | `DiscoverModelsResponse`: `models`, `source: "cache" / "provider"` |
+| POST | `/api/model-providers/context-window` | `{provider, model}`; for local/custom providers | `ModelContextReferenceResponse`: `status`, `contextWindowTokens`, `matchedModel`, `source` |
+| GET | `/api/model-configs` | None | `ModelConfigsResponse`: enabled `configs` |
+| POST | `/api/model-configs` | `ModelConfigUpsertRequest`; updates an existing configuration if `id` matches, otherwise creates one with a server-assigned ID | `ModelConfigResponse` |
+| POST | `/api/model-configs/bulk-delete` | `{ids: string[]}`; nonempty and unique | `ModelConfigBulkDeleteResponse`: `{ids}`; atomic soft deletion, 404 if an ID does not exist |
+| DELETE | `/api/model-configs/{client_id}` | No body | `{id}`; disables a single configuration |
 
-`providerKind` 为 `cloud`、`local`、`custom`；`apiFamily` 为 `openai_responses`、`openai_compatible_chat`、`anthropic_messages`、`google_gemini`。provider ID、默认地址、鉴权及发现能力以 manifest 返回值为准，客户端不要另维护 provider 清单。
+`providerKind` is `cloud`, `local`, or `custom`; `apiFamily` is `openai_responses`, `openai_compatible_chat`, `anthropic_messages`, or `google_gemini`. The returned manifest defines provider IDs, default URLs, authentication, and discovery capabilities. Clients should not maintain a separate provider list.
 
-`DiscoverModelsRequest` 包含 `provider`、`apiUrl`，以及可选 `apiFamily`、`apiKey`、`configId`、`refresh`。此端点只支持具有发现能力的 cloud provider：
+`DiscoverModelsRequest` contains `provider`, `apiUrl`, and optional `apiFamily`, `apiKey`, `configId`, and `refresh`. This endpoint supports only cloud providers with discovery capability:
 
-- 默认 `refresh: false` 只读本地 provider 缓存，没有缓存时返回空数组和 `source: "cache"`。
-- `refresh: true` 调用 manifest 声明的官方端点；`apiUrl` 不用于改变发现目标。可提交 API key，或通过 `configId` 使用已保存配置的 key。
-- 发现不会保存新提交的凭据，但会更新模型列表缓存。响应包含上下文、输出上限、图像/工具/流式能力、`availableThinkingModes` 与元数据来源。
+- The default `refresh: false` reads only the local provider cache. If no cache exists, it returns an empty array with `source: "cache"`.
+- `refresh: true` calls the official endpoint declared by the manifest; `apiUrl` does not change the discovery destination. Supply an API key, or use `configId` to select the key from a saved configuration.
+- Discovery does not save newly submitted credentials, but does update the model list cache. The response includes context and output limits, image/tool/streaming capabilities, `availableThinkingModes`, and metadata sources.
 
-`context-window` 只查询本地模型目录，不联系部署模型服务。`status` 是 `found`、`not_found`、`ambiguous`；未获得明确匹配时上限可为 `null`，不能解释为零。这个值是模型目录参考，不是对本地部署上下文设置的探测。
+`context-window` queries only the local model catalog, without contacting the deployed model service. `status` is `found`, `not_found`, or `ambiguous`. The limit may be `null` if there is no unambiguous match; this does not mean zero. The value is a model catalog reference, not a probe of a local deployment's context settings.
 
-保存配置的关键字段为 provider 身份、协议、`model`、`apiUrl`、`nickname`、凭据及模型参数。响应只返回 `apiKeyPreview`，不返回明文 key；更新时可省略 `apiKey` 保留已保存凭据。服务端按 provider 模式校验并规范化能力，而非直接信任客户端布尔值。
+The key fields for saving a configuration are provider identity, protocol, `model`, `apiUrl`, `nickname`, credentials, and model parameters. Responses return only `apiKeyPreview`, never the plaintext key. An update may omit `apiKey` to retain saved credentials. The server validates and normalizes capabilities according to the provider mode, rather than trusting client-supplied booleans directly.
 
-`thinkingMode` 仅为 `auto` 或 `off`。`auto` 委托模型正常行为；只有元数据与实际协议都支持显式关闭时，`availableThinkingModes` 才包含 `off`，不支持的请求返回 `MODEL_CONFIG_THINKING_MODE_UNSUPPORTED`。见 [thinking.py](../backend/app/services/thinking.py)。
+`thinkingMode` is only `auto` or `off`. `auto` leaves the model's normal behavior in control. `availableThinkingModes` includes `off` only when both the metadata and the actual protocol support explicitly disabling thinking. Unsupported requests return `MODEL_CONFIG_THINKING_MODE_UNSUPPORTED`. See [thinking.py](../backend/app/services/thinking.py).
 
-`maxTokens: null` 使用运行时自动输出预算；显式值须为正安全整数，并接受已知模型输出上限校验。`contextWindowTokens`、采样参数及 capability 字段的模式约束见 schema 与 [model_configs.py service](../backend/app/services/model_configs.py)。HTTP 配置契约不包含运行时 `timeout_seconds`、解密后的凭据或 provider 原始推理状态。
+`maxTokens: null` uses the runtime's automatic output budget. An explicit value must be a positive safe integer and is checked against the known model output limit. See the schema and [model_configs.py service](../backend/app/services/model_configs.py) for mode-specific constraints on `contextWindowTokens`, sampling parameters, and capability fields. The HTTP configuration contract does not include runtime `timeout_seconds`, decrypted credentials, or raw provider reasoning state.
 
-## 导入、导出与共享目录
+## Imports, exports, and shared catalogs
 
-### JSON 导入
+### JSON import
 
-契约：[imports.py schema](../backend/app/schemas/imports.py)、[imports 路由](../backend/app/routers/imports.py)。两个端点均接收 `multipart/form-data`，单个文件字段名为 `file`。
+Contracts: [imports.py schema](../backend/app/schemas/imports.py) and [import routes](../backend/app/routers/imports.py). Both endpoints accept `multipart/form-data` with a single file field named `file`.
 
-| 方法 | 路径 | 内容 | `data` |
+| Method | Path | Content | `data` |
 | --- | --- | --- | --- |
-| POST | `/api/import/resume` | UTF-8 JSON `ResumeArtifactV1` | `ImportResumeResponse`：`templates`、`resumes` |
-| POST | `/api/import/templates` | UTF-8 JSON `TemplateArtifactV1` | `ImportTemplatesResponse`：`templates` |
+| POST | `/api/import/resume` | UTF-8 JSON `ResumeArtifactV1` | `ImportResumeResponse`: `templates`, `resumes` |
+| POST | `/api/import/templates` | UTF-8 JSON `TemplateArtifactV1` | `ImportTemplatesResponse`: `templates` |
 
-简历文件的 `format` 为 `reseno.resume`，模板文件为 `reseno.template`，两者 `formatVersion` 均为 `1`。简历 artifact 含 `templates` 与非空 `resumes`；内嵌自定义模板用 `custom:0` 等 artifact 局部引用，必须与简历引用对应。正文自身仍使用 `schemaVersion: 2`。模板 artifact 的 `templates` 为非空便携模板数组。
+The `format` is `reseno.resume` for resume files and `reseno.template` for template files; both use a `formatVersion` of `1`. A resume artifact contains `templates` and a nonempty `resumes` array. Embedded custom templates use artifact-local references such as `custom:0`, which must match the resume references. The document body itself still uses `schemaVersion: 2`. A template artifact's `templates` is a nonempty array of portable templates.
 
-导入端点只解析与校验，不创建工作区资源。客户端先创建内嵌模板并映射新 ID，再创建简历。JSON 导出由前端序列化为同一 artifact 格式，见 [import-api.ts](../frontend/src/lib/import-api.ts)、[export-api.ts](../frontend/src/lib/export-api.ts)。
+Import endpoints only parse and validate; they do not create workspace resources. The client first creates embedded templates and maps their new IDs, then creates the resumes. The frontend serializes JSON exports into the same artifact format. See [import-api.ts](../frontend/src/lib/import-api.ts) and [export-api.ts](../frontend/src/lib/export-api.ts).
 
-单文件上限 10 MiB；multipart 总体上限为 10 MiB + 64 KiB，最多一个文件和一个普通字段。文件或 multipart 总字节超限使用 413；无效 JSON、artifact 及 multipart 结构限制错误使用 400。上传规则见 [upload_route.py](../backend/app/routers/upload_route.py)。
+The file limit is 10 MiB; the total multipart limit is 10 MiB + 64 KiB, with at most one file and one regular field. Exceeding the file or total multipart byte limit returns 413. Invalid JSON, invalid artifacts, and multipart structure limit violations return 400. See [upload_route.py](../backend/app/routers/upload_route.py) for upload rules.
 
-### PDF 与图片导出
+### PDF and image export
 
-契约：[exports.py schema](../backend/app/schemas/exports.py)、[exports 路由](../backend/app/routers/exports.py)。
+Contracts: [exports.py schema](../backend/app/schemas/exports.py) and [export routes](../backend/app/routers/exports.py).
 
-| 方法 | 路径 | 请求 | 响应 |
+| Method | Path | Request | Response |
 | --- | --- | --- | --- |
 | POST | `/api/exports/resume-pdf` | `ExportResumePdfRequest` | JSON `ExportResumePdfResponse` |
 | POST | `/api/exports/resume-images` | `ExportResumeImagesRequest` | JSON `ExportResumeImagesResponse` |
-| GET | `/api/exports/download/{export_id}` | 可选查询 `fileName`；Bearer | PDF 文件 |
-| GET | `/api/exports/image-download/{export_id}` | 可选查询 `fileName`；Bearer | 单页 PNG 或多页 ZIP 文件 |
+| GET | `/api/exports/download/{export_id}` | Optional `fileName` query; Bearer | PDF file |
+| GET | `/api/exports/image-download/{export_id}` | Optional `fileName` query; Bearer | Single-page PNG or multi-page ZIP file |
 
-两个生成请求使用相同字段：
+Both generation requests use the same fields:
 
 ```json
 {
-  "resumeId": "服务端简历ID",
+  "resumeId": "server-resume-id",
   "fileNameSeed": "Resume",
-  "savedAt": "保存响应中的时间",
-  "versionId": "保存响应中的版本ID"
+  "savedAt": "timestamp-from-save-response",
+  "versionId": "version-id-from-save-response"
 }
 ```
 
-`versionId` 可省略，此时渲染当前保存版本。导出调用本身不保存编辑器内容，客户端应先保存，再提交该次响应的 `savedAt` 与 `versionId`。请求不接受前端渲染 URL 或语言参数；后端从指定简历快照读取 `documentLocale`，通过 `FRONTEND_RENDER_BASE_URL` 对应的 `/pdf-export` 页面完成渲染。
+`versionId` may be omitted, in which case the current saved version is rendered. The export call does not itself save editor content. Clients should save first, then submit `savedAt` and `versionId` from that save response. The request accepts neither a frontend rendering URL nor a language parameter. The backend reads `documentLocale` from the specified resume snapshot and renders through the `/pdf-export` page under `FRONTEND_RENDER_BASE_URL`.
 
-生成响应包含 `exportId`、`downloadUrl`、`fileName`、`expiresAt`；图片另含 `pageCount`、`isArchive`。文件自生成起保留 1 小时，下载不续期；下载 URL 仍要求 Bearer，请使用带鉴权的资源请求。过期或缺失返回 404 `EXPORT_FILE_NOT_FOUND`。
+Generation responses contain `exportId`, `downloadUrl`, `fileName`, and `expiresAt`; image responses also contain `pageCount` and `isArchive`. Files are retained for 1 hour after generation, and downloads do not extend their lifetime. Download URLs still require Bearer authentication, so use authenticated resource requests. Expired or missing files return 404 `EXPORT_FILE_NOT_FOUND`.
 
-后端复用 Chromium，每次导出创建独立 context；最多四个请求排队或执行。容量满为 503 `EXPORT_RENDERER_BUSY`，带 `Retry-After: 1`；关闭中为 `EXPORT_RENDERER_UNAVAILABLE`。PDF/图片超时分别为 504 `PDF_RENDER_TIMEOUT` / `IMAGE_RENDER_TIMEOUT`，渲染失败为 503 `PDF_RENDER_FAILED` / `IMAGE_RENDER_FAILED`。
+The backend reuses Chromium and creates an isolated context for each export. At most four requests may be queued or executing. Full capacity returns 503 `EXPORT_RENDERER_BUSY` with `Retry-After: 1`; shutdown returns `EXPORT_RENDERER_UNAVAILABLE`. PDF/image timeouts return 504 `PDF_RENDER_TIMEOUT` / `IMAGE_RENDER_TIMEOUT`, respectively, and rendering failures return 503 `PDF_RENDER_FAILED` / `IMAGE_RENDER_FAILED`.
 
-### 健康与解析目录
+### Health and parsing catalogs
 
-| 方法 | 路径 | 认证 | 响应 |
+| Method | Path | Authentication | Response |
 | --- | --- | --- | --- |
-| GET | `/health` | 不要求 Bearer | 原始 JSON `{ "status": "ok" }` |
-| GET | `/api/section-registry` | Bearer | `SectionRegistryResponse`：后端 section kind、默认渲染布局、双语标签与别名 |
-| GET | `/api/resume-import-lexicon` | Bearer | `ResumeImportLexiconResponse`：PDF 导入所需语言词汇 |
+| GET | `/health` | No Bearer required | Raw JSON `{ "status": "ok" }` |
+| GET | `/api/section-registry` | Bearer | `SectionRegistryResponse`: backend section kinds, default rendering layouts, bilingual labels, and aliases |
+| GET | `/api/resume-import-lexicon` | Bearer | `ResumeImportLexiconResponse`: language vocabulary for PDF import |
 
-PDF 简历导入由[前端 PDF 解析器](../frontend/src/lib/pdf-resume-import.ts)执行，使用上述目录接口取得解析配置，再调用简历创建接口持久化。`/api/import/resume` 接受 JSON，不接收 PDF。
+PDF resume import is performed by the [frontend PDF parser](../frontend/src/lib/pdf-resume-import.ts). It retrieves parsing configuration from the catalog endpoints above, then persists the result through the resume creation endpoint. `/api/import/resume` accepts JSON, not PDF.
 
-## Agent 会话、运行与审核
+## Agent sessions, runs, and review
 
-契约：[agent.py schema](../backend/app/schemas/agent.py)、[agent 路由](../backend/app/routers/agent.py)、[前端 Agent 类型](../frontend/src/types/api.ts)。所有 Agent 接口都需要 Bearer。
+Contracts: [agent.py schema](../backend/app/schemas/agent.py), [Agent routes](../backend/app/routers/agent.py), and [frontend Agent types](../frontend/src/types/api.ts). All Agent endpoints require Bearer authentication.
 
-| 方法 | 路径 | 请求 | 响应 |
+| Method | Path | Request | Response |
 | --- | --- | --- | --- |
-| POST | `/api/agent/chat` | `AgentChatRequest` | SSE；响应头 `X-Agent-Run-Id` |
-| GET | `/api/agent/resumes/{resume_id}/session` | 无 | `AgentSessionResponse` |
-| PUT | `/api/agent/resumes/{resume_id}/session` | `AgentSessionReplaceRequest`：`revision`、`messages`、可选 `locale` | `AgentSessionResponse` |
-| GET | `/api/agent/resumes/{resume_id}/recovery` | 无 | `AgentSessionRecoveryResponse`：`{session, run}` |
-| GET | `/api/agent/runs/{run_id}/events` | 查询 `after` 为非负整数，默认 `0` | SSE；重放后继续订阅 |
-| DELETE | `/api/agent/runs/{run_id}` | 无请求体 | `AgentRunResponse`；请求停止执行 |
-| PATCH | `/api/agent/resumes/{resume_id}/session/messages/{message_id}/draft` | `AgentDraftDecisionRequest` | `AgentDraftDecisionResponse`：`{session, resume}` |
-| POST | `/api/agent/attachments` | multipart：`resumeId` 与文件 `file` | `AgentAttachmentResponse` |
-| GET | `/api/agent/resumes/{resume_id}/attachments/{attachment_id}` | 无 | 原始附件文件 |
-| DELETE | `/api/agent/resumes/{resume_id}/attachments/{attachment_id}` | 无请求体；仅未发送附件 | `{id}`；不存在或不可删除为 404 |
+| POST | `/api/agent/chat` | `AgentChatRequest` | SSE; `X-Agent-Run-Id` response header |
+| GET | `/api/agent/resumes/{resume_id}/session` | None | `AgentSessionResponse` |
+| PUT | `/api/agent/resumes/{resume_id}/session` | `AgentSessionReplaceRequest`: `revision`, `messages`, optional `locale` | `AgentSessionResponse` |
+| GET | `/api/agent/resumes/{resume_id}/recovery` | None | `AgentSessionRecoveryResponse`: `{session, run}` |
+| GET | `/api/agent/runs/{run_id}/events` | Nonnegative integer `after` query, defaults to `0` | SSE; replays events, then continues the subscription |
+| DELETE | `/api/agent/runs/{run_id}` | No body | `AgentRunResponse`; requests execution to stop |
+| PATCH | `/api/agent/resumes/{resume_id}/session/messages/{message_id}/draft` | `AgentDraftDecisionRequest` | `AgentDraftDecisionResponse`: `{session, resume}` |
+| POST | `/api/agent/attachments` | Multipart: `resumeId` and file `file` | `AgentAttachmentResponse` |
+| GET | `/api/agent/resumes/{resume_id}/attachments/{attachment_id}` | None | Original attachment file |
+| DELETE | `/api/agent/resumes/{resume_id}/attachments/{attachment_id}` | No body; unsent attachments only | `{id}`; 404 if missing or not deletable |
 
-### 接受一次用户输入
+### Accepting user input
 
-`AgentChatRequest.message` 是本次唯一用户输入，必须有非空且无首尾空白的 `id`、`role: "user"`，以及非空文本或附件，不能携带 assistant `response`。`messages` 只表示此前历史，不能再次包含本次 message ID。
+`AgentChatRequest.message` is the sole user input for this request. It must have a nonempty `id` without surrounding whitespace, `role: "user"`, and nonempty text or attachments. It cannot carry an assistant `response`. `messages` represents only prior history and must not contain the current message ID again.
 
-工作区请求指定 `resumeId` 时必须提供从会话读取的 `expectedRevision`。后端在开始 provider 请求之前持久化用户消息，并从 SQLite 重建权威历史；客户端提交的历史不能替换已保存会话。`resumeId` 省略时使用不绑定持久会话的运行。
+Workspace requests that specify `resumeId` must provide the `expectedRevision` read from the session. The backend persists the user message before starting the provider request and rebuilds authoritative history from SQLite. Client-submitted history cannot replace the saved session. Omitting `resumeId` creates a run that is not bound to a persistent session.
 
-`resume` 是 `ResumeData` 正文；`draftState` 表示未审核草稿。`modelConfig` 只接受 `{id}`，引用已保存配置，不能在 chat 中传 API key、地址或参数覆盖。`locale` 为 Agent 请求语言；最终执行偏好由后端保存的 `agentSettings` 固定。`execution_profile` 属于内部运行数据，客户端不提交。
+`resume` is the `ResumeData` document body; `draftState` represents an unreviewed draft. `modelConfig` accepts only `{id}`, referencing a saved configuration. Chat requests cannot supply API keys, URLs, or parameter overrides. `locale` is the Agent request language; the backend's saved `agentSettings` fixes the final execution preferences. `execution_profile` is internal run data and must not be submitted by clients.
 
-`stream` 字段不切换本 HTTP 端点的响应格式：成功接受的 `/chat` 始终返回 SSE。前端封装的 `AgentChatResponse` 是消费完整流后的聚合结果，不是该端点的 JSON envelope。
+The `stream` field does not switch this HTTP endpoint's response format: an accepted `/chat` request always returns SSE. The frontend wrapper's `AgentChatResponse` is an aggregated result after consuming the full stream, not the endpoint's JSON envelope.
 
-每份简历同时只能有一个活动 run，全局最多四个活动 run；冲突返回 409 `AGENT_RUN_CONFLICT`，容量不足返回 429 `AGENT_RUN_CAPACITY_EXCEEDED`。run 与模型身份在接受后固定。断开页面、取消 fetch 或 SSE 连接不等于停止运行；停止必须调用 run DELETE，之后继续读取流或 recovery 确认最终状态。
+Each resume may have only one active run, with at most four active runs globally. Conflicts return 409 `AGENT_RUN_CONFLICT`; insufficient capacity returns 429 `AGENT_RUN_CAPACITY_EXCEEDED`. The run and model identity are fixed once accepted. Leaving the page or cancelling a fetch or SSE connection does not stop execution. To stop a run, call its DELETE endpoint, then continue reading the stream or recovery response to confirm the final state.
 
-### SSE 事件与恢复
+### SSE events and recovery
 
-事件协议的实现见 [streaming.py](../backend/app/services/agent/runtime/streaming.py)、[agent_runs.py](../backend/app/services/agent_runs.py)，客户端见 [agent-stream-client.ts](../frontend/src/lib/agent-stream-client.ts)。每个业务帧具有递增数字 `id`、`event` 名称和 JSON `data`：
+See [streaming.py](../backend/app/services/agent/runtime/streaming.py) and [agent_runs.py](../backend/app/services/agent_runs.py) for the event protocol, and [agent-stream-client.ts](../frontend/src/lib/agent-stream-client.ts) for the client. Each application event frame has an increasing numeric `id`, an `event` name, and JSON `data`:
 
 ```text
 id: 2
 event: text_delta
-data: {"type":"text_delta","delta":"正文片段","timelinePartId":"text-1"}
+data: {"type":"text_delta","delta":"text fragment","timelinePartId":"text-1"}
 
 ```
 
-| `event` / `data.type` | 主要数据 | 客户端处理 |
+| `event` / `data.type` | Main data | Client handling |
 | --- | --- | --- |
-| `message_start` | `message` | 建立 assistant 消息 |
-| `text_delta` | `delta`、`timelinePartId` | 追加正文与对应 timeline 文本 |
-| `tool_start`、`tool_delta`、`tool_done` | `tool`、`timelinePartId` | 按 tool ID 合并公开工具状态，维护显示顺序 |
-| `edits` | `message.edits`、`message.transactionState` | 更新草稿编辑及事务状态，不写正式简历 |
-| `message_delta` | `message` | 接收压缩重放后的绝对消息快照，不当作追加 token |
-| `message_done` | 完整 `message` | 接收最终 assistant 消息，含 timeline、tools、sources、edits、draft |
-| `error` | `error`、`errorCode` | 显示运行错误，等待终态或执行恢复 |
-| `run_done` | `runId`、`status`、`executionState`、`errorCode` | 确认执行终态 |
+| `message_start` | `message` | Create an assistant message |
+| `text_delta` | `delta`, `timelinePartId` | Append to the message body and corresponding timeline text |
+| `tool_start`, `tool_delta`, `tool_done` | `tool`, `timelinePartId` | Merge public tool state by tool ID and maintain display order |
+| `edits` | `message.edits`, `message.transactionState` | Update draft edits and transaction state, without writing to the saved resume |
+| `message_delta` | `message` | Receive an absolute message snapshot from compacted replay, rather than appending it as tokens |
+| `message_done` | Complete `message` | Receive the final assistant message, including timeline, tools, sources, edits, and draft |
+| `error` | `error`, `errorCode` | Display the run error and await a terminal state or perform recovery |
+| `run_done` | `runId`, `status`, `executionState`, `errorCode` | Confirm the terminal execution state |
 
-无业务事件时约每 12 秒发送 `: ping` 注释心跳，心跳没有事件 ID。响应带 `Cache-Control: no-cache`、`X-Accel-Buffering: no`；代理应透传并及时刷新事件。
+When there are no application events, a `: ping` comment heartbeat is sent approximately every 12 seconds. Heartbeats have no event ID. Responses carry `Cache-Control: no-cache` and `X-Accel-Buffering: no`; proxies should forward and promptly flush events.
 
-重连使用最后已消费的事件 ID 作为 `?after=`，不是只发送 `Last-Event-ID` 请求头。重放缓冲可能把早期增量折叠为完整 `message_delta`/`message_done` 快照，客户端必须支持快照合并和按 ID 去重。`message_done` 不能替代 `run_done` 判断运行成功：可展示终态消息的失败运行仍有失败执行状态。
+To reconnect, pass the last consumed event ID as `?after=`; sending only the `Last-Event-ID` header is insufficient. The replay buffer may fold early deltas into complete `message_delta`/`message_done` snapshots, so clients must support snapshot merging and deduplication by ID. `message_done` cannot replace `run_done` as a signal of run success: a failed run may still have a displayable final message while retaining a failed execution state.
 
-run 的 `status` 为 `active`、`completed`、`cancelled`、`failed`；持久 turn 的 `executionState` 为 `running`、`succeeded`、`cancelled`、`failed`。终态错误类型为 `AGENT_PROVIDER_AUTH_ERROR`、`AGENT_PROVIDER_ERROR`、`AGENT_PROVIDER_TIMEOUT`、`AGENT_INTERNAL_ERROR`、`AGENT_RUN_CANCELLED`、`AGENT_EDIT_TRANSACTION_INCOMPLETE`。
+A run's `status` is `active`, `completed`, `cancelled`, or `failed`; a persistent turn's `executionState` is `running`, `succeeded`, `cancelled`, or `failed`. Terminal error types are `AGENT_PROVIDER_AUTH_ERROR`, `AGENT_PROVIDER_ERROR`, `AGENT_PROVIDER_TIMEOUT`, `AGENT_INTERNAL_ERROR`, `AGENT_RUN_CANCELLED`, and `AGENT_EDIT_TRANSACTION_INCOMPLETE`.
 
-`AgentSessionResponse` 包含 `resumeId`、`revision`、`messages`、`executions`。`executions` 保存 run/turn ID、模型身份快照、起止时间和执行结果。`recovery` 在同一恢复流程中返回权威 session 及匹配的活动 run；没有活动 run 时 `run: null`。运行和 SSE 重放属于当前后端进程，重启后不能接回旧执行；后端启动会将中断的持久执行标记失败，历史仍由 session 接口读取。
+`AgentSessionResponse` contains `resumeId`, `revision`, `messages`, and `executions`. `executions` stores run/turn IDs, model identity snapshots, start and end times, and execution results. `recovery` returns the authoritative session and its matching active run within the same recovery flow, or `run: null` if no run is active. Runs and SSE replay belong to the current backend process; old executions cannot be reconnected after a restart. On startup, the backend marks interrupted persistent executions as failed. History remains available through the session endpoint.
 
-会话 PUT 使用 `revision` 乐观并发控制，替换产品历史并清理对应执行记录与不再引用的附件；活动运行期间不接受替换。revision 过期返回 409 `AGENT_SESSION_REVISION_CONFLICT`；重复 turn 或消息身份冲突返回 `AGENT_SESSION_TURN_CONFLICT`。收到这些错误后应读取 recovery/session，以服务端状态协调界面，不盲目覆盖。
+Session PUT uses optimistic concurrency control through `revision`. It replaces the application's conversation history and cleans up corresponding execution records and attachments that are no longer referenced. Replacement is not allowed during an active run. A stale revision returns 409 `AGENT_SESSION_REVISION_CONFLICT`; duplicate turns or conflicting message identities return `AGENT_SESSION_TURN_CONFLICT`. After these errors, read recovery/session and reconcile the interface with server state rather than overwriting blindly.
 
-### 草稿审核与应用
+### Draft review and application
 
-assistant 的 `transactionState` 为 `none`、`provisional`、`committed`、`rolled_back`。只有完成的草稿事务可进入审核；流中的 provisional edits 不代表正式内容已经保存。编辑 operation 的具体字段与允许路径以 [resume_edit_operation.schema.json](../backend/app/services/agent/resume_edit_operation.schema.json) 为准。
+An assistant message's `transactionState` is `none`, `provisional`, `committed`, or `rolled_back`. Only a completed draft transaction can enter review. Provisional edits in the stream do not mean that changes have been saved to the resume. The [resume_edit_operation.schema.json](../backend/app/services/agent/resume_edit_operation.schema.json) defines edit operation fields and allowed paths.
 
-`draft.baseResume` 保存草稿依据，`draft.reviewItems` 将有序 edits 分成可独立审核的组；每项有 `id`、`editIds`、`status`。编辑 ID 必须恰好覆盖一次且保持顺序。review item 状态为 `pending`、`applied`、`discarded`、`superseded`；客户端审核命令只能提交 `applied` 或 `discarded`。
+`draft.baseResume` stores the draft's base document. `draft.reviewItems` divides ordered edits into independently reviewable groups, each with `id`, `editIds`, and `status`. Edit IDs must be covered exactly once and remain in order. Review item status is `pending`, `applied`, `discarded`, or `superseded`; client review commands may submit only `applied` or `discarded`.
 
-丢弃选中审核项的请求示例：
+Example request to discard selected review items:
 
 ```json
 {
-  "revision": "当前session revision",
+  "revision": "current-session-revision",
   "status": "discarded",
-  "reviewItemIds": ["待审核项ID"]
+  "reviewItemIds": ["pending-review-item-id"]
 }
 ```
 
-应用时改用 `status: "applied"`，并提交 `expectedVersionId` 和 `resume`。其中 `resume` 必须是符合正文 schema 的完整合并候选。前端根据草稿与当前编辑器内容生成可审核结果，用户确认后调用此命令。
+To apply edits, use `status: "applied"` and also submit `expectedVersionId` and `resume`. `resume` must be the complete merged candidate conforming to the document schema. The frontend produces a reviewable result from the draft and current editor content, then invokes this command after user confirmation.
 
-应用时 `revision`、`expectedVersionId` 同时防止覆盖新的会话决定或正式简历；后端在一个事务中写入简历 autosave 和审核状态。响应 `resume` 为保存后的 `ResumeDetailResponse`。丢弃请求只提交 `revision`、`status: "discarded"`、非空 `reviewItemIds`，禁止提交 `resume` 或 `expectedVersionId`，响应 `resume: null`。
+On application, `revision` and `expectedVersionId` jointly prevent overwriting newer session decisions or saved resume content. The backend writes the resume autosave and review state in one transaction. The response's `resume` is the saved `ResumeDetailResponse`. A discard request submits only `revision`, `status: "discarded"`, and nonempty `reviewItemIds`. It must not include `resume` or `expectedVersionId`, and the response has `resume: null`.
 
-review item ID 必须唯一并指向待审核项。冲突使用 HTTP 409：`AGENT_SESSION_REVISION_CONFLICT`（可含新 `revision`）、`RESUME_VERSION_CONFLICT`（含 `versionId`）、`AGENT_RUN_CONFLICT`（可含 `runId`）、`AGENT_DRAFT_DECISION_CONFLICT`（可含 `revision`、`status`）。这些附加字段位于 envelope 的 `data` 中。
+Review item IDs must be unique and refer to pending items. Conflicts use HTTP 409: `AGENT_SESSION_REVISION_CONFLICT` (may include a new `revision`), `RESUME_VERSION_CONFLICT` (includes `versionId`), `AGENT_RUN_CONFLICT` (may include `runId`), and `AGENT_DRAFT_DECISION_CONFLICT` (may include `revision` and `status`). These additional fields are in the envelope's `data`.
 
-### 附件
+### Attachments
 
-附件先上传，再在用户消息 `files` 中引用返回的后端附件 ID 与元数据。上传响应为 `id`、`filename`、`mediaType`、`kind: "text" / "image"`；不要把浏览器临时 URL 当作持久引用。附件归属于指定简历的 Agent 会话，不能跨简历复用。
+Upload attachments first, then reference the returned backend attachment IDs and metadata in the user message's `files`. The upload response contains `id`, `filename`, `mediaType`, and `kind: "text" / "image"`. Do not use temporary browser URLs as persistent references. Attachments belong to the specified resume's Agent session and cannot be reused across resumes.
 
-支持文本、PDF、DOCX 与经内容识别的图片。单附件最多 10 MiB，provider 上下文最多五个附件，合计最多 20 MiB；单文件提取文本最多 250,000 字符、请求合计最多 400,000 字符，PDF 最多 50 页。具体格式识别与限制见 [attachments.py](../backend/app/services/agent/attachments.py)。这些 provider 请求限制不用于裁剪已保存的历史引用。
+Supported attachments include text, PDF, DOCX, and images recognized by their contents. Each attachment is limited to 10 MiB. Provider context accepts at most five attachments totaling at most 20 MiB. Extracted text is limited to 250,000 characters per file and 400,000 characters per request; PDFs are limited to 50 pages. See [attachments.py](../backend/app/services/agent/attachments.py) for exact format detection and limits. These provider request limits do not truncate saved history references.
 
-发送前可 DELETE 取消上传；已发送的历史附件不可通过该接口删除。未发送附件在 24 小时后可被后台清理；已发送附件随历史引用和所属简历生命周期管理。下载返回原始文件并要求 Bearer。
+Before sending, DELETE can cancel an upload. Attachments already referenced in sent messages cannot be deleted through this endpoint. Unsent attachments become eligible for background cleanup after 24 hours. Sent attachments are managed with the lifetime of their history references and parent resume. Downloads return the original file and require Bearer authentication.

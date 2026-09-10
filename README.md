@@ -243,6 +243,11 @@ the image path is the lowercase GitHub repository name.
 | Push to `main`, including a merged pull request | `main`, `sha-<full commit SHA>`            |
 | Push of a release tag such as `v0.1.0`          | `0.1.0`, `latest`, `sha-<full commit SHA>` |
 
+Pushes and pull requests that change only the root `README.md`, `README_ZH.md`
+and files under `docs/` skip backend, frontend and browser checks and do not
+publish images. Other Markdown files, including Agent prompts, still trigger
+checks. Release tags always run the full quality pipeline.
+
 Release tags must use `vMAJOR.MINOR.PATCH` and point to a commit already merged
 into `main`. Prerelease tags are not published. `latest` tracks the most recently
 published release; `main` tracks the latest successful main-branch build.
