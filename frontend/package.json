@@ -1,7 +1,7 @@
 {
   "name": "frontend",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -34,7 +34,7 @@
     "test:view-transition-cleanup": "node --test --test-concurrency=4 scripts/verify-view-transition-cleanup.mjs",
     "test:model-config": "node --test --test-concurrency=4 scripts/verify-model-config-boundaries.mjs",
     "test:workspace-network": "cd ../backend && RUN_BROWSER_E2E=1 uv run pytest tests/e2e/test_workspace_route_network.py tests/e2e/test_oauth_tab.py tests/e2e/test_oauth_login.py tests/e2e/test_oauth_tab_lifecycle.py tests/e2e/test_oauth_pending_status.py tests/e2e/test_oauth_launch_continuity.py tests/e2e/test_oauth_return_continuity.py -q",
-    "test:workspace-network:smoke": "cd ../backend && RUN_BROWSER_E2E=1 uv run --locked pytest tests/e2e/test_workspace_route_network.py tests/e2e/test_workspace_route_motion.py tests/e2e/test_oauth_tab.py tests/e2e/test_oauth_login.py tests/e2e/test_oauth_tab_lifecycle.py tests/e2e/test_oauth_pending_status.py tests/e2e/test_oauth_launch_continuity.py tests/e2e/test_oauth_return_continuity.py tests/e2e/test_auth_session_recovery.py tests/e2e/test_auth_username.py tests/e2e/test_workspace_preferences_react.py tests/e2e/test_resume_detail_transactions.py tests/e2e/test_agent_submission_recovery.py tests/e2e/test_agent_history_quality.py tests/e2e/test_agent_draft_continuation.py tests/e2e/test_agent_draft_editor_conflicts.py tests/e2e/test_agent_model_selector.py tests/e2e/test_model_advanced_settings.py tests/e2e/test_catalog_mutations.py tests/e2e/test_preview_edit_transactions.py tests/e2e/test_pdf_import.py tests/e2e/test_template_save_checkpoints.py tests/e2e/test_resume_inline_formatting.py tests/e2e/test_resume_item_focus.py tests/e2e/test_detail_route_handoffs.py tests/e2e/test_agent_web_network.py tests/e2e/test_i18n_layout.py tests/e2e/test_new_resume_dialog.py tests/e2e/test_export_image_boundary.py -m browser_smoke --strict-markers --maxfail=1 --durations=10 -q",
+    "test:workspace-network:smoke": "cd ../backend && RUN_BROWSER_E2E=1 uv run --locked pytest tests/e2e/test_workspace_route_network.py tests/e2e/test_workspace_route_motion.py tests/e2e/test_oauth_tab.py tests/e2e/test_oauth_login.py tests/e2e/test_oauth_tab_lifecycle.py tests/e2e/test_oauth_pending_status.py tests/e2e/test_oauth_launch_continuity.py tests/e2e/test_oauth_return_continuity.py tests/e2e/test_auth_session_recovery.py tests/e2e/test_auth_username.py tests/e2e/test_workspace_preferences_react.py tests/e2e/test_resume_detail_transactions.py tests/e2e/test_agent_submission_recovery.py tests/e2e/test_agent_history_quality.py tests/e2e/test_agent_draft_continuation.py tests/e2e/test_agent_draft_editor_conflicts.py tests/e2e/test_agent_model_selector.py tests/e2e/test_model_advanced_settings.py tests/e2e/test_catalog_mutations.py tests/e2e/test_preview_edit_transactions.py tests/e2e/test_pdf_import.py tests/e2e/test_template_save_checkpoints.py tests/e2e/test_resume_inline_formatting.py tests/e2e/test_resume_item_focus.py tests/e2e/test_resume_workspace_resize.py tests/e2e/test_detail_route_handoffs.py tests/e2e/test_agent_web_network.py tests/e2e/test_i18n_layout.py tests/e2e/test_new_resume_dialog.py tests/e2e/test_export_image_boundary.py -m browser_smoke --strict-markers --maxfail=1 --durations=10 -q",
     "test:agent-edits": "node --test --test-concurrency=4 scripts/verify-resume-agent-edits.mjs",
     "test:resume-sections": "node --test --test-concurrency=4 scripts/verify-resume-sections.mjs",
     "test:domain-modules": "node --test --test-concurrency=4 scripts/generate-template-presets.mjs scripts/verify-resume-domain-boundaries.mjs",
@@ -83,6 +83,7 @@
     "nanoid": "^5.1.7",
     "pdfjs-dist": "^6.0.227",
     "radix-ui": "^1.4.3",
+    "re-resizable": "6.11.2",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "react-router-dom": "^7.13.1",

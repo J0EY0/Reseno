@@ -23,7 +23,7 @@ import { WorkspaceRouteError } from "@/components/workspace/workspace-route-erro
 import { WorkspacePreviewSkeleton } from "@/components/workspace-skeletons";
 import type { AppMessages, Locale } from "@/i18n";
 import { useLocalizedMessages } from "@/i18n/use-localized-messages";
-import { cn } from "@/lib/utils";
+import { ResumeWorkspaceColumns } from "@/components/workspace/resume-workspace-columns";
 
 // Pagination and PDF-ready preview code are owned by the document surface,
 // rather than the route shell that must render immediately.
@@ -44,10 +44,12 @@ const ResumeDetailTitleDialog = lazy(() =>
 );
 
 function ResumeDetailContent({
+  locale,
   messages,
   model,
   previewRef,
 }: {
+  locale: Locale;
   messages: AppMessages;
   model: ResumeDetailWorkspaceModel;
   previewRef: RefObject<DocumentCanvasHandle | null>;
@@ -57,76 +59,63 @@ function ResumeDetailContent({
     state.resumeItem?.documentLocale ?? null,
   );
   const showDocumentSkeleton = state.showSkeleton || !documentMessages;
-  const shouldDockAgent = !state.agent.isPanelCollapsed;
-  const workspaceStyle = {
-    "--agent-panel-width": "360px",
-    "--document-sticky-bottom-gap": "0px",
-    "--document-workspace-gutter": "0px",
-    "--resume-workspace-columns": shouldDockAgent
-      ? "clamp(372px,calc(27vw + 32px),432px) minmax(0,1fr) var(--agent-panel-width)"
-      : "clamp(372px,calc(27vw + 32px),432px) minmax(0,1fr) 0px",
-  } as CSSProperties;
-
   return (
-    <div
-      style={workspaceStyle}
-      data-agent-expanded={shouldDockAgent}
-      className={cn(
-        "workspace-document-enter resume-workspace relative grid min-w-0 flex-1 gap-y-4 gap-x-3 p-4",
-        "print:block print:h-auto print:overflow-visible print:p-0",
-      )}
-    >
-      <ResumeEditorPane
-        t={messages}
-        documentT={documentMessages}
-        disabled={Boolean(state.agent.review?.resolvingStatus)}
-        resume={state.resume}
-        updateContent={commands.updateContent}
-        openSectionId={state.openSectionId}
-        toggleSection={commands.toggleSection}
-        addSection={commands.addSection}
-        removeSection={commands.removeSection}
-        hasLoadError={state.hasVersionLoadError}
-        showSkeleton={showDocumentSkeleton}
-      />
-
-      {showDocumentSkeleton ? (
-        <WorkspacePreviewSkeleton />
-      ) : (
-        <Suspense fallback={<WorkspacePreviewSkeleton />}>
-          <DocumentCanvas
-            ref={previewRef}
-            measurementKey={state.document.measurementKey}
-            variant="resume"
-            t={messages}
-            documentT={documentMessages}
-            resume={state.previewResume}
-            typography={state.previewTypography}
-            template={state.previewTemplate}
-            diffs={state.previewDiffs}
-            draftReview={
-              state.previewReview
-                ? {
-                    onSelectReviewItem: state.previewReview.selectItem,
-                    exitingReviewItemIds:
-                      state.previewReview.exitingReviewItemIds,
-                    reviewItemIdByOperationId:
-                      state.previewReview.reviewItemIdByOperationId,
-                    selectedReviewItemId:
-                      state.previewReview.selectedItemId ?? undefined,
-                  }
-                : undefined
-            }
-            onPaginationReadyChange={commands.onPreviewReadyChange}
-            toolbarTrailing={
-              <ResumeDetailAgentToggle messages={messages} model={model} />
-            }
-          />
-        </Suspense>
-      )}
-
-      <ResumeDetailAgentHost messages={messages} model={model} />
-    </div>
+    <ResumeWorkspaceColumns
+      locale={locale}
+      agentExpanded={!state.agent.isPanelCollapsed}
+      editor={
+        <ResumeEditorPane
+          t={messages}
+          documentT={documentMessages}
+          disabled={Boolean(state.agent.review?.resolvingStatus)}
+          resume={state.resume}
+          updateContent={commands.updateContent}
+          openSectionId={state.openSectionId}
+          toggleSection={commands.toggleSection}
+          addSection={commands.addSection}
+          removeSection={commands.removeSection}
+          hasLoadError={state.hasVersionLoadError}
+          showSkeleton={showDocumentSkeleton}
+        />
+      }
+      preview={
+        showDocumentSkeleton ? (
+          <WorkspacePreviewSkeleton />
+        ) : (
+          <Suspense fallback={<WorkspacePreviewSkeleton />}>
+            <DocumentCanvas
+              ref={previewRef}
+              measurementKey={state.document.measurementKey}
+              variant="resume"
+              t={messages}
+              documentT={documentMessages}
+              resume={state.previewResume}
+              typography={state.previewTypography}
+              template={state.previewTemplate}
+              diffs={state.previewDiffs}
+              draftReview={
+                state.previewReview
+                  ? {
+                      onSelectReviewItem: state.previewReview.selectItem,
+                      exitingReviewItemIds:
+                        state.previewReview.exitingReviewItemIds,
+                      reviewItemIdByOperationId:
+                        state.previewReview.reviewItemIdByOperationId,
+                      selectedReviewItemId:
+                        state.previewReview.selectedItemId ?? undefined,
+                    }
+                  : undefined
+              }
+              onPaginationReadyChange={commands.onPreviewReadyChange}
+              toolbarTrailing={
+                <ResumeDetailAgentToggle messages={messages} model={model} />
+              }
+            />
+          </Suspense>
+        )
+      }
+      agent={<ResumeDetailAgentHost messages={messages} model={model} />}
+    />
   );
 }
 
@@ -210,6 +199,7 @@ export function ResumeDetailWorkspaceView({
           />
         ) : (
           <ResumeDetailContent
+            locale={locale}
             messages={messages}
             model={model}
             previewRef={previewRef}

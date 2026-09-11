@@ -1,0 +1,10 @@
+{
+  "en": {
+    "workspaceResizeEditor": "Resize editor panel",
+    "workspaceResizeAgent": "Resize Agent panel"
+  },
+  "zh": {
+    "workspaceResizeEditor": "调整编辑区宽度",
+    "workspaceResizeAgent": "调整 Agent 区宽度"
+  }
+}

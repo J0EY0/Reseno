@@ -1,0 +1,63 @@
+@media (min-width: 1280px) {
+  .resume-workspace {
+    grid-template-columns: var(--resume-workspace-columns);
+    transition: grid-template-columns var(--duration-move) var(--ease-move);
+  }
+
+  .resume-workspace .workspace-editor-column,
+  .resume-workspace .workspace-agent-column {
+    top: var(--document-sticky-top);
+    z-index: 20;
+    transition: width var(--duration-move) var(--ease-move);
+  }
+
+  .resume-workspace[data-resizing] {
+    cursor: ew-resize;
+    user-select: none;
+    transition: none;
+  }
+
+  .resume-workspace[data-resizing] .workspace-editor-column,
+  .resume-workspace[data-resizing] .workspace-agent-column {
+    transition: none;
+  }
+
+  .app-shell--document .workspace-editor-column .resume-editor-panel,
+  .app-shell--document .workspace-agent-column .agent-panel-dock {
+    position: relative;
+    top: auto;
+  }
+}
+
+.workspace-resize-separator::after {
+  position: absolute;
+  inset-block: 0;
+  left: 50%;
+  width: 1px;
+  content: "";
+  background: var(--border);
+  transform: translateX(-50%);
+}
+
+.workspace-resize-separator:hover::after,
+.workspace-resize-separator:focus-visible::after,
+.resume-workspace[data-resizing] .workspace-resize-separator::after {
+  width: 2px;
+  background: var(--ring);
+}
+
+@media (max-width: 1279px) {
+  .resume-workspace > .workspace-editor-column {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .resume-workspace > .workspace-agent-column {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .resume-workspace > .workspace-agent-column[data-expanded="false"] {
+    display: none;
+  }
+}

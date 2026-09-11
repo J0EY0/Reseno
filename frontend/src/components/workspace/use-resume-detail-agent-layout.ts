@@ -2,13 +2,24 @@ import { useCallback, useState } from "react";
 
 import type { AgentPanelStatus } from "@/components/copilot/copilot-panel-types";
 
+import {
+  readWorkspaceLayoutPreference,
+  writeWorkspaceLayoutPreference,
+} from "@/components/workspace/resume-workspace-layout";
+
 const AGENT_AUTO_EXPAND_MEDIA_QUERY = "(min-width: 1536px)";
 
 /** Owns the single collapsed state for the inline Agent panel. */
 export function useResumeDetailAgentLayout(resumeId: string | undefined) {
-  const [isPanelCollapsed, setIsPanelCollapsed] = useState(
-    () => !window.matchMedia(AGENT_AUTO_EXPAND_MEDIA_QUERY).matches,
+  const [isPanelCollapsed, setCollapsed] = useState(
+    () =>
+      readWorkspaceLayoutPreference().agentCollapsed ??
+      !window.matchMedia(AGENT_AUTO_EXPAND_MEDIA_QUERY).matches,
   );
+  const setIsPanelCollapsed = useCallback((collapsed: boolean) => {
+    setCollapsed(collapsed);
+    writeWorkspaceLayoutPreference({ agentCollapsed: collapsed });
+  }, []);
   const [reportedStatus, setReportedStatus] = useState<{
     resumeId: string | undefined;
     status: AgentPanelStatus;

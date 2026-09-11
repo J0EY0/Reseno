@@ -75,7 +75,7 @@ export function RecycleBinThumbnail({
   return (
     <div
       aria-hidden="true"
-      className="relative h-[68px] w-12 shrink-0 overflow-hidden rounded-md border border-zinc-200 bg-white shadow-sm"
+      className="relative h-[68px] w-12 shrink-0 overflow-hidden rounded-md border border-neutral-200 bg-white shadow-sm"
     >
       {/* Trash thumbnails are visual context only and must never expose editor controls. */}
       {previewMessages ? (

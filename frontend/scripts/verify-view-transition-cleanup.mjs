@@ -15,6 +15,7 @@ const sources = new Map(
       "src/components/templates/template-gallery-card.tsx",
       "src/components/workspace/resume-detail-workspace-header.tsx",
       "src/components/workspace/resume-detail-workspace-view.tsx",
+      "src/components/workspace/resume-workspace-columns.tsx",
       "src/components/workspace/template-detail-workspace-header.tsx",
       "src/components/workspace/template-detail-workspace-view.tsx",
       "src/components/workspace/use-prepared-workspace-navigation.ts",
@@ -52,7 +53,7 @@ for (const path of [
 }
 
 for (const path of [
-  "src/components/workspace/resume-detail-workspace-view.tsx",
+  "src/components/workspace/resume-workspace-columns.tsx",
   "src/components/workspace/template-detail-workspace-view.tsx",
 ]) {
   assert.match(
@@ -61,5 +62,11 @@ for (const path of [
     `${path} must expose the ordinary DOM document-entry motion hook.`,
   );
 }
+
+assert.match(
+  sources.get("src/components/workspace/resume-detail-workspace-view.tsx"),
+  /<ResumeWorkspaceColumns\b/,
+  "The resume detail view must render its document-entry layout boundary.",
+);
 
 console.log("Unavailable non-gallery ViewTransition paths removed.");

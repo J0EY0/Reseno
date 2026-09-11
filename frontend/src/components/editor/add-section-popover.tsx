@@ -1,39 +1,22 @@
-import {
-  Award,
-  BriefcaseBusiness,
-  FolderKanban,
-  GraduationCap,
-  LibraryBig,
-  ListPlus,
-  Plus,
-  type LucideIcon,
-} from "lucide-react";
-import { useState } from "react";
-
-import type { AppMessages } from "@/i18n";
-import { SECTION_KINDS, type SectionKind } from "@/types/resume";
+import { Plus } from "lucide-react";
+import { lazy, Suspense, useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import {
-  Command,
-  CommandGroup,
-  CommandItem,
-  CommandList,
-} from "@/components/ui/command";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { Skeleton } from "@/components/ui/skeleton";
+import type { AppMessages } from "@/i18n";
+import type { SectionKind } from "@/types/resume";
 
-const sectionIcons: Record<SectionKind, LucideIcon> = {
-  education: GraduationCap,
-  experience: BriefcaseBusiness,
-  project: FolderKanban,
-  publication: LibraryBig,
-  achievement: Award,
-  simple_list: ListPlus,
-};
+const loadAddSectionMenu = () => import("./add-section-menu");
+const AddSectionMenu = lazy(loadAddSectionMenu);
+
+function preloadAddSectionMenu() {
+  void loadAddSectionMenu().catch(() => undefined);
+}
 
 export function AddSectionPopover({
   t,
@@ -56,6 +39,8 @@ export function AddSectionPopover({
           type="button"
           variant="outline"
           className="h-10 rounded-xl border-dashed bg-background/95"
+          onPointerEnter={preloadAddSectionMenu}
+          onFocus={preloadAddSectionMenu}
         >
           <Plus aria-hidden="true" data-icon="inline-start" />
           {t.addSection}
@@ -66,37 +51,19 @@ export function AddSectionPopover({
         align="center"
         className="w-[360px] max-w-[calc(100vw-2rem)] p-0"
       >
-        <Command aria-label={t.addSectionPickerTitle} tabIndex={0}>
-          <CommandList
-            label={t.addSectionPickerTitle}
-            className="max-h-[min(300px,var(--radix-popover-content-available-height))]"
+        {open ? (
+          <Suspense
+            fallback={
+              <div aria-busy="true" className="grid gap-2 p-2">
+                <Skeleton className="h-12" />
+                <Skeleton className="h-12" />
+                <Skeleton className="h-12" />
+              </div>
+            }
           >
-            <CommandGroup>
-              {SECTION_KINDS.map((kind) => {
-                const Icon = sectionIcons[kind];
-
-                return (
-                  <CommandItem
-                    key={kind}
-                    value={`${t.sectionTitles[kind]} ${t.sectionDescriptions[kind]}`}
-                    className="items-start py-2.5"
-                    onSelect={() => selectKind(kind)}
-                  >
-                    <Icon aria-hidden="true" className="mt-0.5" />
-                    <span className="grid min-w-0 gap-0.5">
-                      <span className="font-medium">
-                        {t.sectionTitles[kind]}
-                      </span>
-                      <span className="text-xs text-muted-foreground">
-                        {t.sectionDescriptions[kind]}
-                      </span>
-                    </span>
-                  </CommandItem>
-                );
-              })}
-            </CommandGroup>
-          </CommandList>
-        </Command>
+            <AddSectionMenu t={t} onSelect={selectKind} />
+          </Suspense>
+        ) : null}
       </PopoverContent>
     </Popover>
   );

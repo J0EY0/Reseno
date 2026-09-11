@@ -52,7 +52,10 @@ export default defineConfig({
             isNodePackage(id, "react-dom") ||
             isNodePackage(id, "react-router") ||
             isNodePackage(id, "react-router-dom") ||
-            isNodePackage(id, "scheduler")
+            isNodePackage(id, "scheduler") ||
+            isNodePackage(id, "@radix-ui/react-slot") ||
+            isNodePackage(id, "@radix-ui/react-compose-refs") ||
+            isNodePackage(id, "class-variance-authority")
           ) {
             return "vendor-react";
           }
