@@ -147,7 +147,6 @@
   "duplicateResumeFailed": "Failed to create copy",
   "duplicateResumeChangedDuringSave": "Content changed while saving. Create the copy again.",
   "newResume": "New",
-  "newResumeDialogDescription": "Choose the language of the resume content. The app interface language will not change it.",
   "resumeLanguage": "Resume language",
   "selectResumeLanguage": "Select a language",
   "chineseTemplate": "Chinese template",

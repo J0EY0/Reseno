@@ -51,6 +51,7 @@ export function ProjectSectionEditor({
       <div className="grid min-w-0 gap-3 md:grid-cols-2">
         <FormField label={t.fieldLabels.projectName}>
           <InlineTextInput
+            autoFocus={item.id === initiallyOpenItemId}
             t={t}
             aria-label={t.fieldLabels.projectName}
             value={item.name}

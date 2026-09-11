@@ -176,8 +176,8 @@ assert(createResumeCalls.length === 1);
 assert(
   createResumeCalls[0].arguments[0].properties
     .map((property) => getMemberPath(property.name))
-    .join(",") === "documentLocale",
-  "New resumes must let the backend choose the language's default template.",
+    .join(",") === "documentLocale,template",
+  "New resumes must send the document language and selected template ID without copying template settings.",
 );
 assert(
   enMessages.followResumeLanguage === "Match Resume Language" &&

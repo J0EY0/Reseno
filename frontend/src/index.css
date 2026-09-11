@@ -284,6 +284,30 @@ main.app-shell[tabindex="-1"]:focus-visible {
   }
 }
 
+.new-resume-dialog {
+  @apply w-[min(22.5rem,calc(100vw-2rem))] gap-8 pb-4;
+}
+
+.new-resume-dialog > form {
+  @apply gap-8;
+}
+
+.new-resume-dialog [data-slot="field-group"] {
+  @apply gap-y-8;
+}
+
+.new-resume-dialog [data-slot="select-trigger"] {
+  @apply max-w-44 justify-self-start sm:justify-self-end;
+}
+
+.new-resume-dialog > [data-slot="dialog-title"] {
+  @apply flex h-6 items-center justify-center sm:justify-start;
+}
+
+.new-resume-dialog > [data-slot="dialog-close"] {
+  @apply top-7;
+}
+
 .dialog-overlay-motion[data-state="open"] {
   animation: dialog-overlay-enter var(--duration-enter) ease-out both;
 }

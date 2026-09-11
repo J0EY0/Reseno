@@ -47,6 +47,7 @@ export function AchievementSectionEditor({
       <div className="grid min-w-0 gap-3 md:grid-cols-2">
         <FormField label={t.fieldLabels.achievementName}>
           <InlineTextInput
+            autoFocus={item.id === initiallyOpenItemId}
             t={t}
             aria-label={t.fieldLabels.achievementName}
             value={item.name}

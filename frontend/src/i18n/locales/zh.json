@@ -147,7 +147,6 @@
   "duplicateResumeFailed": "创建副本失败",
   "duplicateResumeChangedDuringSave": "保存期间内容发生变化，请再次创建副本",
   "newResume": "新建",
-  "newResumeDialogDescription": "选择这份简历的内容语言，界面语言不会改变它",
   "resumeLanguage": "简历语言",
   "selectResumeLanguage": "选择简历语言",
   "chineseTemplate": "中文模板",

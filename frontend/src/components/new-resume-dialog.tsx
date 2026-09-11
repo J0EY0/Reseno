@@ -1,14 +1,12 @@
 import { CopyPlus } from "lucide-react";
-import { useState, type FormEvent } from "react";
+import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogClose,
   DialogContent,
-  DialogDescription,
   DialogFooter,
-  DialogHeader,
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
@@ -21,42 +19,43 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Spinner } from "@/components/ui/spinner";
 import type { AppMessages } from "@/i18n";
-import type { DocumentLocale } from "@/types/resume";
+import type {
+  DocumentLocale,
+  ResumeTemplateDefinition,
+  ResumeTemplateId,
+} from "@/types/resume";
 
 export function NewResumeDialog({
   disabled,
   isCreating,
   messages,
+  templates,
+  defaultTemplateId,
   onCreateResume,
 }: {
   disabled: boolean;
   isCreating: boolean;
   messages: AppMessages;
-  onCreateResume: (documentLocale: DocumentLocale) => void;
+  templates: ResumeTemplateDefinition[];
+  defaultTemplateId: ResumeTemplateId;
+  onCreateResume: (
+    documentLocale: DocumentLocale,
+    templateId: ResumeTemplateId,
+  ) => void;
 }) {
-  const [isOpen, setIsOpen] = useState(false);
   const [documentLocale, setDocumentLocale] = useState<DocumentLocale | null>(
     null,
   );
-
-  function handleOpenChange(open: boolean) {
-    setIsOpen(open);
-    if (!open) {
-      setDocumentLocale(null);
-    }
-  }
-
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (documentLocale) {
-      onCreateResume(documentLocale);
-    }
-  }
+  const [templateId, setTemplateId] = useState(defaultTemplateId);
 
   return (
-    <Dialog open={isOpen} onOpenChange={handleOpenChange}>
+    <Dialog
+      onOpenChange={() => {
+        setDocumentLocale(null);
+        setTemplateId(defaultTemplateId);
+      }}
+    >
       <DialogTrigger asChild>
         <Button
           type="button"
@@ -68,16 +67,23 @@ export function NewResumeDialog({
           {messages.newResume}
         </Button>
       </DialogTrigger>
-      <DialogContent closeLabel={messages.close}>
-        <DialogHeader>
-          <DialogTitle>{messages.createResume}</DialogTitle>
-          <DialogDescription>
-            {messages.newResumeDialogDescription}
-          </DialogDescription>
-        </DialogHeader>
-        <form className="flex flex-col gap-6" onSubmit={handleSubmit}>
-          <FieldGroup>
-            <Field>
+      <DialogContent
+        closeLabel={messages.close}
+        aria-describedby={undefined}
+        className="new-resume-dialog"
+      >
+        <DialogTitle>{messages.createResume}</DialogTitle>
+        <form
+          className="grid gap-6"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (documentLocale) {
+              onCreateResume(documentLocale, templateId);
+            }
+          }}
+        >
+          <FieldGroup className="grid grid-cols-1 gap-x-3 gap-y-6 sm:grid-cols-[auto_minmax(0,1fr)]">
+            <Field className="col-span-full grid grid-cols-subgrid items-center gap-3">
               <FieldLabel htmlFor="new-resume-language">
                 {messages.resumeLanguage}
               </FieldLabel>
@@ -90,7 +96,7 @@ export function NewResumeDialog({
                 <SelectTrigger id="new-resume-language" className="w-full">
                   <SelectValue placeholder={messages.selectResumeLanguage} />
                 </SelectTrigger>
-                <SelectContent>
+                <SelectContent align="end" position="popper" sideOffset={4}>
                   <SelectGroup>
                     <SelectItem value="zh">
                       {messages.languageChinese}
@@ -102,6 +108,25 @@ export function NewResumeDialog({
                 </SelectContent>
               </Select>
             </Field>
+            <Field className="col-span-full grid grid-cols-subgrid items-center gap-3">
+              <FieldLabel htmlFor="new-resume-template">
+                {messages.template}
+              </FieldLabel>
+              <Select value={templateId} onValueChange={setTemplateId}>
+                <SelectTrigger id="new-resume-template" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="end" position="popper" sideOffset={4}>
+                  <SelectGroup>
+                    {templates.map(({ id, name }) => (
+                      <SelectItem key={id} value={id}>
+                        {name}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </Field>
           </FieldGroup>
           <DialogFooter>
             <DialogClose asChild>
@@ -109,14 +134,12 @@ export function NewResumeDialog({
                 {messages.cancel}
               </Button>
             </DialogClose>
-            <Button type="submit" disabled={!documentLocale || isCreating}>
-              {isCreating ? (
-                <Spinner
-                  data-icon="inline-start"
-                  aria-label={messages.creating}
-                />
-              ) : null}
-              {isCreating ? messages.creating : messages.createResume}
+            <Button
+              type="submit"
+              disabled={!documentLocale}
+              aria-disabled={isCreating || undefined}
+            >
+              {messages.createResume}
             </Button>
           </DialogFooter>
         </form>

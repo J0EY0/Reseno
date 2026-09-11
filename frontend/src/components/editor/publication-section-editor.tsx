@@ -50,6 +50,7 @@ export function PublicationSectionEditor({
           className="md:col-span-2"
         >
           <InlineTextInput
+            autoFocus={item.id === initiallyOpenItemId}
             t={t}
             aria-label={t.fieldLabels.publicationTitle}
             multiline
