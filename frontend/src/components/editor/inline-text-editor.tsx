@@ -27,6 +27,7 @@ const menuOptions = {
 
 export default function InlineTextEditor({
   id,
+  autoFocusFrom,
   "aria-label": label,
   className,
   multiline = false,
@@ -34,8 +35,11 @@ export default function InlineTextEditor({
   t,
   value,
   onChange,
-}: InlineTextInputProps) {
+}: Omit<InlineTextInputProps, "autoFocus"> & {
+  autoFocusFrom?: Element | null;
+}) {
   const menuRef = useRef<HTMLDivElement>(null);
+  const pendingAutoFocusFrom = useRef(autoFocusFrom);
   const [menuHost, setMenuHost] = useState<HTMLDivElement | null>(null);
   const editorValue = serializeInlineTextToHtml(value, multiline);
   const editorClassName = cn(
@@ -107,6 +111,16 @@ export default function InlineTextEditor({
           }
           return false;
         },
+      },
+      onCreate({ editor: current }) {
+        const previousFocus = pendingAutoFocusFrom.current;
+        pendingAutoFocusFrom.current = undefined;
+        if (
+          previousFocus !== undefined &&
+          document.activeElement === previousFocus
+        ) {
+          current.commands.focus("start");
+        }
       },
       onUpdate({ editor: current }) {
         onChange(serializeInlineTextFromHtml(current.getHTML(), multiline));

@@ -167,7 +167,15 @@ export function ResumeSectionCard({
             }
           />
         </FormField>
+      </div>
 
+      <div className="grid gap-3">
+        <ResumeSectionItemsEditor
+          t={t}
+          section={section}
+          initiallyOpenItemId={initiallyOpenItemId}
+          onMutation={onMutation}
+        />
         {section.kind !== "simple_list" ? (
           <Button
             type="button"
@@ -179,15 +187,6 @@ export function ResumeSectionCard({
             {t.addItem}
           </Button>
         ) : null}
-      </div>
-
-      <div className="grid gap-3">
-        <ResumeSectionItemsEditor
-          t={t}
-          section={section}
-          initiallyOpenItemId={initiallyOpenItemId}
-          onMutation={onMutation}
-        />
       </div>
     </EditorCardShell>
   );

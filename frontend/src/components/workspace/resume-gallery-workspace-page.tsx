@@ -45,6 +45,7 @@ export function ResumeGalleryWorkspacePage({
         t={messages}
         resumes={gallery.resumes}
         templates={gallery.templateCatalog}
+        defaultTemplateIds={gallery.routeData.defaultTemplateIds}
         isImporting={gallery.isImporting}
         importProgress={gallery.pendingImport}
         onRetryImport={() => void gallery.retryImport()}
@@ -53,9 +54,7 @@ export function ResumeGalleryWorkspacePage({
         openingResumeId={gallery.openingResumeId}
         onPreloadResumeDetail={gallery.preloadResumeDetail}
         onOpenResume={(resumeId) => void gallery.openResume(resumeId)}
-        onCreateResume={(documentLocale) =>
-          void gallery.createResume(documentLocale)
-        }
+        onCreateResume={gallery.createResume}
         onImportResume={(file) => void gallery.importResume(file)}
         onDeleteResume={(resumeId) =>
           void gallery.moveResumesToTrash([resumeId])

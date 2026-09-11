@@ -1,4 +1,4 @@
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useState } from "react";
 
 import type { AppMessages } from "@/i18n";
 import { getInlineTextHtml } from "@/lib/rich-text";
@@ -8,6 +8,7 @@ const InlineTextEditor = lazy(() => import("./inline-text-editor"));
 
 export type InlineTextInputProps = {
   id?: string;
+  autoFocus?: boolean;
   "aria-label": string;
   className?: string;
   multiline?: boolean;
@@ -18,7 +19,11 @@ export type InlineTextInputProps = {
 };
 
 export function InlineTextInput(props: InlineTextInputProps) {
+  const { autoFocus = false, ...editorProps } = props;
   const { className, multiline, value } = props;
+  const [autoFocusFrom] = useState(() =>
+    autoFocus ? document.activeElement : undefined,
+  );
   return (
     <Suspense
       fallback={
@@ -37,7 +42,7 @@ export function InlineTextInput(props: InlineTextInputProps) {
         />
       }
     >
-      <InlineTextEditor {...props} />
+      <InlineTextEditor {...editorProps} autoFocusFrom={autoFocusFrom} />
     </Suspense>
   );
 }

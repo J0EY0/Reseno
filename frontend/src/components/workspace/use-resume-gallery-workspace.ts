@@ -42,6 +42,7 @@ import type {
   DefaultTemplateIds,
   DocumentLocale,
   ResumeTemplateDefinition,
+  ResumeTemplateId,
   ResumeWorkspaceItem,
 } from "@/types/resume";
 import type { PreparedResumeDetailRouteData } from "@/lib/workspace-route-data";
@@ -286,7 +287,7 @@ export function useResumeGalleryWorkspace({
   );
 
   const createResume = useCallback(
-    async (documentLocale: DocumentLocale) => {
+    async (documentLocale: DocumentLocale, templateId: ResumeTemplateId) => {
       if (isLoading || createInFlightRef.current) {
         return;
       }
@@ -299,6 +300,7 @@ export function useResumeGalleryWorkspace({
       try {
         const result = await createResumeApi({
           documentLocale,
+          template: templateId,
         });
         const publishCreatedResume = () => {
           setResumes((current) =>

@@ -1,5 +1,5 @@
 import { ArrowDown, ArrowUp, ChevronDown, Trash2 } from "lucide-react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -40,19 +40,6 @@ export function ResumeItemEditorShell({
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(initiallyOpen);
-  const contentRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!initiallyOpen) {
-      return;
-    }
-
-    contentRef.current
-      ?.querySelector<HTMLElement>(
-        'input:not([type="hidden"]):not(:disabled), textarea:not(:disabled), [contenteditable="true"]',
-      )
-      ?.focus();
-  }, [initiallyOpen]);
 
   return (
     <>
@@ -116,10 +103,7 @@ export function ResumeItemEditorShell({
             </div>
           </div>
           <CollapsibleContent className="collapsible-content">
-            <div
-              ref={contentRef}
-              className="collapsible-content-inner grid gap-3 px-2 pb-2 pt-3"
-            >
+            <div className="collapsible-content-inner grid gap-3 px-2 pb-2 pt-3">
               {children}
             </div>
           </CollapsibleContent>

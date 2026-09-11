@@ -5680,14 +5680,33 @@ def test_resume_card_preloads_detail_module_and_reports_local_pending(
         context.close()
 
 
+@pytest.mark.parametrize("locale", ["zh", "en"])
+@pytest.mark.parametrize("reduced_motion", ["no-preference", "reduce"])
 def test_created_resume_is_not_published_before_detail_is_ready(
     browser: Browser,
     workspace_servers: tuple[str, str],
+    locale: str,
+    reduced_motion: str,
 ) -> None:
     frontend_url, _ = workspace_servers
-    context = _authenticated_context(browser, viewport={"width": 1280, "height": 800})
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN" if locale == "zh" else "en-US",
+        viewport={"width": 1280, "height": 800},
+        reduced_motion=reduced_motion,
+    )
+    context.add_init_script(f"localStorage.setItem('reseno-locale', '{locale}')")
     page = context.new_page()
     created_resume_id: str | None = None
+    create_requests: list[Request] = []
+    page.on(
+        "request",
+        lambda request: (
+            create_requests.append(request)
+            if request.method == "POST" and urlparse(request.url).path == "/api/resumes"
+            else None
+        ),
+    )
 
     try:
         page.goto(f"{frontend_url}/resume", wait_until="networkidle")
@@ -5724,23 +5743,77 @@ def test_created_resume_is_not_published_before_detail_is_ready(
             name=re.compile(r"^(Resume language|简历语言)$"),
         ).click()
         page.get_by_role("option", name=re.compile(r"^(English|英文)$")).click()
+        selected_template_id = (
+            create_dialog.locator("#new-resume-template")
+            .locator("xpath=..")
+            .locator("select")
+            .input_value()
+        )
+        assert selected_template_id
+        submit = create_dialog.get_by_role(
+            "button", name=re.compile(r"^(Create Resume|创建简历)$")
+        )
+        submit.hover()
+        submit.evaluate(
+            """async button => {
+              await Promise.all(button.getAnimations().map(
+                animation => animation.finished.catch(() => {})
+              ));
+              window.__createButtonFrames = [];
+              window.__recordCreateButton = true;
+              const sample = () => {
+                if (!window.__recordCreateButton) return;
+                const rect = button.getBoundingClientRect();
+                const style = getComputedStyle(button);
+                window.__createButtonFrames.push({
+                  text: button.textContent,
+                  width: rect.width,
+                  height: rect.height,
+                  opacity: style.opacity,
+                  hasSpinner: !!button.querySelector('[role="status"], .animate-spin'),
+                });
+                requestAnimationFrame(sample);
+              };
+              sample();
+            }"""
+        )
+        before = page.evaluate("window.__createButtonFrames[0]")
         with page.expect_response(
             lambda response: (
                 response.request.method == "POST"
                 and urlparse(response.url).path == "/api/resumes"
             )
         ) as create_response_info:
-            create_dialog.get_by_role(
-                "button",
-                name=re.compile(r"^(Create Resume|创建简历)$"),
-            ).click()
+            submit.click()
         assert create_response_info.value.request.post_data_json == {
-            "documentLocale": "en"
+            "documentLocale": "en",
+            "template": selected_template_id,
         }
         created_resume_id = str(
             create_response_info.value.json()["data"]["resume"]["id"]
         )
         page.wait_for_function("window.__releaseCreatedResumeDetail !== null")
+
+        expect(submit).to_have_attribute("aria-disabled", "true")
+        assert not submit.evaluate("button => button.disabled")
+        box = submit.bounding_box()
+        assert box is not None
+        page.mouse.dblclick(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        expect(submit).to_be_focused()
+        page.keyboard.press("Enter")
+        page.keyboard.press("Enter")
+        page.evaluate(
+            """() => new Promise(resolve => requestAnimationFrame(
+              () => requestAnimationFrame(resolve)
+            ))"""
+        )
+        frames = page.evaluate("window.__createButtonFrames")
+        assert len(frames) > 1
+        assert before["text"] == ("创建简历" if locale == "zh" else "Create Resume")
+        assert before["opacity"] == "1"
+        assert not before["hasSpinner"]
+        assert all(frame == before for frame in frames), frames
+        assert len(create_requests) == 1
 
         pending_create_button = page.locator('button[aria-busy="true"]')
         expect(pending_create_button).to_have_count(1)
@@ -5753,11 +5826,17 @@ def test_created_resume_is_not_published_before_detail_is_ready(
         assert page.locator('a[href^="/resume/"]').count() == initial_card_count
         assert page.url == f"{frontend_url}/resume"
 
-        page.evaluate("window.__releaseCreatedResumeDetail()")
+        page.evaluate(
+            """() => {
+              window.__recordCreateButton = false;
+              window.__releaseCreatedResumeDetail();
+            }"""
+        )
         page.wait_for_url(f"{frontend_url}/resume/*")
         page.locator(".resume-preview-card article.resume-page").wait_for(
             state="visible"
         )
+        assert len(create_requests) == 1
     finally:
         if created_resume_id:
             trash_response = page.request.post(

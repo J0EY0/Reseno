@@ -14,8 +14,10 @@ import { useGalleryGridPageSize } from "@/components/use-gallery-grid-page-size"
 import { useResumeGalleryController } from "@/components/use-resume-gallery-controller";
 import type { AppMessages, Locale } from "@/i18n";
 import type {
+  DefaultTemplateIds,
   DocumentLocale,
   ResumeTemplateDefinition,
+  ResumeTemplateId,
   ResumeWorkspaceItem,
 } from "@/types/resume";
 
@@ -24,6 +26,7 @@ export function ResumeGallery({
   t,
   resumes,
   templates,
+  defaultTemplateIds,
   isImporting,
   importProgress,
   onRetryImport,
@@ -41,6 +44,7 @@ export function ResumeGallery({
   t: AppMessages;
   resumes: ResumeWorkspaceItem[];
   templates: ResumeTemplateDefinition[];
+  defaultTemplateIds: DefaultTemplateIds;
   isImporting: boolean;
   importProgress: { importedCount: number; remainingCount: number } | null;
   onRetryImport: () => void;
@@ -49,7 +53,10 @@ export function ResumeGallery({
   openingResumeId: string | null;
   onPreloadResumeDetail: () => void;
   onOpenResume: (resumeId: string) => void;
-  onCreateResume: (documentLocale: DocumentLocale) => void;
+  onCreateResume: (
+    documentLocale: DocumentLocale,
+    templateId: ResumeTemplateId,
+  ) => void;
   onImportResume: (file: File) => void;
   onDeleteResume: (resumeId: string) => void;
   onBulkDeleteResumes: (resumeIds: string[]) => void;
@@ -140,6 +147,8 @@ export function ResumeGallery({
               disabled={isImporting || isCreating}
               isCreating={isCreating}
               messages={t}
+              templates={templates}
+              defaultTemplateId={defaultTemplateIds[locale]}
               onCreateResume={onCreateResume}
             />
           </>

@@ -49,6 +49,7 @@ export function ExperienceSectionEditor({
       <div className="grid min-w-0 gap-3 md:grid-cols-2">
         <FormField label={t.fieldLabels.company}>
           <InlineTextInput
+            autoFocus={item.id === initiallyOpenItemId}
             t={t}
             aria-label={t.fieldLabels.company}
             value={item.company}
