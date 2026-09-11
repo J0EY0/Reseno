@@ -261,7 +261,9 @@ def test_superseded_history_is_distinct_from_explicitly_discarded_drafts(
         discarded = receipts.filter(has_text="已放弃")
         expect(discarded).to_have_text("已应用 0 项，已放弃 1 项")
         page.reload(wait_until="networkidle")
-        page.get_by_role("button", name="展开 AI 助手", exact=True).click()
+        expect(
+            page.get_by_role("button", name="收起 AI 助手", exact=True)
+        ).to_be_visible()
         expect(superseded).to_have_text("已被后续建议替代")
         expect(discarded).to_have_text("已应用 0 项，已放弃 1 项")
         saved = page.request.get(f"{frontend_url}/api/resumes/{resume_id}").json()[
