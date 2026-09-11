@@ -34,6 +34,8 @@ def test_model_search_selects_the_configuration_by_id(
         viewport={"width": 1672, "height": 900},
     )
     page = context.new_page()
+    pending_menu: list[Route] = []
+    menu_pattern = "**/copilot-model-selector-menu.tsx*"
     current = {
         "id": "cfg-73ac",
         "provider": "openai",
@@ -58,6 +60,8 @@ def test_model_search_selects_the_configuration_by_id(
 
     try:
         page.route("**/api/workspace/pages/resume-editor", fulfill_workspace)
+        if search_field == "id":
+            page.route(menu_pattern, lambda route: pending_menu.append(route))
         page.route(
             "**/api/workspace/user-settings*",
             lambda route: route.fulfill(
@@ -72,10 +76,30 @@ def test_model_search_selects_the_configuration_by_id(
             ),
         )
         page.goto(f"{frontend_url}/resume/{resume_id}", wait_until="networkidle")
+        assert pending_menu == []
         composer = page.locator('[data-slot="agent-composer"]')
-        composer.get_by_role("button", name=current["nickname"], exact=True).click()
+        trigger = composer.get_by_role("button", name=current["nickname"], exact=True)
+        trigger_node = trigger.element_handle()
+        assert trigger_node is not None
+        trigger.click()
         dialog = page.get_by_role("dialog")
         search = dialog.get_by_role("combobox")
+        if search_field == "id":
+            expect(dialog.locator('[aria-busy="true"]')).to_be_visible()
+            assert pending_menu, (
+                "the selector menu must remain deferred through opening"
+            )
+            for route in pending_menu:
+                route.continue_()
+            pending_menu.clear()
+            page.unroute(menu_pattern)
+            expect(search).to_be_focused()
+            assert trigger_node.evaluate("element => element.isConnected")
+            search.press("Escape")
+            expect(dialog).not_to_be_visible()
+            expect(trigger).to_be_focused()
+            trigger.press("Enter")
+            expect(search).to_be_focused()
         expect(dialog.get_by_role("option")).to_have_count(2)
         search.fill(target[search_field])
         expect(dialog.get_by_role("option")).to_have_count(1)
@@ -95,6 +119,8 @@ def test_model_search_selects_the_configuration_by_id(
             == target["id"]
         )
     finally:
+        for route in pending_menu:
+            route.abort()
         context.close()
 
 

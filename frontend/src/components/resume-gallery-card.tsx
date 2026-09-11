@@ -90,7 +90,7 @@ export const ResumeGalleryCard = memo(function ResumeGalleryCard({
           )}
         >
           <div className="rounded-xl bg-muted/55 p-2">
-            <div className="relative mx-auto h-[258px] w-[182px] overflow-hidden rounded-lg border border-zinc-200 bg-white">
+            <div className="relative mx-auto h-[258px] w-[182px] overflow-hidden rounded-lg border border-neutral-200 bg-white">
               {isSelecting ? (
                 <span
                   aria-hidden="true"

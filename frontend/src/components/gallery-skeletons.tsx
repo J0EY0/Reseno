@@ -11,33 +11,33 @@ function GalleryCardSkeleton({ isCreate = false }: { isCreate?: boolean }) {
               <Skeleton className="size-12 rounded-xl bg-primary/90" />
             </div>
           ) : (
-            <div className="relative mx-auto h-[258px] w-[182px] overflow-hidden rounded-lg border border-zinc-200 bg-white p-5">
+            <div className="relative mx-auto h-[258px] w-[182px] overflow-hidden rounded-lg border border-neutral-200 bg-white p-5">
               <div className="grid gap-3">
-                <Skeleton className="mx-auto h-4 w-12 bg-zinc-200" />
+                <Skeleton className="mx-auto h-4 w-12 bg-neutral-200" />
                 <div className="space-y-1.5">
-                  <Skeleton className="mx-auto h-2 w-24 bg-zinc-200" />
-                  <Skeleton className="mx-auto h-2 w-28 bg-zinc-200" />
+                  <Skeleton className="mx-auto h-2 w-24 bg-neutral-200" />
+                  <Skeleton className="mx-auto h-2 w-28 bg-neutral-200" />
                 </div>
                 <div className="pt-2">
                   <div className="mb-2 flex items-center gap-2">
-                    <Skeleton className="h-3 w-8 bg-zinc-200" />
-                    <Skeleton className="h-px flex-1 bg-zinc-200" />
+                    <Skeleton className="h-3 w-8 bg-neutral-200" />
+                    <Skeleton className="h-px flex-1 bg-neutral-200" />
                   </div>
                   <div className="space-y-1.5">
-                    <Skeleton className="h-2 w-16 bg-zinc-200" />
-                    <Skeleton className="h-2 w-full bg-zinc-200" />
-                    <Skeleton className="h-2 w-4/5 bg-zinc-200" />
+                    <Skeleton className="h-2 w-16 bg-neutral-200" />
+                    <Skeleton className="h-2 w-full bg-neutral-200" />
+                    <Skeleton className="h-2 w-4/5 bg-neutral-200" />
                   </div>
                 </div>
                 <div className="pt-1">
                   <div className="mb-2 flex items-center gap-2">
-                    <Skeleton className="h-3 w-10 bg-zinc-200" />
-                    <Skeleton className="h-px flex-1 bg-zinc-200" />
+                    <Skeleton className="h-3 w-10 bg-neutral-200" />
+                    <Skeleton className="h-px flex-1 bg-neutral-200" />
                   </div>
                   <div className="space-y-1.5">
-                    <Skeleton className="h-2 w-20 bg-zinc-200" />
-                    <Skeleton className="h-2 w-full bg-zinc-200" />
-                    <Skeleton className="h-2 w-3/4 bg-zinc-200" />
+                    <Skeleton className="h-2 w-20 bg-neutral-200" />
+                    <Skeleton className="h-2 w-full bg-neutral-200" />
+                    <Skeleton className="h-2 w-3/4 bg-neutral-200" />
                   </div>
                 </div>
               </div>

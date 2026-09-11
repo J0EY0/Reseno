@@ -249,7 +249,7 @@ assert(
 );
 
 assert(
-  /\.resume-page \{[\s\S]{0,320}border-radius: var\(--radius-md\);[\s\S]{0,120}border: 1px solid var\(--border\);[\s\S]{0,320}box-shadow:\s*var\(--surface-shadow-card\),\s*0 16px 40px -24px rgb\(9 9 11 \/ 0\.28\);/.test(
+  /\.resume-page \{[\s\S]{0,320}border-radius: var\(--radius-md\);[\s\S]{0,120}border: 1px solid var\(--border\);[\s\S]{0,320}box-shadow:\s*var\(--surface-shadow-card\),\s*0 16px 40px -24px rgb\(10 10 10 \/ 0\.28\);/.test(
     themeSource,
   ) &&
     workspaceSkeletonsSource.includes(

@@ -101,7 +101,7 @@ export const TemplateGalleryCard = memo(function TemplateGalleryCard({
           }}
         >
           <div className="rounded-xl bg-muted/55 p-2">
-            <div className="relative mx-auto h-[258px] w-[182px] overflow-hidden rounded-lg border border-zinc-200 bg-white">
+            <div className="relative mx-auto h-[258px] w-[182px] overflow-hidden rounded-lg border border-neutral-200 bg-white">
               <div
                 aria-hidden="true"
                 className="pointer-events-none absolute left-0 top-0 origin-top-left scale-[0.224]"

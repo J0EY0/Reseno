@@ -36,6 +36,8 @@ const [
   agentMotionStylesSource,
   agentLayoutSource,
   workspaceViewSource,
+  workspaceColumnsSource,
+  workspaceColumnsStylesSource,
   workspaceHeaderSource,
   headerActionsSource,
   appStylesSource,
@@ -87,6 +89,26 @@ const [
       "components",
       "workspace",
       "resume-detail-workspace-view.tsx",
+    ),
+    "utf8",
+  ),
+  readFile(
+    join(
+      frontendRoot,
+      "src",
+      "components",
+      "workspace",
+      "resume-workspace-columns.tsx",
+    ),
+    "utf8",
+  ),
+  readFile(
+    join(
+      frontendRoot,
+      "src",
+      "components",
+      "workspace",
+      "resume-workspace-columns.css",
     ),
     "utf8",
   ),
@@ -549,7 +571,7 @@ assert(
 );
 
 const desktopWorkspaceGridRule =
-  appStylesSource.match(
+  workspaceColumnsStylesSource.match(
     /@media\s*\(min-width:\s*1280px\)\s*\{[\s\S]*?\n\s*\.resume-workspace\s*\{([^}]*)\}/,
   )?.[1] ?? "";
 const panelMotionRule =
@@ -562,9 +584,10 @@ const hiddenPanelMotionRule =
   )?.[1] ?? "";
 
 assert(
-  (`${appStylesSource}\n${agentMotionStylesSource}`.match(
-    /transition(?:-property)?\s*:[^;{}]*\bgrid-template-columns\b/g,
-  )?.length ?? 0) === 1 &&
+  ([appStylesSource, workspaceColumnsStylesSource, agentMotionStylesSource]
+    .join("\n")
+    .match(/transition(?:-property)?\s*:[^;{}]*\bgrid-template-columns\b/g)
+    ?.length ?? 0) === 1 &&
     /--duration-move:\s*240ms/.test(appStylesSource) &&
     /--ease-move:\s*cubic-bezier\(0\.2,\s*0,\s*0,\s*1\)/.test(
       appStylesSource,
@@ -575,8 +598,12 @@ assert(
   "The desktop workspace must own the single tokenized 240ms grid-track transition.",
 );
 assert(
-  workspaceViewSource.includes('"--agent-panel-width": "360px"'),
-  "The desktop Agent motion layer must keep its final 360px width while the grid track clips it.",
+  workspaceColumnsSource.includes('import "./resume-workspace-columns.css";') &&
+    workspaceColumnsSource.includes(
+      '"--agent-panel-width": `${agentWidth}px`',
+    ) &&
+    workspaceColumnsSource.includes("resolveWorkspaceWidths("),
+  "The desktop Agent motion layer must keep its resolved width while the grid track clips it.",
 );
 assert(
   findNodes(parseSource(agentHostSource), ts.isStringLiteral).some(
@@ -715,29 +742,98 @@ assert(
   agentLayoutSource.includes(
     'const AGENT_AUTO_EXPAND_MEDIA_QUERY = "(min-width: 1536px)"',
   ) &&
-    /useState\(\s*\(\)\s*=>\s*!window\.matchMedia\(AGENT_AUTO_EXPAND_MEDIA_QUERY\)\.matches,?\s*\)/.test(
+    /readWorkspaceLayoutPreference\(\)\.agentCollapsed\s*\?\?\s*!window\.matchMedia\(AGENT_AUTO_EXPAND_MEDIA_QUERY\)\.matches/.test(
       agentLayoutSource,
     ) &&
     !agentLayoutSource.includes("isDockLayout") &&
     !agentLayoutSource.includes("useEffect"),
-  "Widths below 1536px must start collapsed without later overriding the user's choice.",
+  "Saved Agent visibility must take priority over its initial viewport default without later overriding the user's choice.",
 );
+for (const initialMediaMatch of [false, true]) {
+  for (const savedCollapsed of [undefined, false, true]) {
+    const hookState = [];
+    const writes = [];
+    let hookIndex = 0;
+    let preferenceReads = 0;
+    let mediaMatches = initialMediaMatch;
+    const { useResumeDetailAgentLayout } = evaluateTypeScript(
+      agentLayoutSource,
+      {
+        imports: {
+          react: {
+            useCallback: (callback) => callback,
+            useState(initial) {
+              const index = hookIndex++;
+              if (!Object.hasOwn(hookState, index)) {
+                hookState[index] =
+                  typeof initial === "function" ? initial() : initial;
+              }
+              return [
+                hookState[index],
+                (value) => {
+                  hookState[index] =
+                    typeof value === "function"
+                      ? value(hookState[index])
+                      : value;
+                },
+              ];
+            },
+          },
+          "@/components/workspace/resume-workspace-layout": {
+            readWorkspaceLayoutPreference() {
+              preferenceReads++;
+              return { agentCollapsed: savedCollapsed };
+            },
+            writeWorkspaceLayoutPreference: (patch) => writes.push(patch),
+          },
+        },
+        globals: {
+          window: { matchMedia: () => ({ matches: mediaMatches }) },
+        },
+      },
+    );
+    const initial = useResumeDetailAgentLayout("resume-1");
+    const expectedCollapsed = savedCollapsed ?? !initialMediaMatch;
+    assert(initial.isPanelCollapsed === expectedCollapsed);
+    initial.setIsPanelCollapsed(!expectedCollapsed);
+    mediaMatches = !initialMediaMatch;
+    hookIndex = 0;
+    const afterResize = useResumeDetailAgentLayout("resume-1");
+    assert(
+      afterResize.isPanelCollapsed === !expectedCollapsed,
+      "Viewport changes must preserve the user's explicit Agent choice.",
+    );
+    assert(
+      writes.length === 1 &&
+        writes[0].agentCollapsed === !expectedCollapsed &&
+        Object.keys(writes[0]).length === 1,
+      "The Agent toggle must save only its own preference field.",
+    );
+    assert(preferenceReads === 1);
+  }
+}
 assert(
-  workspaceViewSource.includes(
-    "const shouldDockAgent = !state.agent.isPanelCollapsed",
-  ) &&
+  workspaceViewSource.includes("<ResumeWorkspaceColumns") &&
+    workspaceViewSource.includes(
+      "agentExpanded={!state.agent.isPanelCollapsed}",
+    ) &&
     workspaceViewSource.includes("<ResumeDetailAgentToggle") &&
     workspaceViewSource.includes("toolbarTrailing={") &&
-    workspaceViewSource.includes("minmax(0,1fr) var(--agent-panel-width)") &&
+    workspaceColumnsSource.includes(
+      '"--resume-workspace-columns": `var(--editor-panel-width) minmax(${PREVIEW_MIN_WIDTH}px,1fr)',
+    ) &&
+    workspaceColumnsSource.includes(
+      'agentExpanded ? "var(--agent-panel-width)" : "0px"',
+    ) &&
     /@media \(min-width: 1280px\) \{[\s\S]{0,2400}\.resume-workspace\s*\{[\s\S]{0,400}grid-template-columns:\s*var\(\s*--resume-workspace-columns/.test(
-      appStylesSource,
+      workspaceColumnsStylesSource,
     ),
   "Desktop layouts must compose the editor, canvas, and inline Agent as three tracks with the toggle inside the canvas toolbar.",
 );
 assert(
   appStylesSource.includes("grid-template-columns: minmax(0, 1fr);") &&
-    appStylesSource.includes(
-      ".resume-workspace > .agent-panel-dock {\n    grid-column: 1;\n    grid-row: 2;",
+    workspaceColumnsStylesSource.includes(
+      ".resume-workspace > .workspace-agent-column {\n    grid-column: 1;\n    grid-row: 2;",
     ) &&
     appStylesSource.includes(
       ".resume-workspace > .resume-preview-card {\n    grid-column: 1;\n    grid-row: 2;",

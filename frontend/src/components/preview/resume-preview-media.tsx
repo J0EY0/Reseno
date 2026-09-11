@@ -259,7 +259,7 @@ export function TemplateImages({
           key={frame.id}
           data-template-image-frame="true"
           className={cn(
-            "absolute flex min-h-6 min-w-6 items-center justify-center overflow-hidden text-center text-[9px] font-medium text-slate-400",
+            "absolute flex min-h-6 min-w-6 items-center justify-center overflow-hidden text-center text-[9px] font-medium text-neutral-400",
             !frame.src && "bg-white/10",
             editable &&
               "pointer-events-auto cursor-grab touch-none transition-[box-shadow,outline-color] active:cursor-grabbing hover:shadow-sm",
@@ -292,7 +292,7 @@ export function TemplateImages({
           ) : (
             <div className="flex size-full flex-col items-center justify-center gap-1 rounded-[inherit] bg-transparent px-1">
               <ImageIcon className="size-3 opacity-60" strokeWidth={1.75} />
-              <span className="max-w-full truncate leading-none text-slate-500/80">
+              <span className="max-w-full truncate leading-none text-neutral-500/80">
                 {frame.name}
               </span>
             </div>

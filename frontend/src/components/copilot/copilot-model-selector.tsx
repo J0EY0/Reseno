@@ -1,33 +1,23 @@
-import {
-  ModelSelector,
-  ModelSelectorContent,
-  ModelSelectorEmpty,
-  ModelSelectorGroup,
-  ModelSelectorInput,
-  ModelSelectorItem,
-  ModelSelectorList,
-  ModelSelectorLogo,
-  ModelSelectorName,
-  ModelSelectorTrigger,
-} from "@/components/ai-elements/model-selector";
 import { PromptInputButton } from "@/components/ai-elements/prompt-input";
-import { Button } from "@/components/ui/button";
+import { ModelProviderIcon } from "@/components/model-provider-icon";
+import {
+  Dialog,
+  DialogContent,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { Skeleton } from "@/components/ui/skeleton";
 import type { AppMessages } from "@/i18n";
 import { cn } from "@/lib/utils";
 import type { ModelConfig } from "@/types/resume";
-import { Check } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useState } from "react";
 import { toast } from "sonner";
 
-function getModelProvider(config: ModelConfig) {
-  return {
-    id: config.iconProvider || config.provider,
-    label: config.providerLabel || config.provider,
-  };
-}
+const loadModelSelectorMenu = () => import("./copilot-model-selector-menu");
+const CopilotModelSelectorMenu = lazy(loadModelSelectorMenu);
 
-function getModelDisplayName(config: ModelConfig) {
-  return config.nickname.trim() || config.model;
+function preloadModelSelectorMenu() {
+  void loadModelSelectorMenu().catch(() => undefined);
 }
 
 function getModelTriggerName(config: ModelConfig) {
@@ -42,16 +32,6 @@ function getModelTriggerName(config: ModelConfig) {
   }
 
   return raw.toUpperCase();
-}
-
-function getModelSecondaryName(config: ModelConfig) {
-  const nickname = config.nickname.trim();
-
-  if (!nickname || nickname === config.model) {
-    return null;
-  }
-
-  return config.model;
 }
 
 export function CopilotModelSelector({
@@ -74,23 +54,6 @@ export function CopilotModelSelector({
   t: AppMessages;
 }) {
   const [open, setOpen] = useState(false);
-  const modelGroups = useMemo(() => {
-    const grouped = new Map<string, { items: ModelConfig[] }>();
-
-    modelConfigs.forEach((config) => {
-      const provider = getModelProvider(config);
-      const current = grouped.get(provider.label);
-
-      if (current) {
-        current.items.push(config);
-        return;
-      }
-
-      grouped.set(provider.label, { items: [config] });
-    });
-
-    return Array.from(grouped.entries());
-  }, [modelConfigs]);
   const handleModelSelect = useCallback(
     (modelConfigId: string) => {
       const changed = modelConfigId !== selectedModelConfigId;
@@ -112,7 +75,7 @@ export function CopilotModelSelector({
   );
 
   const selectedModelConfigDisplayName = selectedModelConfig
-    ? getModelDisplayName(selectedModelConfig)
+    ? selectedModelConfig.nickname.trim() || selectedModelConfig.model
     : "";
   const selectedModelConfigTriggerName = selectedModelConfig
     ? getModelTriggerName(selectedModelConfig)
@@ -127,90 +90,68 @@ export function CopilotModelSelector({
     : t.agentModelConfigureHover;
 
   return (
-    <ModelSelector open={open} onOpenChange={setOpen}>
-      <ModelSelectorTrigger asChild>
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
         <PromptInputButton
           aria-label={triggerAriaLabel}
           className="h-8 w-fit min-w-0 max-w-full shrink justify-start text-foreground transition-colors duration-200"
           disabled={disabled}
+          onPointerEnter={preloadModelSelectorMenu}
+          onFocus={preloadModelSelectorMenu}
           size="sm"
           title={selectedModelConfig?.model || t.agentModelConfigureHover}
         >
           {selectedModelConfig ? (
-            <ModelSelectorLogo
-              provider={getModelProvider(selectedModelConfig).id}
+            <ModelProviderIcon
+              className="inline-flex size-4 shrink-0 items-center justify-center text-foreground"
+              provider={
+                selectedModelConfig.iconProvider || selectedModelConfig.provider
+              }
+              size={16}
+              type="color"
             />
           ) : (
             <span aria-hidden="true" className="size-4 shrink-0" />
           )}
-          <ModelSelectorName
+          <span
             className={cn(
-              "min-w-0 text-[12px] font-medium",
+              "flex-1 truncate text-left min-w-0 text-[12px] font-medium",
               !selectedModelConfig && "text-muted-foreground",
             )}
           >
             {selectedModelConfig
               ? selectedModelConfigTriggerName
               : t.agentModelNotConfigured}
-          </ModelSelectorName>
+          </span>
         </PromptInputButton>
-      </ModelSelectorTrigger>
-      <ModelSelectorContent title={t.agentSelectModel} closeLabel={t.close}>
-        <ModelSelectorInput placeholder={t.agentModelSearchPlaceholder} />
-        <ModelSelectorList>
-          <ModelSelectorEmpty>
-            {modelConfigs.length === 0 ? (
-              <div className="grid gap-3 px-4 py-5 text-center">
-                <p className="text-sm text-muted-foreground">
-                  {t.agentNoConfiguredModels}
-                </p>
-                <Button
-                  className="mx-auto h-8 rounded-xl px-3 text-xs"
-                  onClick={() => {
-                    setOpen(false);
-                    onOpenModelSettings();
-                  }}
-                  size="sm"
-                  type="button"
-                >
-                  {t.openModelSettings}
-                </Button>
-              </div>
-            ) : (
-              t.agentNoModelsFound
-            )}
-          </ModelSelectorEmpty>
-          {modelGroups.map(([groupName, group]) => (
-            <ModelSelectorGroup heading={groupName} key={groupName}>
-              {group.items.map((config) => (
-                <ModelSelectorItem
-                  key={config.id}
-                  keywords={[config.nickname, config.model]}
-                  onSelect={() => handleModelSelect(config.id)}
-                  value={config.id}
-                >
-                  <ModelSelectorLogo provider={getModelProvider(config).id} />
-                  <div className="flex min-w-0 flex-1 flex-col">
-                    <ModelSelectorName className="truncate font-medium">
-                      {getModelDisplayName(config)}
-                    </ModelSelectorName>
-                    {getModelSecondaryName(config) ? (
-                      <span className="truncate text-xs text-muted-foreground">
-                        {getModelSecondaryName(config)}
-                      </span>
-                    ) : null}
-                  </div>
-                  {selectedModelConfigId === config.id ? (
-                    <Check className="ml-auto size-4" />
-                  ) : (
-                    <div className="ml-auto size-4" />
-                  )}
-                </ModelSelectorItem>
-              ))}
-            </ModelSelectorGroup>
-          ))}
-        </ModelSelectorList>
-      </ModelSelectorContent>
-    </ModelSelector>
+      </DialogTrigger>
+      <DialogContent
+        aria-describedby={undefined}
+        className="outline! border-none! p-0 outline-border! outline-solid!"
+        closeLabel={t.close}
+      >
+        <DialogTitle className="sr-only">{t.agentSelectModel}</DialogTitle>
+        <Suspense
+          fallback={
+            <div aria-busy="true" className="grid gap-2 p-2">
+              <Skeleton className="h-12" />
+              <Skeleton className="h-12" />
+              <Skeleton className="h-12" />
+            </div>
+          }
+        >
+          <CopilotModelSelectorMenu
+            modelConfigs={modelConfigs}
+            selectedModelConfigId={selectedModelConfigId}
+            t={t}
+            onSelect={handleModelSelect}
+            onOpenModelSettings={() => {
+              setOpen(false);
+              onOpenModelSettings();
+            }}
+          />
+        </Suspense>
+      </DialogContent>
+    </Dialog>
   );
 }

@@ -63,6 +63,7 @@ export function useDocumentCanvas() {
     false,
   ]);
   const zoomRef = useRef<DocumentCanvasZoom>(zoom);
+  const saveScaleTimeoutRef = useRef<number | null>(null);
   const panSessionRef = useRef<PanSession | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const onScroll = (event: UIEvent<HTMLDivElement>) => {
@@ -113,7 +114,13 @@ export function useDocumentCanvas() {
         nextPaperBounds.left + nextPaperBounds.width * paperXRatio - clientX,
         nextPaperBounds.top + nextPaperBounds.height * paperYRatio - clientY,
       );
-      saveDocumentCanvasScale(scale);
+      if (saveScaleTimeoutRef.current !== null) {
+        window.clearTimeout(saveScaleTimeoutRef.current);
+      }
+      saveScaleTimeoutRef.current = window.setTimeout(() => {
+        saveScaleTimeoutRef.current = null;
+        saveDocumentCanvasScale(scale);
+      }, 150);
       zoomRef.current = [scale, fitToWidth];
       setZoom(zoomRef.current);
     },
@@ -138,20 +145,37 @@ export function useDocumentCanvas() {
         event.clientY,
       );
     };
+    const flushScale = () => {
+      if (saveScaleTimeoutRef.current !== null) {
+        window.clearTimeout(saveScaleTimeoutRef.current);
+        saveScaleTimeoutRef.current = null;
+        saveDocumentCanvasScale(zoomRef.current[0]);
+      }
+    };
 
     viewport.addEventListener("wheel", handleWheel, { passive: false });
+    window.addEventListener("pagehide", flushScale);
     viewport.style.setProperty("--canvas-scale", String(zoomRef.current[0]));
+    let resizeFrame = 0;
     const resizeObserver = new ResizeObserver(() => {
-      const [, currentlyFitsWidth] = zoomRef.current;
-      if (currentlyFitsWidth) {
-        setScale(null);
+      if (!zoomRef.current[1] || resizeFrame) {
+        return;
       }
+      resizeFrame = window.requestAnimationFrame(() => {
+        resizeFrame = 0;
+        if (zoomRef.current[1]) {
+          setScale(null);
+        }
+      });
     });
     resizeObserver.observe(viewport);
 
     return () => {
       viewport.removeEventListener("wheel", handleWheel);
+      window.removeEventListener("pagehide", flushScale);
       resizeObserver.disconnect();
+      window.cancelAnimationFrame(resizeFrame);
+      flushScale();
     };
   }, [setScale]);
 

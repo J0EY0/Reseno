@@ -291,6 +291,7 @@ test("workspace imports retain document boundaries and one main landmark", async
     "template-gallery-workspace-page.tsx",
     "models-workspace-page.tsx",
     "resume-detail-workspace-view.tsx",
+    "resume-workspace-columns.tsx",
     "template-detail-workspace-view.tsx",
   ]) {
     assert.equal(
@@ -410,6 +411,10 @@ async function renderResumeDetail({
         "@/components/workspace/resume-detail-agent-host": {
           ResumeDetailAgentHost: empty,
           ResumeDetailAgentToggle: empty,
+        },
+        "@/components/workspace/resume-workspace-columns": {
+          ResumeWorkspaceColumns: ({ editor, preview, agent }) =>
+            React.createElement(React.Fragment, null, editor, preview, agent),
         },
         "@/components/workspace/resume-detail-workspace-header": {
           ResumeDetailWorkspaceHeader: empty,
