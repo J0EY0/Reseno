@@ -1,9 +1,7 @@
-name: Model metadata
+name: Prepare release model metadata
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "17 3 * * 1"
 
 permissions:
   contents: read
@@ -36,23 +34,10 @@ jobs:
         run: uv sync --locked --all-groups
       - name: Generate bundled metadata
         working-directory: backend
-        run: |
-          cp app/services/model_metadata_snapshot.json "$RUNNER_TEMP/model-metadata-base.json"
-          uv run --locked python -m scripts.update_model_metadata
+        run: uv run --locked python -m scripts.update_model_metadata
       - name: Verify model metadata
         working-directory: backend
         run: uv run --locked pytest tests/test_model_metadata_*.py tests/test_thinking_mode.py -q
-      - name: Summarize metadata changes
-        working-directory: backend
-        run: |
-          uv run --locked python -m scripts.model_metadata_report \
-            --base "$RUNNER_TEMP/model-metadata-base.json" \
-            --updated app/services/model_metadata_snapshot.json \
-            --output "$RUNNER_TEMP/model-metadata-pr.md"
-          cat >> "$RUNNER_TEMP/model-metadata-pr.md" <<'EOF'
-
-          Validation: metadata generation, report, cache, discovery, and thinking mode tests passed in the update workflow.
-          EOF
       - name: Open or update metadata pull request
         env:
           GH_TOKEN: ${{ github.token }}
@@ -73,7 +58,10 @@ jobs:
           git push --force-with-lease="refs/heads/$UPDATE_BRANCH:$expected_head" origin "HEAD:refs/heads/$UPDATE_BRANCH"
           existing_pr="$(gh pr list --base "$BASE_BRANCH" --head "$UPDATE_BRANCH" --state open --json number --jq '.[0].number // empty')"
           if [ -z "$existing_pr" ]; then
+            cat > "$RUNNER_TEMP/model-metadata-pr.md" <<'EOF'
+          Prepares the next release by refreshing the bundled model catalog from LiteLLM and models.dev. Merge this pull request before tagging the verified release commit.
+
+          Validation: metadata generation, cache, discovery, and thinking mode tests passed in the update workflow.
+          EOF
             gh pr create --base "$BASE_BRANCH" --head "$UPDATE_BRANCH" --title "chore(models): refresh bundled model metadata" --body-file "$RUNNER_TEMP/model-metadata-pr.md"
-          else
-            gh pr edit "$existing_pr" --body-file "$RUNNER_TEMP/model-metadata-pr.md"
           fi
