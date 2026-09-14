@@ -68,7 +68,7 @@ def _source_files(tmp_path: Path) -> tuple[Path, Path]:
     return litellm_file, models_dev_file
 
 
-def test_offline_generation_is_compact_stable_and_independent_of_runtime_data(
+def test_offline_generation_is_readable_stable_and_independent_of_runtime_data(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -108,7 +108,7 @@ def test_offline_generation_is_compact_stable_and_independent_of_runtime_data(
     assert "other" not in snapshot["catalogs"]["litellm"]["providers"]
     source_bytes = litellm_file.stat().st_size + models_dev_file.stat().st_size
     assert len(first) < source_bytes / 10
-    assert first.count(b"\n") == 1
+    assert b'\n            "contextWindowTokens": 128000,\n' in first
 
     for source in (litellm_file, models_dev_file):
         catalog = json.loads(source.read_text(encoding="utf-8"))
