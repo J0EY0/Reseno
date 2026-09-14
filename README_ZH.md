@@ -210,14 +210,20 @@ DOCKER_BUILDKIT=1 docker build --pull -t reseno:local .
 发布 tag 必须采用 `vMAJOR.MINOR.PATCH` 格式，且指向已合入 `main` 的提交。预发布 tag 不会发布镜像。
 `latest` 指向最近一次发布的正式版本，`main` 指向最近一次构建成功的主线版本。需要固定版本的部署应使用版本标签或镜像 digest。
 
-将发布内容合入 `main` 后，在仓库根目录创建并推送一个尚未使用的版本 tag；例如首次发布 `v0.1.0`：
+将发布内容合入 `main` 后，打开 **Actions → Prepare release model metadata → Run workflow**，选择 `main` 并运行。
+这个手动步骤会刷新内置快照、运行模型资料测试，并创建或更新快照 Pull request。
+若 GitHub 提示审批工作流，先在该 Pull request 中点击 **Approve workflows to run**。
+等待检查通过后，将该 Pull request 合入 `main`，然后确认准备打 tag 的具体 `main` 提交已通过 **Quality** 检查。
+
+在仓库根目录创建并推送一个尚未使用的版本 tag。将 `VERIFIED_COMMIT_SHA` 替换为该提交的完整 SHA；例如首次发布 `v0.1.0`：
 
 ```bash
-git switch main
-git pull --ff-only origin main
-git tag -a v0.1.0 -m "Release v0.1.0"
+git fetch origin main
+git tag -a v0.1.0 VERIFIED_COMMIT_SHA -m "Release v0.1.0"
 git push origin v0.1.0
 ```
+
+镜像构建使用该提交中已保存的快照。部署后的实例继续在运行时刷新模型资料。
 
 工作流使用自身的 `GITHUB_TOKEN` 发布，无需配置 Docker Hub 凭据。首次发布后，将 GHCR 包的可见性设为公开，允许匿名拉取。
 如需禁止直接推送到 `main`，请设置分支保护，要求通过 Pull request 合并且质量检查通过。

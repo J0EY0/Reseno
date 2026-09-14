@@ -269,15 +269,26 @@ into `main`. Prerelease tags are not published. `latest` tracks the most recentl
 published release; `main` tracks the latest successful main-branch build.
 Use a version tag or image digest for deployments that should stay on a release.
 
-After merging a release into `main`, create and push an unused version tag
-from the repository root; for example, for the first `v0.1.0` release:
+After merging the release changes into `main`, open **Actions → Prepare release
+model metadata → Run workflow**, select `main`, and run it. This manual step
+refreshes the bundled snapshot, runs the model metadata tests, and creates or
+updates a snapshot pull request. If GitHub requests workflow approval, click
+**Approve workflows to run** on that pull request. Wait for its checks to pass,
+merge it into `main`, then confirm that **Quality** passed for the exact `main`
+commit you intend to tag.
+
+Create and push an unused version tag from the repository root. Replace
+`VERIFIED_COMMIT_SHA` with that commit's full SHA; for example, for the first
+`v0.1.0` release:
 
 ```bash
-git switch main
-git pull --ff-only origin main
-git tag -a v0.1.0 -m "Release v0.1.0"
+git fetch origin main
+git tag -a v0.1.0 VERIFIED_COMMIT_SHA -m "Release v0.1.0"
 git push origin v0.1.0
 ```
+
+Container builds use the snapshot stored in that commit. Deployed instances
+continue refreshing model metadata at runtime.
 
 The workflow uses its `GITHUB_TOKEN` to publish; no Docker Hub credentials
 are needed. After the first publication, set the GHCR package visibility to
