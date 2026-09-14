@@ -22,7 +22,7 @@ def _write_snapshot(output: Path, snapshot: dict[str, Any]) -> None:
         ensure_ascii=False,
         allow_nan=False,
         sort_keys=True,
-        separators=(",", ":"),
+        indent=2,
     ) + "\n"
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary: Path | None = None
