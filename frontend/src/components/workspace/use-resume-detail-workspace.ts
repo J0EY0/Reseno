@@ -7,7 +7,10 @@ import {
   useState,
 } from "react";
 import { useNavigate } from "react-router-dom";
-import { toast } from "sonner";
+import {
+  clearWorkspaceNavigationError,
+  showWorkspaceNavigationError,
+} from "@/components/workspace/workspace-navigation-notifications";
 
 import { useResumeDetailAgentLayout } from "@/components/workspace/use-resume-detail-agent-layout";
 import { useResumeDetailCommands } from "@/components/workspace/use-resume-detail-commands";
@@ -18,12 +21,10 @@ import { useResumeDetailModels } from "@/components/workspace/use-resume-detail-
 import { useWorkspacePreferences } from "@/components/workspace/workspace-preferences-context";
 import { useResumeDetailSave } from "@/components/workspace/use-resume-detail-save";
 import { useResumeDetailSession } from "@/components/workspace/use-resume-detail-session";
+import { useResumeResourceRecovery } from "@/components/workspace/use-resume-resource-recovery";
 import { usePreparedWorkspaceNavigation } from "@/components/workspace/use-prepared-workspace-navigation";
 import { useWorkspaceNavigationTransaction } from "@/components/workspace/use-workspace-navigation-transaction";
-import {
-  prepareResumeDetailRoute,
-  WORKSPACE_NAVIGATION_ERROR_TOAST_ID,
-} from "@/components/workspace/workspace-route-preparation";
+import { prepareResumeDetailRoute } from "@/components/workspace/workspace-route-preparation";
 import type { ResumeDetailWorkspaceModel } from "@/components/workspace/resume-detail-workspace-types";
 import type { AppMessages, Locale } from "@/i18n";
 import { useResumeAgentDraft } from "@/hooks/use-resume-agent-draft";
@@ -160,6 +161,7 @@ export function useResumeDetailWorkspace({
     save.hydratePersistedResume(detail, versions);
   }
   const saveResume = save.save;
+  const saveAndReload = useResumeResourceRecovery({ save, beginNavigation });
   const saveCheckpoint = useCallback(() => {
     void saveResume("checkpoint").catch(notifyApiError);
   }, [saveResume]);
@@ -254,7 +256,7 @@ export function useResumeDetailWorkspace({
           return;
         }
 
-        toast.dismiss(WORKSPACE_NAVIGATION_ERROR_TOAST_ID);
+        clearWorkspaceNavigationError();
         void prepareResumeDetailRoute(detail.resume.id, persistence, {
           signal: intent.signal,
         })
@@ -286,10 +288,7 @@ export function useResumeDetailWorkspace({
               "Failed to prepare the duplicated resume route.",
               error,
             );
-            toast.error(messages.loadError, {
-              closeButton: true,
-              id: WORKSPACE_NAVIGATION_ERROR_TOAST_ID,
-            });
+            showWorkspaceNavigationError(messages.loadError);
           });
       };
 
@@ -410,6 +409,7 @@ export function useResumeDetailWorkspace({
       restoreTemplateDefaults: documentCommands.restoreTemplateDefaults,
       retryLoad: loader.retryLoad,
       save: saveCheckpoint,
+      saveAndReload,
       saveAndLeave: leave.saveAndLeave,
       saveTitle: documentCommands.saveTitle,
       selectVersion,

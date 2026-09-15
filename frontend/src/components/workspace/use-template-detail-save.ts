@@ -152,14 +152,6 @@ export function useTemplateDetailSave({
     },
     [updatePersisted],
   );
-  const adoptPersistedTemplate = useCallback(
-    (nextTemplate: ResumeTemplateDefinition) =>
-      adoptResponse(
-        { template: nextTemplate, checkpoint: null },
-        createTemplateFingerprint(nextTemplate),
-      ),
-    [adoptResponse],
-  );
   const persist = useCallback(
     async (
       mode: TemplateSaveMode,
@@ -408,7 +400,6 @@ export function useTemplateDetailSave({
     [persisted.checkpoint, persisted.template, template],
   );
   return {
-    adoptPersistedTemplate,
     changeCount,
     discard,
     hasUnsavedChanges,

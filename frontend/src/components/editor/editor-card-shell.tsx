@@ -1,13 +1,11 @@
-import { ChevronDown, type LucideIcon } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 
-import { Button } from "@/components/ui/button";
+import { ResourceErrorBoundary } from "@/components/resource-error-boundary";
+import type { EditorSortActivator } from "@/components/editor/use-editor-sortable";
+import { EditorCollapseButton } from "@/components/editor/editor-collapse-button";
 import { Card, CardContent } from "@/components/ui/card";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
+import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 
 export function EditorCardShell({
@@ -18,6 +16,7 @@ export function EditorCardShell({
   collapsed,
   onToggle,
   headerAction,
+  sort,
   children,
 }: {
   icon: LucideIcon;
@@ -27,8 +26,11 @@ export function EditorCardShell({
   collapsed: boolean;
   onToggle: () => void;
   headerAction?: ReactNode;
+  sort?: EditorSortActivator;
   children: ReactNode;
 }) {
+  const Title = sort ? "button" : "div";
+
   return (
     <Card
       data-collapsed={collapsed ? "true" : "false"}
@@ -38,45 +40,49 @@ export function EditorCardShell({
       )}
     >
       <Collapsible open={!collapsed} onOpenChange={onToggle}>
-        <div className="flex min-h-[60px] items-center justify-between gap-3 px-4 py-3">
-          <div className="grid min-w-0 flex-1 grid-cols-[2.25rem_minmax(0,1fr)] items-center gap-2.5">
-            <div className="flex size-9 items-center justify-center rounded-xl bg-primary/8 text-primary">
-              <Icon className="size-4" />
-            </div>
-            <h3 className="flex min-w-0 items-baseline gap-2 text-sm font-semibold leading-5 tracking-tight">
-              <span className="min-w-0 truncate" title={title}>
-                {title}
+        <div
+          data-slot="editor-card-header"
+          className="flex min-h-[60px] items-center gap-2 px-4 py-3"
+        >
+          <h3 className="min-w-0 flex-1">
+            <Title
+              ref={sort?.setActivatorNodeRef}
+              {...sort?.attributes}
+              {...sort?.listeners}
+              type={sort ? "button" : undefined}
+              data-slot={sort ? "editor-sort-trigger" : "editor-title"}
+              aria-label={sort ? title : undefined}
+              className="flex min-h-9 w-full items-center gap-2.5 rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+            >
+              <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary/8 text-primary">
+                <Icon aria-hidden="true" className="size-4" />
               </span>
-              {titleMeta ? (
-                <span className="shrink-0 whitespace-nowrap text-xs font-normal leading-4 text-muted-foreground">
-                  {titleMeta}
+              <span className="flex min-w-0 items-baseline gap-2 text-sm font-semibold leading-5 tracking-tight">
+                <span className="min-w-0 truncate" title={title}>
+                  {title}
                 </span>
-              ) : null}
-            </h3>
-          </div>
+                {titleMeta ? (
+                  <span className="hidden shrink-0 whitespace-nowrap text-xs font-normal leading-4 text-muted-foreground sm:inline">
+                    {titleMeta}
+                  </span>
+                ) : null}
+              </span>
+            </Title>
+          </h3>
           <div className="flex shrink-0 items-center gap-1">
-            {headerAction}
-            <CollapsibleTrigger asChild>
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                aria-label={toggleLabel}
-              >
-                <ChevronDown
-                  className={cn(
-                    "size-4 transition-transform",
-                    collapsed && "-rotate-90",
-                  )}
-                />
-                <span className="sr-only">{toggleLabel}</span>
-              </Button>
-            </CollapsibleTrigger>
+            {headerAction ? (
+              <div className="editor-heading-actions">
+                <ResourceErrorBoundary className="fixed bottom-4 right-4 z-50 max-w-sm bg-background shadow-lg">
+                  {headerAction}
+                </ResourceErrorBoundary>
+              </div>
+            ) : null}
+            <EditorCollapseButton collapsed={collapsed} label={toggleLabel} />
           </div>
         </div>
         <CollapsibleContent className="collapsible-content">
           <CardContent className="collapsible-content-inner grid gap-4 border-t border-border/70 p-4">
-            {children}
+            <ResourceErrorBoundary>{children}</ResourceErrorBoundary>
           </CardContent>
         </CollapsibleContent>
       </Collapsible>

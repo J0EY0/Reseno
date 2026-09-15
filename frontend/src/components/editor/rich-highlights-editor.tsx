@@ -18,7 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 
 const richHighlightsEditorContentClassName =
-  "tiptap rich-text-editor rich-text-editor-scroll max-h-[160px] min-h-[120px] overflow-y-auto overscroll-contain cursor-text text-sm leading-[1.12] text-foreground outline-none";
+  "tiptap rich-text-editor rich-text-editor-scroll max-h-60 min-h-[calc(4lh_+_1.25rem)] overflow-y-auto overscroll-contain cursor-text px-3 py-2.5 text-sm leading-[1.45] text-foreground outline-none";
 
 function preventToolbarBlur(event: MouseEvent<HTMLButtonElement>) {
   event.preventDefault();
@@ -27,10 +27,12 @@ function preventToolbarBlur(event: MouseEvent<HTMLButtonElement>) {
 export function RichHighlightsEditor({
   t,
   value,
+  placeholder,
   onChange,
 }: {
   t: AppMessages;
   value: string[];
+  placeholder: string;
   onChange: (value: string) => void;
 }) {
   const editorValue = serializeHighlightsToHtml(value);
@@ -59,7 +61,7 @@ export function RichHighlightsEditor({
         Underline,
         ...resumeTextMarks,
         Placeholder.configure({
-          placeholder: t.placeholders.highlightItem,
+          placeholder,
           emptyEditorClass: "is-editor-empty",
         }),
       ],
@@ -73,7 +75,7 @@ export function RichHighlightsEditor({
         onChange(sanitizeRichTextHtml(currentEditor.getHTML()));
       },
     },
-    [t.placeholders.highlightItem],
+    [placeholder],
   );
 
   useEffect(() => {
@@ -166,13 +168,13 @@ export function RichHighlightsEditor({
 
       {editor ? (
         <div
-          className="min-h-[140px] bg-background/65 px-3 py-2.5"
+          className="bg-background/65"
           onClick={() => editor.chain().focus().run()}
         >
           <EditorContent editor={editor} />
         </div>
       ) : (
-        <div className="min-h-[140px] bg-background/65 px-3 py-2.5">
+        <div className="bg-background/65">
           <Skeleton>
             <div
               aria-hidden="true"

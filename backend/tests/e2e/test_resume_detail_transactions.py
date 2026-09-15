@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from playwright.sync_api import Browser, Page, Route, expect
 
-from tests.e2e.browser_support import authenticated_context
+from tests.e2e.browser_support import RouteReady, authenticated_context
 
 pytestmark = [
     pytest.mark.browser_smoke,
@@ -43,6 +43,7 @@ def test_version_response_preserves_new_editor_title_and_format_input(
     )
     page = context.new_page()
     pending: list[Route] = []
+    route_ready = RouteReady()
     try:
         created_response = page.request.post(
             f"{frontend_url}/api/resumes",
@@ -73,12 +74,18 @@ def test_version_response_preserves_new_editor_title_and_format_input(
         page.goto(f"{frontend_url}/resume/{resume_id}", wait_until="networkidle")
         _open_basic_info(page)
         pattern = f"**/api/resumes/{resume_id}/versions/{created['versionId']}"
-        page.route(pattern, lambda route: pending.append(route))
+
+        def hold_version(route: Route) -> None:
+            pending.append(route)
+            route_ready.set()
+
+        page.route(pattern, hold_version)
         page.get_by_role("button", name="历史版本", exact=True).click()
         with page.expect_request(lambda request: "/versions/" in request.url):
             page.locator(
                 '[data-slot="popover-content"][aria-label="历史版本"]'
             ).get_by_role("button").last.click()
+        route_ready.wait(page)
         assert pending
 
         name_input = page.get_by_role("textbox", name="姓名", exact=True)
@@ -134,6 +141,7 @@ def test_json_export_uses_saved_document_and_matching_custom_template(
     )
     page = context.new_page()
     pending: list[Route] = []
+    route_ready = RouteReady()
     has_held_save = False
 
     def hold_first_save(route: Route) -> None:
@@ -141,6 +149,7 @@ def test_json_export_uses_saved_document_and_matching_custom_template(
         if route.request.method == "PUT" and not has_held_save:
             has_held_save = True
             pending.append(route)
+            route_ready.set()
         else:
             route.continue_()
 
@@ -184,6 +193,7 @@ def test_json_export_uses_saved_document_and_matching_custom_template(
             page.get_by_role("button", name="导出", exact=True).click()
             with page.expect_request(lambda request: request.method == "PUT"):
                 page.get_by_role("menuitem", name="JSON", exact=True).click()
+            route_ready.wait(page)
             assert pending
             name_input.fill("Newer live name")
             page.get_by_role("button", name="格式", exact=True).click()

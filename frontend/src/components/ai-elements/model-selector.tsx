@@ -151,7 +151,6 @@ export const ModelSelectorLogo = ({
   provider,
   className,
   size = 16,
-  type = "color",
   ...props
 }: ModelSelectorLogoProps) => (
   <ModelProviderIcon
@@ -162,7 +161,6 @@ export const ModelSelectorLogo = ({
     )}
     provider={provider}
     size={size}
-    type={type}
   />
 );
 

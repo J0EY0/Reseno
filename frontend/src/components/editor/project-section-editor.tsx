@@ -1,4 +1,5 @@
 import { Input } from "@/components/ui/input";
+import { FieldGroup } from "@/components/ui/field";
 import type { ProjectItem } from "@/types/resume";
 
 import { FormField } from "./form-field";
@@ -35,8 +36,10 @@ export function ProjectSectionEditor({
   return section.items.map((item, index) => (
     <ResumeItemEditorShell
       key={item.id}
+      itemId={item.id}
       index={index}
       itemLabel={t.itemCountSingular}
+      title={item.name}
       initiallyOpen={item.id === initiallyOpenItemId}
       canMoveUp={index > 0}
       canMoveDown={index < section.items.length - 1}
@@ -48,7 +51,7 @@ export function ProjectSectionEditor({
       onMoveUp={() => onMoveItem(item.id, "up")}
       onMoveDown={() => onMoveItem(item.id, "down")}
     >
-      <div className="grid min-w-0 gap-3 md:grid-cols-2">
+      <FieldGroup className="min-w-0 gap-4">
         <FormField label={t.fieldLabels.projectName}>
           <InlineTextInput
             autoFocus={item.id === initiallyOpenItemId}
@@ -60,37 +63,39 @@ export function ProjectSectionEditor({
             onChange={(value) => updateItem(item, { name: value })}
           />
         </FormField>
-        <FormField label={t.fieldLabels.role}>
-          <InlineTextInput
-            t={t}
-            aria-label={t.fieldLabels.role}
-            value={item.role}
-            className={compactResumeFieldClassName}
-            placeholder={t.placeholders.role}
-            onChange={(value) => updateItem(item, { role: value })}
-          />
-        </FormField>
+        <FieldGroup className="grid min-w-0 gap-4 @min-[24rem]/field-group:grid-cols-2">
+          <FormField label={t.fieldLabels.role}>
+            <InlineTextInput
+              t={t}
+              aria-label={t.fieldLabels.role}
+              value={item.role}
+              className={compactResumeFieldClassName}
+              placeholder={t.placeholders.role}
+              onChange={(value) => updateItem(item, { role: value })}
+            />
+          </FormField>
+          <FormField label={t.fieldLabels.period}>
+            <InlineTextInput
+              t={t}
+              aria-label={t.fieldLabels.period}
+              value={item.period}
+              className={compactResumeFieldClassName}
+              placeholder={t.placeholders.period}
+              onChange={(value) => updateItem(item, { period: value })}
+            />
+          </FormField>
+        </FieldGroup>
         <FormField label={t.fieldLabels.techStack}>
           <InlineTextListInput
             t={t}
             aria-label={t.fieldLabels.techStack}
-            className={compactResumeFieldClassName}
+            className={`${compactResumeFieldClassName} h-auto min-h-9 whitespace-pre-wrap break-words [&>p]:min-w-0 [&>p]:shrink`}
             value={item.techStack}
             placeholder={t.placeholders.techStack}
             onChange={(techStack) => updateItem(item, { techStack })}
           />
         </FormField>
-        <FormField label={t.fieldLabels.period}>
-          <InlineTextInput
-            t={t}
-            aria-label={t.fieldLabels.period}
-            value={item.period}
-            className={compactResumeFieldClassName}
-            placeholder={t.placeholders.period}
-            onChange={(value) => updateItem(item, { period: value })}
-          />
-        </FormField>
-        <FormField label={t.fieldLabels.url} className="md:col-span-2">
+        <FormField label={t.fieldLabels.url}>
           <Input
             type="url"
             inputMode="url"
@@ -100,7 +105,7 @@ export function ProjectSectionEditor({
             onChange={(event) => updateItem(item, { url: event.target.value })}
           />
         </FormField>
-        <FormField label={t.fieldLabels.description} className="md:col-span-2">
+        <FormField label={t.fieldLabels.description}>
           <InlineTextInput
             t={t}
             aria-label={t.fieldLabels.description}
@@ -116,7 +121,7 @@ export function ProjectSectionEditor({
           value={item.highlights}
           onChange={(highlights) => updateItem(item, { highlights })}
         />
-      </div>
+      </FieldGroup>
     </ResumeItemEditorShell>
   ));
 }

@@ -33,8 +33,10 @@ export function EducationSectionEditor({
   return section.items.map((item, index) => (
     <ResumeItemEditorShell
       key={item.id}
+      itemId={item.id}
       index={index}
       itemLabel={t.itemCountSingular}
+      title={item.school}
       initiallyOpen={item.id === initiallyOpenItemId}
       canMoveUp={index > 0}
       canMoveDown={index < section.items.length - 1}

@@ -1,6 +1,8 @@
 import { useLayoutEffect, useState } from "react";
 import { useLocation, useNavigationType, useParams } from "react-router-dom";
 
+import { ResourceErrorBoundary } from "@/components/resource-error-boundary";
+import { ResourceRecoveryContext } from "@/components/resource-recovery-context";
 import { ResumeDetailWorkspaceView } from "@/components/workspace/resume-detail-workspace-view";
 import { useResumeDetailWorkspace } from "@/components/workspace/use-resume-detail-workspace";
 import { useWorkspacePreferences } from "@/components/workspace/workspace-preferences-context";
@@ -58,13 +60,22 @@ function ResumeDetailRouteOwner({
   });
 
   return (
-    <ResumeDetailWorkspaceView
-      locale={locale}
-      messages={messages}
-      model={workspace.model}
-      onLocaleChange={onLocaleChange}
-      previewRef={workspace.previewRef}
-    />
+    <ResourceRecoveryContext
+      value={{
+        messages,
+        saveAndReload: workspace.model.commands.saveAndReload,
+      }}
+    >
+      <ResourceErrorBoundary>
+        <ResumeDetailWorkspaceView
+          locale={locale}
+          messages={messages}
+          model={workspace.model}
+          onLocaleChange={onLocaleChange}
+          previewRef={workspace.previewRef}
+        />
+      </ResourceErrorBoundary>
+    </ResourceRecoveryContext>
   );
 }
 

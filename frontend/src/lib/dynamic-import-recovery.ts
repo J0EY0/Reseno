@@ -1,7 +1,5 @@
-const DYNAMIC_IMPORT_RELOAD_GUARD_KEY = "reseno-dynamic-import-reload-route";
-
 const DYNAMIC_IMPORT_ERROR_PATTERN =
-  /failed to fetch dynamically imported module|importing a module script failed|error loading dynamically imported module|chunkloaderror|loading chunk [^ ]+ failed/i;
+  /failed to fetch dynamically imported module|importing a module script failed|error loading dynamically imported module|chunkloaderror|loading chunk [^ ]+ failed|unable to preload css for /i;
 
 function getErrorMessage(error: unknown): string | null {
   if (typeof error === "string") {
@@ -44,58 +42,6 @@ export function getApplicationRouteErrorDetails(error: unknown) {
   };
 }
 
-function claimReloadForCurrentRoute() {
-  const routeKey = window.location.pathname;
-  try {
-    if (
-      window.sessionStorage.getItem(DYNAMIC_IMPORT_RELOAD_GUARD_KEY) ===
-      routeKey
-    ) {
-      return false;
-    }
-    window.sessionStorage.setItem(DYNAMIC_IMPORT_RELOAD_GUARD_KEY, routeKey);
-    return true;
-  } catch {
-    // Without durable session state an automatic reload could loop forever.
-    return false;
-  }
-}
-
 export function isDynamicImportFailure(error: unknown) {
   return getApplicationRouteErrorDetails(error).kind === "dynamic-import";
-}
-
-export function tryReloadAfterDynamicImportFailure(error: unknown) {
-  if (!isDynamicImportFailure(error) || !claimReloadForCurrentRoute()) {
-    return false;
-  }
-
-  window.location.reload();
-  return true;
-}
-
-export function clearDynamicImportReloadGuard() {
-  try {
-    window.sessionStorage.removeItem(DYNAMIC_IMPORT_RELOAD_GUARD_KEY);
-  } catch {
-    // Storage can be unavailable in privacy-restricted browser contexts.
-  }
-}
-
-export function installDynamicImportRecovery() {
-  const handlePreloadError = (event: Event) => {
-    // Vite emits this event specifically for failed dynamic-import preloads.
-    // Prevent the rejection only when this route owns a safe reload attempt.
-    if (!claimReloadForCurrentRoute()) {
-      return;
-    }
-
-    event.preventDefault();
-    window.location.reload();
-  };
-
-  window.addEventListener("vite:preloadError", handlePreloadError);
-  return () => {
-    window.removeEventListener("vite:preloadError", handlePreloadError);
-  };
 }

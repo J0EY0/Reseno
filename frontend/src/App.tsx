@@ -22,6 +22,7 @@ import {
 } from "@/lib/preference-api";
 import { useAuthGate } from "@/hooks/use-auth-gate";
 import { Spinner } from "@/components/ui/spinner";
+import { AuthSessionErrorBoundary } from "@/components/auth/auth-session-error-boundary";
 import { useOAuthLogin } from "@/hooks/use-oauth-login";
 import {
   getWorkspaceRouteLoader,
@@ -35,7 +36,6 @@ import {
   loadWorkspaceLateralLayout,
   loadWorkspacePreferencesProvider,
 } from "@/components/workspace/workspace-route-loaders";
-import { clearDynamicImportReloadGuard } from "@/lib/dynamic-import-recovery";
 import { createRouteLoader } from "@/lib/route-loader";
 
 const loadOAuthCallbackPage = createRouteLoader(
@@ -107,14 +107,6 @@ const appRouteFallback = (
   </div>
 );
 
-function DynamicImportRecoveryReset() {
-  const key = useLocation().key;
-
-  useEffect(clearDynamicImportReloadGuard, [key]);
-
-  return null;
-}
-
 function AppRouteSuspense({
   children,
   fallback = appRouteFallback,
@@ -122,12 +114,7 @@ function AppRouteSuspense({
   children: ReactNode;
   fallback?: ReactNode;
 }) {
-  return (
-    <Suspense fallback={fallback}>
-      {children}
-      <DynamicImportRecoveryReset />
-    </Suspense>
-  );
+  return <Suspense fallback={fallback}>{children}</Suspense>;
 }
 
 function OAuthCallbackRoute() {
@@ -474,9 +461,11 @@ function WorkspaceApp() {
         <Route path="*" element={<Navigate to="/resume" replace />} />
       </Routes>
       {authGate.sessionExpired ? (
-        <Suspense fallback={null}>
-          <AuthSessionDialog t={messages} onSubmitCredentials={login} />
-        </Suspense>
+        <AuthSessionErrorBoundary t={messages}>
+          <Suspense fallback={null}>
+            <AuthSessionDialog t={messages} onSubmitCredentials={login} />
+          </Suspense>
+        </AuthSessionErrorBoundary>
       ) : null}
     </>
   );

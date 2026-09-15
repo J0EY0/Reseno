@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 import pytest
 from playwright.sync_api import Browser, Page, expect
 
-from tests.e2e.browser_support import authenticated_context
+from tests.e2e.browser_support import RouteReady, authenticated_context
 
 pytestmark = [
     pytest.mark.browser_smoke,
@@ -132,6 +132,7 @@ def test_template_leave_resolves_an_active_save_without_losing_its_checkpoint(
     )
     page = context.new_page()
     held = []
+    route_ready = RouteReady()
     saves = []
     template_id: str | None = None
     errors: list[str] = []
@@ -151,6 +152,7 @@ def test_template_leave_resolves_an_active_save_without_losing_its_checkpoint(
             saves.append(route.request.post_data_json)
             if len(saves) == 1:
                 held.append(route)
+                route_ready.set()
             else:
                 route.continue_()
 
@@ -166,6 +168,7 @@ def test_template_leave_resolves_an_active_save_without_losing_its_checkpoint(
                 page.clock.fast_forward(5_000)
             else:
                 page.keyboard.press("Control+S")
+        route_ready.wait(page)
         assert len(held) == 1
         assert saves[0]["saveMode"] == save_mode
         _rename_template(page, "Newer template edit")

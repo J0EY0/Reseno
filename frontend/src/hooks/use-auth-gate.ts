@@ -187,17 +187,19 @@ export function useAuthGate({
   }, [authGate]);
 
   async function login(credentials: { username: string; password: string }) {
+    let fallbackError = loginFallbackError;
     try {
       await loginWithCredentials(credentials.username, credentials.password);
 
+      fallbackError = requestFallbackError;
       await acceptSession();
 
       return { ok: true as const };
     } catch (error) {
-      notifyApiError(error, loginFallbackError);
+      notifyApiError(error, fallbackError);
       return {
         ok: false as const,
-        error: error instanceof Error ? error.message : loginFallbackError,
+        error: error instanceof Error ? error.message : fallbackError,
         errorShown: true,
       };
     }

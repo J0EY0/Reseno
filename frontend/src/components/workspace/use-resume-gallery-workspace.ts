@@ -7,6 +7,10 @@ import {
   useState,
 } from "react";
 import { useNavigate } from "react-router-dom";
+import {
+  clearWorkspaceNavigationError,
+  showWorkspaceNavigationError,
+} from "@/components/workspace/workspace-navigation-notifications";
 import { toast } from "sonner";
 
 import { getMessagesSync, type AppMessages, type Locale } from "@/i18n";
@@ -29,7 +33,6 @@ import {
   prepareCreatedResumeDetailRoute,
   prepareResumeDetailRoute,
   preloadResumeDetailRoute,
-  WORKSPACE_NAVIGATION_ERROR_TOAST_ID,
 } from "@/components/workspace/workspace-route-preparation";
 import {
   useWorkspaceNavigationTransaction,
@@ -243,7 +246,7 @@ export function useResumeGalleryWorkspace({
         () => clearOpeningResume(resumeId),
         { once: true },
       );
-      toast.dismiss(WORKSPACE_NAVIGATION_ERROR_TOAST_ID);
+      clearWorkspaceNavigationError();
       let prepared: PreparedResumeDetailRouteData;
       try {
         prepared = await prepareResumeDetailRoute(resumeId, persistence, {
@@ -261,10 +264,7 @@ export function useResumeGalleryWorkspace({
         clearOpeningResume(resumeId);
         intent.finish();
         console.error("Failed to prepare the resume detail route.", error);
-        toast.error(messages.loadError, {
-          closeButton: true,
-          id: WORKSPACE_NAVIGATION_ERROR_TOAST_ID,
-        });
+        showWorkspaceNavigationError(messages.loadError);
         return;
       }
 
@@ -333,10 +333,7 @@ export function useResumeGalleryWorkspace({
           publishCreatedResume();
           intent.finish();
           console.error("Failed to prepare the created resume route.", error);
-          toast.error(messages.resumeCreatedOpenFailed, {
-            closeButton: true,
-            id: WORKSPACE_NAVIGATION_ERROR_TOAST_ID,
-          });
+          showWorkspaceNavigationError(messages.resumeCreatedOpenFailed);
           return;
         }
         commitResumeDetailNavigation(
@@ -440,10 +437,7 @@ export function useResumeGalleryWorkspace({
             return;
           intent.finish();
           console.error("Failed to prepare the imported resume route.", error);
-          toast.error(messages.loadError, {
-            closeButton: true,
-            id: WORKSPACE_NAVIGATION_ERROR_TOAST_ID,
-          });
+          showWorkspaceNavigationError(messages.loadError);
           return;
         }
         if (!operation.autoOpen) {

@@ -1,11 +1,11 @@
 import { startTransition, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { toast } from "sonner";
-
 import {
-  prepareWorkspaceRoute,
-  WORKSPACE_NAVIGATION_ERROR_TOAST_ID,
-} from "@/components/workspace/workspace-route-preparation";
+  clearWorkspaceNavigationError,
+  showWorkspaceNavigationError,
+} from "@/components/workspace/workspace-navigation-notifications";
+
+import { prepareWorkspaceRoute } from "@/components/workspace/workspace-route-preparation";
 import { preloadWorkspaceRoute } from "@/components/workspace/workspace-route-loaders";
 import { useWorkspaceNavigationTransaction } from "@/components/workspace/use-workspace-navigation-transaction";
 import { isAbortError } from "@/lib/api-client";
@@ -53,7 +53,7 @@ export function usePreparedWorkspaceNavigation({
           return;
         }
 
-        const commitNavigation = () => {
+        const commitNavigation = async () => {
           if (!intent.isCurrent()) {
             return;
           }
@@ -63,17 +63,14 @@ export function usePreparedWorkspaceNavigation({
             const state = createWorkspaceLateralRouteHandoff(prepared);
             handoffToken = state.token;
             intent.finish();
-            navigate(path, { state });
+            await navigate(path, { state });
           } catch (error) {
             if (handoffToken) {
               deleteWorkspaceHandoffToken(handoffToken);
             }
             intent.finish();
             console.error("Failed to commit the prepared route.", error);
-            toast.error(preparationErrorMessage, {
-              closeButton: true,
-              id: WORKSPACE_NAVIGATION_ERROR_TOAST_ID,
-            });
+            showWorkspaceNavigationError(preparationErrorMessage);
           }
         };
 
@@ -85,7 +82,7 @@ export function usePreparedWorkspaceNavigation({
           return;
         }
 
-        toast.dismiss(WORKSPACE_NAVIGATION_ERROR_TOAST_ID);
+        clearWorkspaceNavigationError();
         void prepareWorkspaceRoute(view, persistence, {
           signal: intent.signal,
         })
@@ -113,10 +110,7 @@ export function usePreparedWorkspaceNavigation({
             }
             intent.finish();
             console.error("Failed to prepare the workspace route.", error);
-            toast.error(preparationErrorMessage, {
-              closeButton: true,
-              id: WORKSPACE_NAVIGATION_ERROR_TOAST_ID,
-            });
+            showWorkspaceNavigationError(preparationErrorMessage);
           });
       };
 

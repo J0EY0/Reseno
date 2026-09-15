@@ -153,7 +153,6 @@ export function useTemplateDetailWorkspace({
     [],
   );
   const {
-    adoptPersistedTemplate,
     changeCount: saveChangeCount,
     discard,
     hasUnsavedChanges,
@@ -271,7 +270,6 @@ export function useTemplateDetailWorkspace({
         return;
       }
 
-      adoptPersistedTemplate(result.template);
       startTransition(() => {
         if (!intent.isCurrent()) {
           return;
@@ -308,7 +306,6 @@ export function useTemplateDetailWorkspace({
     isLoading,
     messages,
     navigate,
-    adoptPersistedTemplate,
     save,
     saveState,
     template,

@@ -367,7 +367,7 @@
         "location": "Shenzhen",
         "websiteLabel": "Portfolio",
         "website": "zhou.example.com",
-        "summary": "Four years of B2B experience, focused on complex workspaces, design systems, and reliable software delivery."
+        "summary": "Four years in complex B2B workspaces, design systems, and reliable delivery."
       },
       "experienceSectionTitle": "Experience",
       "projectSectionTitle": "Selected Project",
@@ -391,7 +391,7 @@
           "period": "2024.03 - Present",
           "description": "",
           "highlights": [
-            "Rebuilt permissions and form infrastructure, reducing the error rate in critical workflows by 31%.",
+            "Rebuilt permissions and form systems, cutting critical workflow errors by 31%.",
             "Expanded the design system to six product teams, shortening page delivery by 26%."
           ]
         },
@@ -402,7 +402,7 @@
           "period": "2022.07 - 2024.02",
           "description": "",
           "highlights": [
-            "Established performance and release budgets, reducing initial page load time by 38% and quarterly defects by 42%."
+            "Set performance and release budgets: initial load time down 38%, quarterly defects down 42%."
           ]
         }
       ],
@@ -1049,7 +1049,7 @@
     "period": "For example: 2022.07 - 2022.09",
     "description": "Optional: add a sentence of background information.",
     "highlights": "One highlight per line, for example:\nBuilt a component library and documented standards\nDrove page performance improvements, reducing initial load time by 30%",
-    "highlightItem": "Enter highlight content with paragraphs, lists, and basic rich-text formatting",
+    "highlightItem": "Describe your responsibilities, problems you solved, or results you achieved",
     "targetJob": "Paste a target job description here for AI keyword analysis.",
     "sectionName": "Leave blank to use the default section name"
   },
@@ -1099,6 +1099,9 @@
   "routeResourceLoadErrorDescription": "The page resources could not be loaded. Make sure the server is running, then try again.",
   "routeRuntimeErrorTitle": "Something went wrong",
   "routeRuntimeErrorDescription": "An error occurred while displaying this page. Return to your resumes or reload the page to try again.",
+  "resourceLoadError": "This part of the editor couldn't load. Your edits are preserved. Save and reload to try again.",
+  "resourceRecoverySaveError": "Couldn't save your edits. Check your connection and try again.",
+  "saveAndReload": "Save and reload",
   "reloadPage": "Reload Page",
   "paginationLabel": "Pagination",
   "agentPreviousSource": "Previous source",

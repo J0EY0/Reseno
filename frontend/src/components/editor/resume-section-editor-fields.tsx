@@ -24,11 +24,11 @@ function RichHighlightsEditorSkeleton({ value }: { value: string[] }) {
           <Skeleton key={index} className="size-8 rounded-md" />
         ))}
       </div>
-      <div className="min-h-[140px] bg-background/65 px-3 py-2.5">
+      <div className="bg-background/65">
         <Skeleton>
           <div
             aria-hidden="true"
-            className="tiptap rich-text-editor rich-text-editor-scroll invisible max-h-[160px] min-h-[120px] cursor-text overflow-y-auto overscroll-contain text-sm leading-[1.12] text-foreground outline-none"
+            className="tiptap rich-text-editor rich-text-editor-scroll invisible max-h-60 min-h-[calc(4lh_+_1.25rem)] cursor-text overflow-y-auto overscroll-contain px-3 py-2.5 text-sm leading-[1.45] text-foreground outline-none"
             dangerouslySetInnerHTML={{ __html: editorValue || "<p></p>" }}
           />
         </Skeleton>
@@ -50,7 +50,7 @@ export function HighlightsField({
     <FieldSet className="min-w-0 gap-2 md:col-span-2">
       <FieldLegend
         variant="label"
-        className="mb-0 break-words text-xs leading-tight text-muted-foreground"
+        className="mb-2 break-words leading-tight text-muted-foreground data-[variant=label]:text-xs"
       >
         {t.fieldLabels.highlights}
       </FieldLegend>
@@ -58,6 +58,7 @@ export function HighlightsField({
         <RichHighlightsEditor
           t={t}
           value={value}
+          placeholder={t.placeholders.highlightItem}
           onChange={(nextValue) =>
             onChange(isRichTextEmpty(nextValue) ? [] : [nextValue])
           }
@@ -80,7 +81,7 @@ export function SimpleContentField({
     <FieldSet className="min-w-0 gap-2">
       <FieldLegend
         variant="label"
-        className="mb-0 break-words text-xs leading-tight text-muted-foreground"
+        className="mb-2 break-words leading-tight text-muted-foreground data-[variant=label]:text-xs"
       >
         {t.fieldLabels.content}
       </FieldLegend>
@@ -94,6 +95,7 @@ export function SimpleContentField({
         <RichHighlightsEditor
           t={t}
           value={isRichTextEmpty(value) ? [] : [value]}
+          placeholder={t.placeholders.content}
           onChange={onChange}
         />
       </Suspense>

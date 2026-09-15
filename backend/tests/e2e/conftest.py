@@ -21,11 +21,58 @@ from app.services.model_metadata import (
     MODEL_METADATA_SNAPSHOT_PATH,
 )
 from tests.e2e.browser_support import browser_session
+from tests.e2e.diagnostics import DIAGNOSTICS, SERVER_LOGS, BrowserDiagnostics
 from tests.runtime_environment import runtime_environment
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 BACKEND_ROOT = REPOSITORY_ROOT / "backend"
 FRONTEND_ROOT = REPOSITORY_ROOT / "frontend"
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    artifacts_dir = os.environ.get("E2E_ARTIFACTS_DIR")
+    if not artifacts_dir:
+        return
+    try:
+        diagnostics = BrowserDiagnostics(Path(artifacts_dir), item.nodeid)
+    except OSError as error:
+        item.add_report_section("setup", "browser diagnostics", str(error))
+        return
+    item.stash[DIAGNOSTICS] = diagnostics
+    module = item.getparent(pytest.Module)
+    if module is not None:
+        module.stash[DIAGNOSTICS] = diagnostics
+
+
+@pytest.fixture(autouse=True)
+def browser_diagnostics(request: pytest.FixtureRequest) -> Iterator[None]:
+    diagnostics = request.node.stash.get(DIAGNOSTICS, None)
+    if diagnostics is None:
+        yield
+        return
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        diagnostics.install(monkeypatch)
+        try:
+            yield
+        finally:
+            diagnostics.finish_open_contexts()
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):
+    outcome = yield
+    report = outcome.get_result()
+    diagnostics = item.stash.get(DIAGNOSTICS, None)
+    if diagnostics is None:
+        return
+    diagnostics.report(report)
+    if report.failed:
+        module = item.getparent(pytest.Module)
+        if module is not None:
+            diagnostics.copy_logs(module.stash.get(SERVER_LOGS, {}))
+    if report.when == "teardown":
+        diagnostics.finish()
 
 
 def _unused_port() -> int:
@@ -81,13 +128,27 @@ def _stop_process(process: subprocess.Popen[str]) -> None:
 
 
 @pytest.fixture(scope="module")
-def workspace_servers() -> Iterator[tuple[str, str]]:
+def workspace_servers(request: pytest.FixtureRequest) -> Iterator[tuple[str, str]]:
     """Start isolated backend/frontend servers and seed one resume."""
 
     node = shutil.which("node")
     vite_cli = FRONTEND_ROOT / "node_modules" / "vite" / "bin" / "vite.js"
     if node is None or not vite_cli.exists():
         pytest.fail("Install frontend dependencies before running browser E2E tests.")
+
+    frontend_mode = os.getenv("E2E_FRONTEND_MODE", "dev")
+    if frontend_mode not in {"dev", "preview"}:
+        pytest.fail("E2E_FRONTEND_MODE must be dev or preview.")
+    frontend_command = [node, str(vite_cli)]
+    if frontend_mode == "preview":
+        dist = Path(
+            os.getenv("E2E_FRONTEND_DIST_DIR", str(FRONTEND_ROOT / "dist"))
+        ).resolve()
+        if not all(
+            (dist / name).is_file() for name in ("index.html", ".vite/manifest.json")
+        ):
+            pytest.fail(f"Build the production frontend with a manifest in {dist}.")
+        frontend_command.extend(["preview", "--outDir", str(dist)])
 
     backend_port = _unused_port()
     frontend_port = _unused_port()
@@ -98,6 +159,13 @@ def workspace_servers() -> Iterator[tuple[str, str]]:
 
     with tempfile.TemporaryDirectory(prefix="reseno-route-e2e-") as data_dir:
         data_path = Path(data_dir)
+        server_logs = {
+            "backend.log": data_path / "backend.log",
+            "frontend.log": data_path / "frontend.log",
+        }
+        module = request.node.getparent(pytest.Module)
+        if module is not None:
+            module.stash[SERVER_LOGS] = server_logs
         model_metadata_path = data_path / MODEL_METADATA_CACHE_NAME
         model_metadata_path.parent.mkdir(parents=True)
         model_metadata_snapshot = json.loads(
@@ -122,7 +190,7 @@ def workspace_servers() -> Iterator[tuple[str, str]]:
         }
 
         try:
-            backend_log = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
+            backend_log = server_logs["backend.log"].open(mode="w+", encoding="utf-8")
             logs.append(backend_log)
             backend_process = subprocess.Popen(
                 [
@@ -160,18 +228,19 @@ def workspace_servers() -> Iterator[tuple[str, str]]:
             with urllib.request.urlopen(setup_request, timeout=10) as response:
                 setup_payload = json.load(response)["data"]
             access_token = str(setup_payload["accessToken"])
-            browser_session.update({
-                "username": str(setup_payload["username"]),
-                "accessToken": access_token,
-                "expiresAt": str(setup_payload["expiresAt"]),
-            })
+            browser_session.update(
+                {
+                    "username": str(setup_payload["username"]),
+                    "accessToken": access_token,
+                    "expiresAt": str(setup_payload["expiresAt"]),
+                }
+            )
 
-            frontend_log = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
+            frontend_log = server_logs["frontend.log"].open(mode="w+", encoding="utf-8")
             logs.append(frontend_log)
             frontend_process = subprocess.Popen(
                 [
-                    node,
-                    str(vite_cli),
+                    *frontend_command,
                     "--host",
                     "127.0.0.1",
                     "--port",
@@ -204,6 +273,9 @@ def workspace_servers() -> Iterator[tuple[str, str]]:
         finally:
             for process in reversed(processes):
                 _stop_process(process)
+            diagnostics = request.node.stash.get(DIAGNOSTICS, None)
+            if diagnostics is not None:
+                diagnostics.copy_logs(server_logs)
             for log in logs:
                 log.close()
             browser_session.clear()

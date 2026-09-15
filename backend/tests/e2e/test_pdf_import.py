@@ -11,7 +11,7 @@ import pytest
 from playwright.sync_api import Browser, Route, expect
 from pypdf import PdfWriter
 
-from tests.e2e.browser_support import authenticated_context
+from tests.e2e.browser_support import RouteReady, authenticated_context
 
 pytestmark = [
     pytest.mark.browser_smoke,
@@ -101,12 +101,18 @@ def test_pdf_import_cancel_is_silent_while_parser_configuration_is_pending(
     context = authenticated_context(browser, locale="en-US")
     page = context.new_page()
     pending: list[Route] = []
+    route_ready = RouteReady()
     page_errors: list[str] = []
     page.on("pageerror", lambda error: page_errors.append(str(error)))
     try:
         before = page.request.get(f"{url}/api/resumes").json()["data"]["resumes"]
         page.goto(f"{url}/resume", wait_until="networkidle")
-        page.route("**/api/resume-import-lexicon", lambda route: pending.append(route))
+
+        def hold_configuration(route: Route) -> None:
+            pending.append(route)
+            route_ready.set()
+
+        page.route("**/api/resume-import-lexicon", hold_configuration)
         with page.expect_request("**/api/resume-import-lexicon"):
             page.locator('input[type="file"]').set_input_files(
                 {
@@ -115,6 +121,7 @@ def test_pdf_import_cancel_is_silent_while_parser_configuration_is_pending(
                     "buffer": _pdf(),
                 }
             )
+        route_ready.wait(page)
         expect(
             page.get_by_role("button", name=messages["resumeImportCancel"], exact=True)
         ).to_be_visible()

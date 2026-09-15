@@ -27,8 +27,6 @@ import type {
 } from "@/types/api";
 import type { WorkspaceView } from "@/types/resume";
 
-export const WORKSPACE_NAVIGATION_ERROR_TOAST_ID = "workspace-navigation-error";
-
 interface RoutePreparationOptions {
   signal: AbortSignal;
 }

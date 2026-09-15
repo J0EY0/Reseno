@@ -20,10 +20,7 @@ import {
   normalizeResumeTitle,
   truncateResumeTitle,
 } from "@/lib/resume-title";
-import {
-  fitResumeToOnePage,
-  type SmartOnePageStyleSnapshot,
-} from "@/lib/smart-one-page";
+import type { SmartOnePageStyleSnapshot } from "@/lib/smart-one-page";
 import { createTemplateSettings } from "@/lib/templates";
 import { duplicateResumeApi } from "@/lib/workspace-api";
 import type { ResumeDetailResponse } from "@/types/api";
@@ -191,6 +188,8 @@ export function useResumeDetailCommands({
       ...(session.templateSettings ?? {}),
     });
     try {
+      const { fitResumeToOnePage } = await import("@/lib/smart-one-page");
+      controller.signal.throwIfAborted();
       const result = await fitResumeToOnePage(previous, effectiveSettings, {
         applyStyle(snapshot) {
           controller.signal.throwIfAborted();

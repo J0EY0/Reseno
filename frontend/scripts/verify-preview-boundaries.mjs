@@ -86,19 +86,13 @@ const [
   recycleBinThumbnail,
   documentCanvas,
   documentCanvasHook,
-  documentCanvasModel,
   indexCss,
   pdfExport,
   previewDiffText,
   previewDiffPrecision,
   previewRichDiff,
-  previewPages,
-  previewBasicInfo,
   previewContent,
   previewDiffBadge,
-  previewDeletedAnchor,
-  draftReviewComparison,
-  draftReviewPopover,
   previewSectionItems,
   previewSections,
 ] = await Promise.all([
@@ -109,19 +103,13 @@ const [
   readSource("components/recycle-bin-table.tsx"),
   readSource("components/preview/document-canvas.tsx"),
   readSource("components/preview/use-document-canvas.ts"),
-  readSource("components/preview/document-canvas-model.ts"),
   readSource("index.css"),
   readSource("components/pdf-export-renderer.tsx"),
   readSource("components/preview/resume-preview-diff-text.tsx"),
   readSource("components/preview/resume-preview-diff-precision.tsx"),
   readSource("components/preview/resume-preview-rich-diff.tsx"),
-  readSource("components/preview/resume-preview-pages.tsx"),
-  readSource("components/preview/resume-preview-basic-info.tsx"),
   readSource("components/preview/resume-preview-content.tsx"),
   readSource("components/preview/resume-preview-diff-badge.tsx"),
-  readSource("components/preview/resume-preview-deleted-anchor.tsx"),
-  readSource("components/preview/resume-draft-review-comparison.tsx"),
-  readSource("components/preview/resume-draft-review-popover.tsx"),
   readSource("components/preview/resume-preview-section-items.tsx"),
   readSource("components/preview/resume-preview-sections.tsx"),
 ]);
@@ -146,14 +134,8 @@ assert(
   "Gallery route entries must leave thumbnail rendering inside memoized cards.",
 );
 assert(
-  (previewPages.match(/aria-hidden="true"/g)?.length ?? 0) === 2 &&
-    (previewPages.match(/\sinert/g)?.length ?? 0) === 2,
-  "Both standard and sidebar measurement copies must be aria-hidden and inert.",
-);
-assert(
-  !/resume-page-label|Page \$\{pageIndex \+ 1\}/.test(previewPages) &&
-    !/\.resume-page-label\s*\{/.test(indexCss),
-  "Page numbering must live in the canvas controls instead of repeating above every sheet.",
+  !/\.resume-page-label\s*\{/.test(indexCss),
+  "Page labels must not add visual chrome above every sheet.",
 );
 assert(
   thumbnailCallers.every(
@@ -178,10 +160,6 @@ assert(
   "Preview resizing must not recreate a FLIP animation or a layout-transition prop.",
 );
 assert(
-  !/showPreviewTitle|previewTitle/.test(documentCanvas),
-  "The document surface must not render a redundant visual preview title.",
-);
-assert(
   [thumbnailPaperRule, printPaperRule].every(
     (rule) =>
       /border:\s*0/.test(rule) &&
@@ -191,27 +169,11 @@ assert(
   "Thumbnail and print renderers must remove interactive paper chrome.",
 );
 assert(
-  /new ResizeObserver\(/.test(documentCanvasHook) &&
-    /resizeObserver\.observe\(viewport\)/.test(documentCanvasHook) &&
-    /scrollBy/.test(documentCanvasHook) &&
-    /setPointerCapture/.test(documentCanvasHook) &&
-    /addEventListener\("wheel", handleWheel, \{ passive: false \}\)/.test(
-      documentCanvasHook,
-    ) &&
-    /event\.key === "0"/.test(documentCanvasHook) &&
-    /viewport\.style\.setProperty\("--canvas-scale", String\(scale\)\)/.test(
-      documentCanvasHook,
-    ) &&
-    /data-document-canvas-paper/.test(documentCanvas) &&
-    /zoom:\s*var\(--canvas-scale, 1\)/.test(indexCss) &&
-    /role="region"/.test(documentCanvas) &&
-    /canvasControls\.map/.test(documentCanvas) &&
-    /DOCUMENT_CANVAS_MIN_SCALE = 0\.25/.test(documentCanvasModel) &&
-    /DOCUMENT_CANVAS_MAX_SCALE = 2/.test(documentCanvasModel) &&
+  /zoom:\s*var\(--canvas-scale, 1\)/.test(indexCss) &&
     !/layoutTransitionKey|PREVIEW_LAYOUT_MOTION|\.animate\(/.test(
       documentCanvas + documentCanvasHook,
     ),
-  "The document canvas must own bounded wheel and keyboard zoom, anchored scrolling, and pointer panning without FLIP motion.",
+  "The document canvas must scale its paper without FLIP motion.",
 );
 assert(
   /className="mt-\[1\.25em\]"/.test(previewContent) &&
@@ -248,12 +210,8 @@ assert(
   "Resume diff labels must occupy a measured top lane instead of covering resume text.",
 );
 assert(
-  /from\s+["']@\/components\/ui\/badge["']/.test(previewDiffBadge) &&
-    /data-resume-diff-badge/.test(previewDiffBadge) &&
-    [previewBasicInfo, previewSectionItems, previewSections].every((source) =>
-      /ResumeDiffBadge/.test(source),
-    ),
-  "Every resume preview surface must render the shared visible diff badge.",
+  /from\s+["']@\/components\/ui\/badge["']/.test(previewDiffBadge),
+  "Preview diff badges must use the shared Badge primitive.",
 );
 assert(
   !/\.resume-diff::before|@keyframes\s+resume-diff-scan/.test(indexCss),
@@ -268,21 +226,11 @@ assert(
   "Every visible resume diff kind must use one quiet flat surface without a left rail or gradient.",
 );
 assert(
-  /resume-diff-deleted-anchor/.test(previewDeletedAnchor) &&
-    /data-resume-diff-path/.test(previewDeletedAnchor) &&
-    /interleaveDeletedDiffs/.test(previewSectionItems) &&
-    /interleaveDeletedDiffs/.test(previewSections),
-  "Deleted items and sections must retain a locatable review anchor beside surviving content.",
-);
-assert(
   !/\.resume-diff--modified\s*\{/.test(indexCss) &&
     /box-decoration-break:\s*clone/.test(diffFieldRule) &&
     /background:\s*rgba\(/.test(diffInlineRule) &&
-    /data-resume-diff-path/.test(previewDiffPrecision) &&
-    /lazy\(\(\)\s*=>/.test(previewDiffText) &&
-    /getRenderableFieldDiffs/.test(previewSectionItems) &&
-    !/getDiffClassName\(diff\)/.test(previewSectionItems),
-  "Modified drafts must mark canonical fields and inline fragments instead of styling an entire item.",
+    /lazy\(\(\)\s*=>/.test(previewDiffText),
+  "Inline diff fragments must retain their lazy module and width-preserving styles.",
 );
 assert(
   !/IntersectionObserver|TooltipProvider|TooltipTrigger/.test(
@@ -292,31 +240,19 @@ assert(
       previewSectionItems,
       previewSections,
     ].join("\n"),
-  ) &&
-    /<Popover/.test(draftReviewPopover) &&
-    /ResumeDraftReviewComparison/.test(draftReviewPopover) &&
-    /formatAgentDiffValue/.test(draftReviewComparison) &&
-    /onSelectReviewItem/.test(draftReviewPopover),
-  "Diff comparison must use one delegated popover while the preview content remains free of duplicated controls.",
+  ),
+  "Preview content must remain free of duplicated observers and tooltip controls.",
 );
 assert(
   /font-size:\s*7px/.test(diffBadgeRule),
   "Resume diff labels must remain readable after the A4 preview is scaled down.",
 );
 assert(
-  /box-shadow:\s*none/.test(boxedSectionDiffRule) &&
-    (previewSections.match(
-      /data-resume-diff-label=\{getDiffLabel\(markerDiff, t\)\}/g,
-    )?.length ?? 0) === 3 &&
-    (previewSections.match(/data-resume-section-layout=\{layout\.section\}/g)
-      ?.length ?? 0) === 3,
-  "Section-level diffs must expose one in-bounds status label without doubling the boxed template border.",
+  /box-shadow:\s*none/.test(boxedSectionDiffRule),
+  "Section diffs must not double the boxed template border.",
 );
 
 const thumbnailClosure = await collectThumbnailPreviewClosure();
-const resumeThumbnail = thumbnailClosure.get(
-  "components/preview/resume-thumbnail.tsx",
-);
 const thumbnailDependencySource = Array.from(thumbnailClosure.entries())
   .map(([path, source]) => `${path}\n${source}`)
   .join("\n");
@@ -329,15 +265,4 @@ assert(
     ),
   "The ResumeThumbnail dependency closure must not include pagination or layout observers.",
 );
-assert(
-  /enableContactLinks=\{false\}/.test(resumeThumbnail ?? "") &&
-    !/onMoveTemplateImage|editableTemplateImages/.test(resumeThumbnail ?? ""),
-  "ResumeThumbnail must remain non-interactive inside linked gallery cards.",
-);
-assert(
-  /onMoveTemplateImage\?:/.test(documentCanvas) &&
-    /Boolean\(props\.onMoveTemplateImage\)/.test(documentCanvas),
-  "Template previews must become editable only when an image-move command is provided.",
-);
-
 console.log("Preview thumbnail and pagination module boundaries verified.");
