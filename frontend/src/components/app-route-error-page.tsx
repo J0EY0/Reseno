@@ -9,10 +9,7 @@ import {
 } from "@/i18n";
 import { loadLocalePreferenceApi } from "@/lib/preference-api";
 
-import {
-  getApplicationRouteErrorDetails,
-  tryReloadAfterDynamicImportFailure,
-} from "@/lib/dynamic-import-recovery";
+import { getApplicationRouteErrorDetails } from "@/lib/dynamic-import-recovery";
 
 export function AppRouteErrorPage() {
   const error = useRouteError();
@@ -33,10 +30,7 @@ export function AppRouteErrorPage() {
 
   useEffect(() => {
     console.error("Application route rendering failed.", error);
-    if (isDynamicImportError) {
-      tryReloadAfterDynamicImportFailure(error);
-    }
-  }, [error, isDynamicImportError]);
+  }, [error]);
 
   return (
     <main

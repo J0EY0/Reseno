@@ -12,6 +12,7 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 .uv-cache/
+test-results/
 
 # Database files
 *.db

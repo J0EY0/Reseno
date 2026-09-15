@@ -7,9 +7,9 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from playwright.sync_api import Browser, Locator, Page, expect
+from playwright.sync_api import Browser, Locator, Page, Route, expect
 
-from tests.e2e.browser_support import authenticated_context
+from tests.e2e.browser_support import RouteReady, authenticated_context
 
 pytestmark = [
     pytest.mark.browser_smoke,
@@ -367,6 +367,7 @@ def test_catalog_context_lookup_ignores_changed_form_during_request(
     context = authenticated_context(browser, locale="en-US")
     page = context.new_page()
     pending = []
+    route_ready = RouteReady()
     try:
         dialog = _open_manual_model(page, url, "Custom")
         dialog.locator("#model-output-settings").click()
@@ -374,13 +375,18 @@ def test_catalog_context_lookup_ignores_changed_form_during_request(
         context_input = dialog.locator("#model-context-window")
         model.fill("first-model")
         context_input.fill("64000")
-        page.route(
-            "**/api/model-providers/context-window", lambda route: pending.append(route)
-        )
+
+        def hold_lookup(route: Route) -> None:
+            pending.append(route)
+            route_ready.set()
+
+        page.route("**/api/model-providers/context-window", hold_lookup)
         for changed_field in ("model", "context", "provider"):
             button = dialog.get_by_role("button", name="Autofill", exact=True)
+            route_ready.clear()
             with page.expect_request("**/api/model-providers/context-window"):
                 button.click()
+            route_ready.wait(page)
             assert pending
             expect(button).to_be_disabled()
             if changed_field == "model":

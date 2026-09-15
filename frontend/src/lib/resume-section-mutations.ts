@@ -27,6 +27,7 @@ type RestoreItemMutation = {
 
 export type ResumeSectionMutation =
   | { type: "section.rename"; sectionId: string; title: string }
+  | { type: "section.reorder"; sectionId: string; overId: string }
   | { type: "item.add"; sectionId: string; itemId?: string }
   | { type: "item.remove"; sectionId: string; itemId: string }
   | {
@@ -34,6 +35,13 @@ export type ResumeSectionMutation =
       sectionId: string;
       itemId: string;
       direction: "up" | "down";
+    }
+  | {
+      type: "item.reorder";
+      sectionId: string;
+      sectionKind: SectionKind;
+      itemId: string;
+      overId: string;
     }
   | RestoreItemMutation
   | UpdateItemMutation;
@@ -73,11 +81,28 @@ export function applySectionMutation(
   sections: ResumeSection[],
   mutation: ResumeSectionMutation,
 ): ResumeSectionMutationResult {
-  const section = sections.find(
+  const sectionIndex = sections.findIndex(
     (candidate) => candidate.id === mutation.sectionId,
   );
+  const section = sections[sectionIndex];
   if (!section) {
     return { status: "rejected", sections, code: "SECTION_NOT_FOUND" };
+  }
+
+  if (mutation.type === "section.reorder") {
+    const targetIndex = sections.findIndex(
+      (candidate) => candidate.id === mutation.overId,
+    );
+    if (targetIndex < 0) {
+      return { status: "rejected", sections, code: "SECTION_NOT_FOUND" };
+    }
+    if (targetIndex === sectionIndex) {
+      return { status: "unchanged", sections };
+    }
+    const nextSections = [...sections];
+    nextSections.splice(sectionIndex, 1);
+    nextSections.splice(targetIndex, 0, section);
+    return { status: "applied", sections: nextSections };
   }
 
   if (mutation.type === "section.rename") {
@@ -168,9 +193,15 @@ export function applySectionMutation(
     };
   }
 
-  if (mutation.type === "item.move") {
+  if (mutation.type === "item.move" || mutation.type === "item.reorder") {
     if (section.kind === "simple_list") {
       return { status: "rejected", sections, code: "SIMPLE_LIST_CARDINALITY" };
+    }
+    if (
+      mutation.type === "item.reorder" &&
+      section.kind !== mutation.sectionKind
+    ) {
+      return { status: "rejected", sections, code: "SECTION_KIND_MISMATCH" };
     }
     const currentIndex = section.items.findIndex(
       (item) => item.id === mutation.itemId,
@@ -179,8 +210,17 @@ export function applySectionMutation(
       return { status: "rejected", sections, code: "ITEM_NOT_FOUND" };
     }
     const targetIndex =
-      mutation.direction === "up" ? currentIndex - 1 : currentIndex + 1;
-    if (targetIndex < 0 || targetIndex >= section.items.length) {
+      mutation.type === "item.reorder"
+        ? section.items.findIndex((item) => item.id === mutation.overId)
+        : currentIndex + (mutation.direction === "up" ? -1 : 1);
+    if (mutation.type === "item.reorder" && targetIndex < 0) {
+      return { status: "rejected", sections, code: "ITEM_NOT_FOUND" };
+    }
+    if (
+      targetIndex === currentIndex ||
+      targetIndex < 0 ||
+      targetIndex >= section.items.length
+    ) {
       return { status: "unchanged", sections };
     }
 

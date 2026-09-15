@@ -10,7 +10,7 @@ from uuid import uuid4
 import pytest
 from playwright.sync_api import Browser, Page, Route, expect
 
-from tests.e2e.browser_support import authenticated_context
+from tests.e2e.browser_support import RouteReady, authenticated_context
 
 pytestmark = [
     pytest.mark.browser_smoke,
@@ -84,6 +84,7 @@ def test_model_delete_preserves_creation_completed_while_delete_waits(
     page = context.new_page()
     prefix = f"Model-{uuid4().hex[:8]}"
     pending: list[Route] = []
+    route_ready = RouteReady()
     provider = {
         "id": "ollama",
         "label": "Ollama",
@@ -127,9 +128,12 @@ def test_model_delete_preserves_creation_completed_while_delete_waits(
             ),
         )
         page.goto(f"{url}/models", wait_until="networkidle")
-        page.route(
-            f"**/api/model-configs/{model_id}", lambda route: pending.append(route)
-        )
+
+        def hold_delete(route: Route) -> None:
+            pending.append(route)
+            route_ready.set()
+
+        page.route(f"**/api/model-configs/{model_id}", hold_delete)
         row = page.get_by_role("row").filter(has_text=prefix + " A")
         row.get_by_role("button", name="操作", exact=True).click()
         page.get_by_role("menuitem", name="删除", exact=True).click()
@@ -137,6 +141,7 @@ def test_model_delete_preserves_creation_completed_while_delete_waits(
             page.get_by_role("alertdialog").get_by_role(
                 "button", name="删除模型"
             ).click()
+        route_ready.wait(page)
         assert pending
         page.get_by_role("button", name="新建模型", exact=True).click()
         expect(page.locator("#model-nickname")).to_be_focused()
@@ -355,6 +360,7 @@ def test_model_discovery_preserves_new_provider_and_its_pending_request(
     context = authenticated_context(browser, locale="zh-CN")
     page = context.new_page()
     pending: dict[str, Route] = {}
+    route_ready = {provider: RouteReady() for provider in ("openai", "deepseek")}
     providers = [
         {
             "id": provider,
@@ -400,6 +406,7 @@ def test_model_discovery_preserves_new_provider_and_its_pending_request(
         data = route.request.post_data_json
         if data.get("refresh"):
             pending[data["provider"]] = route
+            route_ready[data["provider"]].set()
         else:
             route.fulfill(json=discovery_data(data["provider"] + " cached"))
 
@@ -422,6 +429,7 @@ def test_model_discovery_preserves_new_provider_and_its_pending_request(
             lambda request: bool(request.post_data_json.get("refresh"))
         ):
             page.locator("#model-discovery").click()
+        route_ready["openai"].wait(page)
         page.locator("#model-provider").click()
         page.get_by_role("option", name="Beta", exact=False).click()
         expect(page.locator("#model-select")).to_have_text("deepseek cached")
@@ -429,6 +437,7 @@ def test_model_discovery_preserves_new_provider_and_its_pending_request(
             lambda request: bool(request.post_data_json.get("refresh"))
         ):
             page.locator("#model-discovery").click()
+        route_ready["deepseek"].wait(page)
         stale = pending.pop("openai")
         stale.fulfill(status=stale_status, json=discovery_data("stale model"))
         expect(page.locator("#model-select")).to_have_text("deepseek cached")

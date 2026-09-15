@@ -105,7 +105,7 @@ export const routeBudgets = [
     forbiddenStaticEntries: ["src/components/resume-builder.tsx"],
     // The final dialog ships with the already-lazy route so first open never
     // swaps a nested lazy Spinner surface for the form.
-    maxGzipBytes: 262 * KIB,
+    maxGzipBytes: 251 * KIB,
   },
   {
     name: "settings",
@@ -116,7 +116,7 @@ export const routeBudgets = [
       "src/components/workspace/settings-workspace-page.tsx",
     ],
     forbiddenStaticEntries: ["src/components/resume-builder.tsx"],
-    maxGzipBytes: 233 * KIB,
+    maxGzipBytes: 222 * KIB,
   },
   {
     name: "Agent",
@@ -128,6 +128,6 @@ export const routeBudgets = [
       "src/components/preview/document-canvas.tsx",
     ],
     forbiddenStaticEntries: ["src/components/resume-builder.tsx"],
-    maxGzipBytes: 320 * KIB,
+    maxGzipBytes: 310 * KIB,
   },
 ];

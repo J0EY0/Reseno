@@ -8,6 +8,10 @@ import {
   useState,
 } from "react";
 import { useNavigate } from "react-router-dom";
+import {
+  clearWorkspaceNavigationError,
+  showWorkspaceNavigationError,
+} from "@/components/workspace/workspace-navigation-notifications";
 import { toast } from "sonner";
 
 import { getMessagesSync, type AppMessages, type Locale } from "@/i18n";
@@ -26,7 +30,6 @@ import {
   fetchWorkspacePageData,
   prepareTemplateDetailRoute,
   preloadTemplateDetailRoute,
-  WORKSPACE_NAVIGATION_ERROR_TOAST_ID,
 } from "@/components/workspace/workspace-route-preparation";
 import {
   useWorkspaceNavigationTransaction,
@@ -261,7 +264,7 @@ export function useTemplateGalleryWorkspace({
         () => clearOpeningTemplate(templateId),
         { once: true },
       );
-      toast.dismiss(WORKSPACE_NAVIGATION_ERROR_TOAST_ID);
+      clearWorkspaceNavigationError();
       let data: PreparedTemplateDetailRouteData;
       try {
         data = await prepareTemplateDetailRoute(templateId, persistence, {
@@ -279,10 +282,7 @@ export function useTemplateGalleryWorkspace({
         clearOpeningTemplate(templateId);
         intent.finish();
         console.error("Failed to prepare the template detail route.", error);
-        toast.error(messages.loadError, {
-          closeButton: true,
-          id: WORKSPACE_NAVIGATION_ERROR_TOAST_ID,
-        });
+        showWorkspaceNavigationError(messages.loadError);
         return;
       }
 
@@ -343,10 +343,7 @@ export function useTemplateGalleryWorkspace({
         publishCreatedTemplate();
         intent.finish();
         console.error("Failed to prepare the created template route.", error);
-        toast.error(messages.templateCreatedOpenFailed, {
-          closeButton: true,
-          id: WORKSPACE_NAVIGATION_ERROR_TOAST_ID,
-        });
+        showWorkspaceNavigationError(messages.templateCreatedOpenFailed);
         return;
       }
       commitTemplateDetailNavigation(
@@ -460,10 +457,7 @@ export function useTemplateGalleryWorkspace({
             "Failed to prepare the imported template route.",
             error,
           );
-          toast.error(messages.loadError, {
-            closeButton: true,
-            id: WORKSPACE_NAVIGATION_ERROR_TOAST_ID,
-          });
+          showWorkspaceNavigationError(messages.loadError);
           return;
         }
         const firstImportedTemplate = savedImports.find((saved) =>

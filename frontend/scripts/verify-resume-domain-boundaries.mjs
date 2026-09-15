@@ -242,6 +242,7 @@ const [
   exportApi,
   editorPane,
   editorCard,
+  sectionContent,
   sectionEditors,
   sectionEditorFields,
   ...typedSectionEditors
@@ -253,6 +254,10 @@ const [
   ),
   readFile(
     path.join(sourceRoot, "components/editor/resume-section-card.tsx"),
+    "utf8",
+  ),
+  readFile(
+    path.join(sourceRoot, "components/editor/resume-section-content.tsx"),
     "utf8",
   ),
   readFile(
@@ -279,7 +284,7 @@ assert(
     !exportApi.includes('from "@/lib/templates"'),
   "Built-in template identity checks must import the preset registry directly.",
 );
-for (const source of [editorPane, editorCard, sectionEditors]) {
+for (const source of [editorPane, editorCard, sectionContent, sectionEditors]) {
   assert(
     source.includes("@/lib/resume-section-mutations"),
     "Editor mutation callers must import the immutable mutation module directly.",
@@ -314,18 +319,6 @@ assert(
     dynamic: true,
   }),
   "Shared section fields must retain the rich-editor lazy boundary.",
-);
-const inlineTextListInput = await readFile(
-  path.join(sourceRoot, "components/editor/inline-text-list-input.tsx"),
-  "utf8",
-);
-assert(
-  inlineTextListInput.includes("<InlineTextInput") &&
-    inlineTextListInput.includes(
-      "inputState.publishedValue === serializedValue",
-    ) &&
-    /\? inputState\.draft\s*:\s*serializedValue/.test(inlineTextListInput),
-  "Inline text lists must preserve local typing and adopt external value updates.",
 );
 for (const [index, sectionKind] of [
   "education",

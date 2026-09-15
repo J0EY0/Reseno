@@ -5,7 +5,6 @@ from collections.abc import AsyncIterator
 from contextlib import closing
 from datetime import UTC, datetime
 from sqlite3 import Connection
-from time import perf_counter
 from types import SimpleNamespace
 
 import pytest
@@ -934,15 +933,20 @@ def test_turn_preparation_does_not_block_the_event_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def scenario() -> None:
-        preparation_started = threading.Event()
+        loop = asyncio.get_running_loop()
+        preparation_started = asyncio.Event()
         release_preparation = threading.Event()
+        preparation_finished = threading.Event()
 
         def blocking_prepare(
             request: AgentChatRequest,
             run_id: str,
         ) -> tuple[agent_sessions.AcceptedAgentTurn, None]:
-            preparation_started.set()
-            assert release_preparation.wait(timeout=1)
+            loop.call_soon_threadsafe(preparation_started.set)
+            try:
+                assert release_preparation.wait(timeout=5)
+            finally:
+                preparation_finished.set()
             return _accepted_turn(request, run_id), None
 
         async def fake_stream(
@@ -968,18 +972,13 @@ def test_turn_preparation_does_not_block_the_event_loop(
         monkeypatch.setattr(agent_runs, "async_iter_agent_events", fake_stream)
 
         manager = AgentRunManager()
-        release_timer = threading.Timer(0.3, release_preparation.set)
-        release_timer.start()
         try:
             start_task = asyncio.create_task(
                 manager.start(_request("resumenonblockingpreparation")),
             )
-            started_at = perf_counter()
-            await asyncio.sleep(0.01)
-            elapsed = perf_counter() - started_at
-
-            assert preparation_started.is_set()
-            assert elapsed < 0.1
+            await asyncio.wait_for(preparation_started.wait(), timeout=5)
+            assert not preparation_finished.is_set()
+            assert not start_task.done()
 
             release_preparation.set()
             run = await asyncio.wait_for(start_task, timeout=1)
@@ -987,7 +986,6 @@ def test_turn_preparation_does_not_block_the_event_loop(
             await asyncio.wait_for(run.task, timeout=1)
         finally:
             release_preparation.set()
-            release_timer.cancel()
 
     asyncio.run(scenario())
 
@@ -996,8 +994,10 @@ def test_terminal_persistence_does_not_block_the_event_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def scenario() -> None:
-        persistence_started = threading.Event()
+        loop = asyncio.get_running_loop()
+        persistence_started = asyncio.Event()
         release_persistence = threading.Event()
+        persistence_finished = threading.Event()
 
         async def fake_stream(
             request: AgentChatRequest,
@@ -1036,8 +1036,11 @@ def test_terminal_persistence_does_not_block_the_event_loop(
 
         def blocking_finish(*args: object, **kwargs: object) -> None:
             del args, kwargs
-            persistence_started.set()
-            assert release_persistence.wait(timeout=1)
+            loop.call_soon_threadsafe(persistence_started.set)
+            try:
+                assert release_persistence.wait(timeout=5)
+            finally:
+                persistence_finished.set()
 
         monkeypatch.setattr(agent_runs, "connect", _FakeConnection)
         monkeypatch.setattr(agent_runs, "async_iter_agent_events", fake_stream)
@@ -1050,16 +1053,10 @@ def test_terminal_persistence_does_not_block_the_event_loop(
         _bypass_turn_preparation(monkeypatch)
 
         manager = AgentRunManager()
-        release_timer = threading.Timer(0.3, release_persistence.set)
-        release_timer.start()
         try:
             run = await manager.start(_request("resumenonblockingterminal"))
-            started_at = perf_counter()
-            await asyncio.sleep(0.01)
-            elapsed = perf_counter() - started_at
-
-            assert persistence_started.is_set()
-            assert elapsed < 0.1
+            await asyncio.wait_for(persistence_started.wait(), timeout=5)
+            assert not persistence_finished.is_set()
             assert any("event: message_delta" in event.frame for event in run.events)
             assert not any("event: message_done" in event.frame for event in run.events)
 
@@ -1068,7 +1065,6 @@ def test_terminal_persistence_does_not_block_the_event_loop(
             await asyncio.wait_for(run.task, timeout=1)
         finally:
             release_persistence.set()
-            release_timer.cancel()
 
     asyncio.run(scenario())
 

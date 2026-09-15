@@ -9,6 +9,7 @@ import {
 } from "react";
 
 import { AppToaster } from "@/components/app-toaster";
+import { ResourceErrorBoundary } from "@/components/resource-error-boundary";
 import { ResumeEditorPane } from "@/components/editor/resume-editor-pane";
 import type { DocumentCanvasHandle } from "@/components/preview/document-canvas";
 import { loadDocumentCanvas } from "@/components/preview/document-canvas-loader";
@@ -64,57 +65,65 @@ function ResumeDetailContent({
       locale={locale}
       agentExpanded={!state.agent.isPanelCollapsed}
       editor={
-        <ResumeEditorPane
-          t={messages}
-          documentT={documentMessages}
-          disabled={Boolean(state.agent.review?.resolvingStatus)}
-          resume={state.resume}
-          updateContent={commands.updateContent}
-          openSectionId={state.openSectionId}
-          toggleSection={commands.toggleSection}
-          addSection={commands.addSection}
-          removeSection={commands.removeSection}
-          hasLoadError={state.hasVersionLoadError}
-          showSkeleton={showDocumentSkeleton}
-        />
+        <ResourceErrorBoundary>
+          <ResumeEditorPane
+            t={messages}
+            documentT={documentMessages}
+            disabled={Boolean(state.agent.review?.resolvingStatus)}
+            resume={state.resume}
+            updateContent={commands.updateContent}
+            openSectionId={state.openSectionId}
+            toggleSection={commands.toggleSection}
+            addSection={commands.addSection}
+            removeSection={commands.removeSection}
+            hasLoadError={state.hasVersionLoadError}
+            showSkeleton={showDocumentSkeleton}
+          />
+        </ResourceErrorBoundary>
       }
       preview={
         showDocumentSkeleton ? (
           <WorkspacePreviewSkeleton />
         ) : (
-          <Suspense fallback={<WorkspacePreviewSkeleton />}>
-            <DocumentCanvas
-              ref={previewRef}
-              measurementKey={state.document.measurementKey}
-              variant="resume"
-              t={messages}
-              documentT={documentMessages}
-              resume={state.previewResume}
-              typography={state.previewTypography}
-              template={state.previewTemplate}
-              diffs={state.previewDiffs}
-              draftReview={
-                state.previewReview
-                  ? {
-                      onSelectReviewItem: state.previewReview.selectItem,
-                      exitingReviewItemIds:
-                        state.previewReview.exitingReviewItemIds,
-                      reviewItemIdByOperationId:
-                        state.previewReview.reviewItemIdByOperationId,
-                      selectedReviewItemId:
-                        state.previewReview.selectedItemId ?? undefined,
-                    }
-                  : undefined
-              }
-              onPaginationReadyChange={commands.onPreviewReadyChange}
-              toolbarTrailing={
-                <ResumeDetailAgentToggle messages={messages} model={model} />
-              }
-            />
-          </Suspense>
+          <ResourceErrorBoundary>
+            <Suspense fallback={<WorkspacePreviewSkeleton />}>
+              <DocumentCanvas
+                ref={previewRef}
+                measurementKey={state.document.measurementKey}
+                variant="resume"
+                t={messages}
+                documentT={documentMessages}
+                resume={state.previewResume}
+                typography={state.previewTypography}
+                template={state.previewTemplate}
+                diffs={state.previewDiffs}
+                draftReview={
+                  state.previewReview
+                    ? {
+                        onSelectReviewItem: state.previewReview.selectItem,
+                        exitingReviewItemIds:
+                          state.previewReview.exitingReviewItemIds,
+                        reviewItemIdByOperationId:
+                          state.previewReview.reviewItemIdByOperationId,
+                        selectedReviewItemId:
+                          state.previewReview.selectedItemId ?? undefined,
+                      }
+                    : undefined
+                }
+                onPaginationReadyChange={commands.onPreviewReadyChange}
+                toolbarTrailing={
+                  <ResumeDetailAgentToggle messages={messages} model={model} />
+                }
+              />
+            </Suspense>
+          </ResourceErrorBoundary>
         )
       }
-      agent={<ResumeDetailAgentHost messages={messages} model={model} />}
+      agent={
+        <ResourceErrorBoundary>
+          <ResumeDetailAgentHost messages={messages} model={model} />
+        </ResourceErrorBoundary>
+      }
     />
   );
 }
@@ -170,10 +179,12 @@ export function ResumeDetailWorkspaceView({
         {messages.skipToContent}
       </a>
       <AppToaster theme={model.state.theme} position="bottom-right" />
-      <Suspense fallback={null}>
-        <ResumeDetailTitleDialog messages={messages} model={model} />
-        <ResumeDetailLeaveDialog messages={messages} model={model} />
-      </Suspense>
+      <ResourceErrorBoundary className="fixed bottom-4 right-4 z-50 max-w-sm bg-background shadow-lg">
+        <Suspense fallback={null}>
+          <ResumeDetailTitleDialog messages={messages} model={model} />
+          <ResumeDetailLeaveDialog messages={messages} model={model} />
+        </Suspense>
+      </ResourceErrorBoundary>
       <SidebarInset
         id="main-content"
         tabIndex={-1}
@@ -184,13 +195,15 @@ export function ResumeDetailWorkspaceView({
           } as CSSProperties
         }
       >
-        <ResumeDetailWorkspaceHeader
-          headerRef={headerRef}
-          locale={locale}
-          messages={messages}
-          model={model}
-          onLocaleChange={onLocaleChange}
-        />
+        <ResourceErrorBoundary>
+          <ResumeDetailWorkspaceHeader
+            headerRef={headerRef}
+            locale={locale}
+            messages={messages}
+            model={model}
+            onLocaleChange={onLocaleChange}
+          />
+        </ResourceErrorBoundary>
 
         {model.state.hasLoadError ? (
           <WorkspaceRouteError

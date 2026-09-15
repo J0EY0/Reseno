@@ -108,7 +108,6 @@ export function CopilotModelSelector({
                 selectedModelConfig.iconProvider || selectedModelConfig.provider
               }
               size={16}
-              type="color"
             />
           ) : (
             <span aria-hidden="true" className="size-4 shrink-0" />

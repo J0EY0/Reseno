@@ -7,7 +7,10 @@ import {
   type ReactNode,
 } from "react";
 import { useNavigate } from "react-router-dom";
-import { toast } from "sonner";
+import {
+  clearWorkspaceNavigationError,
+  showWorkspaceNavigationError,
+} from "@/components/workspace/workspace-navigation-notifications";
 
 import { AppSidebar } from "@/components/app-sidebar";
 import { AppToaster } from "@/components/app-toaster";
@@ -26,10 +29,7 @@ import {
   SidebarProvider,
   SidebarTrigger,
 } from "@/components/ui/sidebar";
-import {
-  prepareWorkspaceRoute,
-  WORKSPACE_NAVIGATION_ERROR_TOAST_ID,
-} from "@/components/workspace/workspace-route-preparation";
+import { prepareWorkspaceRoute } from "@/components/workspace/workspace-route-preparation";
 import { preloadWorkspaceRoute } from "@/components/workspace/workspace-route-loaders";
 import { useWorkspacePreferences } from "@/components/workspace/workspace-preferences-context";
 import { useWorkspaceNavigationTransaction } from "@/components/workspace/use-workspace-navigation-transaction";
@@ -106,7 +106,7 @@ export function WorkspaceShell({
 
     setPendingView(view);
     const path = getWorkspacePath(view);
-    toast.dismiss(WORKSPACE_NAVIGATION_ERROR_TOAST_ID);
+    clearWorkspaceNavigationError();
     let prepared;
     try {
       prepared = await prepareWorkspaceRoute(view, persistence, {
@@ -119,10 +119,7 @@ export function WorkspaceShell({
       clearPendingView();
       intent.finish();
       console.error("Failed to prepare the workspace route.", error);
-      toast.error(messages.loadError, {
-        closeButton: true,
-        id: WORKSPACE_NAVIGATION_ERROR_TOAST_ID,
-      });
+      showWorkspaceNavigationError(messages.loadError);
       return;
     }
 
@@ -130,27 +127,24 @@ export function WorkspaceShell({
       return;
     }
 
-    let handoffToken: string | null = null;
-    try {
-      const state = createWorkspaceLateralRouteHandoff(prepared);
-      handoffToken = state.token;
-      clearPendingView();
-      intent.finish();
-      startTransition(() => {
-        navigate(path, { state });
-      });
-    } catch (error) {
-      if (handoffToken) {
-        deleteWorkspaceHandoffToken(handoffToken);
+    startTransition(async () => {
+      let handoffToken: string | null = null;
+      try {
+        const state = createWorkspaceLateralRouteHandoff(prepared);
+        handoffToken = state.token;
+        clearPendingView();
+        intent.finish();
+        await navigate(path, { state });
+      } catch (error) {
+        if (handoffToken) {
+          deleteWorkspaceHandoffToken(handoffToken);
+        }
+        clearPendingView();
+        intent.finish();
+        console.error("Failed to prepare the workspace route.", error);
+        showWorkspaceNavigationError(messages.loadError);
       }
-      clearPendingView();
-      intent.finish();
-      console.error("Failed to prepare the workspace route.", error);
-      toast.error(messages.loadError, {
-        closeButton: true,
-        id: WORKSPACE_NAVIGATION_ERROR_TOAST_ID,
-      });
-    }
+    });
   }
 
   function handleLogout() {

@@ -14,8 +14,8 @@ from app.schemas.agent import (
 from app.services.agent.draft import DraftEditEngine
 from app.services.agent.draft.review import build_draft_review_items
 from app.services.agent.editing.operations import _apply_edit_operations
+from tests.e2e.agent_session_support import seed_pending_agent_draft
 from tests.e2e.browser_support import authenticated_context
-from tests.e2e.test_workspace_route_network import _seed_pending_agent_draft
 
 pytestmark = [
     pytest.mark.browser_smoke,
@@ -37,7 +37,7 @@ def test_partially_applied_followup_previews_and_saves_without_hiding_real_confl
     try:
         source_id = "partial-source"
         summary = "专注可靠软件与清晰的系统设计。"
-        resume_id, original, _ = _seed_pending_agent_draft(
+        resume_id, original, _ = seed_pending_agent_draft(
             page,
             frontend_url,
             message_id=source_id,
@@ -206,7 +206,7 @@ def test_superseded_history_is_distinct_from_explicitly_discarded_drafts(
     page = context.new_page()
     try:
         source_id = "superseded-source"
-        resume_id, original, _ = _seed_pending_agent_draft(
+        resume_id, original, _ = seed_pending_agent_draft(
             page,
             frontend_url,
             message_id=source_id,

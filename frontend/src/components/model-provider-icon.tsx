@@ -1,14 +1,14 @@
-import Anthropic from "@lobehub/icons/es/Anthropic";
-import DeepSeek from "@lobehub/icons/es/DeepSeek";
-import Google from "@lobehub/icons/es/Google";
-import Minimax from "@lobehub/icons/es/Minimax";
-import Moonshot from "@lobehub/icons/es/Moonshot";
-import Ollama from "@lobehub/icons/es/Ollama";
-import OpenAI from "@lobehub/icons/es/OpenAI";
-import Qwen from "@lobehub/icons/es/Qwen";
-import Vllm from "@lobehub/icons/es/Vllm";
-import XAI from "@lobehub/icons/es/XAI";
-import ZAI from "@lobehub/icons/es/ZAI";
+import Anthropic from "@lobehub/icons/es/Anthropic/components/Mono";
+import DeepSeekColor from "@lobehub/icons/es/DeepSeek/components/Color";
+import GoogleColor from "@lobehub/icons/es/Google/components/Color";
+import MinimaxColor from "@lobehub/icons/es/Minimax/components/Color";
+import Moonshot from "@lobehub/icons/es/Moonshot/components/Mono";
+import Ollama from "@lobehub/icons/es/Ollama/components/Mono";
+import OpenAI from "@lobehub/icons/es/OpenAI/components/Mono";
+import QwenColor from "@lobehub/icons/es/Qwen/components/Color";
+import VllmColor from "@lobehub/icons/es/Vllm/components/Color";
+import XAI from "@lobehub/icons/es/XAI/components/Mono";
+import ZAI from "@lobehub/icons/es/ZAI/components/Mono";
 import { Bot } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -26,21 +26,20 @@ const PROVIDER_ALIASES: Record<string, string> = {
 // Keep this registry finite so adding one provider never pulls the package-wide
 // ProviderIcon registry (and every icon it references) into the application.
 const PROVIDER_ICONS = {
-  anthropic: Anthropic,
-  deepseek: DeepSeek,
-  google: Google,
-  minimax: Minimax,
-  moonshot: Moonshot,
-  ollama: Ollama,
-  openai: OpenAI,
-  qwen: Qwen,
-  vllm: Vllm,
-  xai: XAI,
-  zai: ZAI,
+  anthropic: { mono: Anthropic },
+  deepseek: { color: DeepSeekColor },
+  google: { color: GoogleColor },
+  minimax: { color: MinimaxColor },
+  moonshot: { mono: Moonshot },
+  ollama: { mono: Ollama },
+  openai: { mono: OpenAI },
+  qwen: { color: QwenColor },
+  vllm: { color: VllmColor },
+  xai: { mono: XAI },
+  zai: { mono: ZAI },
 } as const;
 
 type ProviderIconId = keyof typeof PROVIDER_ICONS;
-type ProviderIconType = "mono" | "color" | "avatar";
 
 const hasProviderIcon = (provider: string): provider is ProviderIconId =>
   Object.hasOwn(PROVIDER_ICONS, provider);
@@ -49,12 +48,10 @@ export function ModelProviderIcon({
   provider,
   className,
   size = 20,
-  type = "color",
 }: {
   provider: string;
   className?: string;
   size?: number;
-  type?: ProviderIconType;
 }) {
   const normalizedProvider = PROVIDER_ALIASES[provider] ?? provider;
 
@@ -83,17 +80,13 @@ export function ModelProviderIcon({
     );
   }
 
-  const ProviderIcon = PROVIDER_ICONS[normalizedProvider];
-
-  if (type === "avatar") {
-    const AvatarIcon = ProviderIcon.Avatar;
-    return <AvatarIcon className={cn("shrink-0", className)} size={size} />;
-  }
-
-  if (type === "color" && "Color" in ProviderIcon) {
-    const ColorIcon = ProviderIcon.Color;
+  const icon = PROVIDER_ICONS[normalizedProvider];
+  if ("color" in icon) {
+    const ColorIcon = icon.color;
     return <ColorIcon className={cn("shrink-0", className)} size={size} />;
   }
+
+  const ProviderIcon = icon.mono;
 
   return (
     <ProviderIcon

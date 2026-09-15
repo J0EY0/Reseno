@@ -26,10 +26,10 @@ SESSION = "JSON.parse(localStorage.getItem('reseno-auth-session'))"
 
 
 @pytest.fixture
-def username_workspace() -> Iterator[tuple[str, str]]:
+def username_workspace(request: pytest.FixtureRequest) -> Iterator[tuple[str, str]]:
     previous_session = browser_session.copy()
     try:
-        yield from _workspace_servers_fixture.__wrapped__()
+        yield from _workspace_servers_fixture.__wrapped__(request)
     finally:
         browser_session.clear()
         browser_session.update(previous_session)

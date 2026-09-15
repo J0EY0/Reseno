@@ -9,8 +9,8 @@ from pathlib import Path
 import pytest
 from playwright.sync_api import Browser, Route, expect
 
+from tests.e2e.agent_session_support import seed_pending_agent_draft
 from tests.e2e.browser_support import authenticated_context
-from tests.e2e.test_workspace_route_network import _seed_pending_agent_draft
 
 pytestmark = [
     pytest.mark.browser_smoke,
@@ -199,7 +199,7 @@ def test_long_model_id_keeps_composer_and_review_actions_visible(
                 assert overlap_width <= 1 or overlap_height <= 1, geometry
 
     try:
-        resume_id, _, _ = _seed_pending_agent_draft(
+        resume_id, _, _ = seed_pending_agent_draft(
             page,
             url,
             message_id=f"layout-{locale}-{width}",

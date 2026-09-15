@@ -32,33 +32,44 @@ export default defineConfig({
   },
   build: {
     chunkSizeWarningLimit: 480,
-    rollupOptions: {
+    rolldownOptions: {
       output: {
-        manualChunks(id) {
-          if (
-            id.includes("react-jsx-runtime") ||
-            id.includes("/react/jsx-runtime") ||
-            id.includes("/react/cjs/react-jsx-runtime")
-          ) {
-            return "vendor-react";
-          }
-
-          if (!id.includes("node_modules")) {
-            return;
-          }
-
-          if (
-            isNodePackage(id, "react") ||
-            isNodePackage(id, "react-dom") ||
-            isNodePackage(id, "react-router") ||
-            isNodePackage(id, "react-router-dom") ||
-            isNodePackage(id, "scheduler") ||
-            isNodePackage(id, "@radix-ui/react-slot") ||
-            isNodePackage(id, "@radix-ui/react-compose-refs") ||
-            isNodePackage(id, "class-variance-authority")
-          ) {
-            return "vendor-react";
-          }
+        codeSplitting: {
+          groups: [
+            {
+              name: "vendor-runtime",
+              priority: 20,
+              test: (id) =>
+                id.includes("react-jsx-runtime") ||
+                id.includes("/react/jsx-runtime") ||
+                id.includes("/react/cjs/react-jsx-runtime") ||
+                id.includes("/axios/dist/browser/axios.cjs") ||
+                [
+                  "react",
+                  "react-dom",
+                  "react-error-boundary",
+                  "react-router",
+                  "react-router-dom",
+                  "scheduler",
+                  "@radix-ui/react-slot",
+                  "@radix-ui/react-compose-refs",
+                  "class-variance-authority",
+                  "clsx",
+                  "sonner",
+                  "tailwind-merge",
+                ].some((name) => isNodePackage(id, name)),
+            },
+            {
+              name: "vendor-ui",
+              test: (id) =>
+                id.includes("/@floating-ui/") ||
+                isNodePackage(id, "@radix-ui/react-tooltip") ||
+                isNodePackage(id, "@radix-ui/react-focus-scope") ||
+                isNodePackage(id, "@radix-ui/react-focus-guards") ||
+                isNodePackage(id, "aria-hidden") ||
+                isNodePackage(id, "react-remove-scroll"),
+            },
+          ],
         },
       },
     },

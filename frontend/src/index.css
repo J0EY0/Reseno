@@ -1161,6 +1161,33 @@ html:has(.app-shell--document)::-webkit-scrollbar {
   }
 }
 
+.editor-sortable {
+  min-width: 0;
+}
+
+.editor-sortable[data-dragging="true"] {
+  opacity: 0.35;
+}
+
+[data-slot="editor-sort-trigger"] {
+  cursor: grab;
+  user-select: none;
+}
+
+[data-slot="editor-sort-trigger"]:active {
+  cursor: grabbing;
+}
+
+.editor-heading-actions {
+  color: var(--muted-foreground);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .editor-sortable {
+    transition: none !important;
+  }
+}
+
 .resume-editor-panel {
   position: relative;
   z-index: 2;

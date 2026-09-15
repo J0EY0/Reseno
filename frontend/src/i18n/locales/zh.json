@@ -1043,7 +1043,7 @@
     "period": "例如：2022.07 - 2022.09",
     "description": "补充一句背景说明，可选",
     "highlights": "每行一个要点，例如：\n负责搭建组件库并沉淀规范\n推动页面性能优化，首屏时间下降 30%",
-    "highlightItem": "输入要点内容，支持段落、列表和基础富文本格式",
+    "highlightItem": "补充你承担的工作、解决的问题或取得的成果",
     "targetJob": "粘贴目标岗位 JD，右侧 AI 会分析关键词匹配情况",
     "sectionName": "留空时使用默认模块名称"
   },
@@ -1093,6 +1093,9 @@
   "routeResourceLoadErrorDescription": "页面资源未能加载，请确认服务正常运行后重试",
   "routeRuntimeErrorTitle": "页面运行出错",
   "routeRuntimeErrorDescription": "显示页面时发生错误，请返回简历列表或重新加载页面后重试",
+  "resourceLoadError": "这部分内容加载失败。当前修改仍保留在页面中，请保存后重新加载。",
+  "resourceRecoverySaveError": "保存失败，请检查网络后重试。当前修改仍保留在页面中。",
+  "saveAndReload": "保存并重新加载",
   "reloadPage": "重新加载页面",
   "paginationLabel": "分页导航",
   "agentPreviousSource": "上一个来源",

@@ -10,6 +10,7 @@ import {
 import { AddSectionPopover } from "@/components/editor/add-section-popover";
 import { BasicInfoCard } from "@/components/editor/basic-info-card";
 import { ResumeSectionCard } from "@/components/editor/resume-section-card";
+import { SortableEditorList } from "@/components/editor/sortable-editor-list";
 import { Card, CardContent } from "@/components/ui/card";
 import { WorkspacePanelSkeleton } from "@/components/workspace-skeletons";
 import type { AppMessages } from "@/i18n";
@@ -235,26 +236,38 @@ export const ResumeEditorPane = memo(function ResumeEditorPane({
               onRemoveAvatar={() => updateBasic("avatar", "")}
             />
 
-            {resume.sections.map((section) => (
-              <ResumeSectionCard
-                key={section.id}
-                t={t}
-                documentT={documentT}
-                section={section}
-                canMoveUp={resume.sections[0]?.id !== section.id}
-                canMoveDown={
-                  resume.sections[resume.sections.length - 1]?.id !== section.id
-                }
-                collapsed={openSectionId !== section.id}
-                onToggle={() => toggleSection(section.id)}
-                onMutation={mutateResumeSection}
-                onRemoveSection={removeSection}
-                onMoveSectionUp={(sectionId) => moveSection(sectionId, "up")}
-                onMoveSectionDown={(sectionId) =>
-                  moveSection(sectionId, "down")
-                }
-              />
-            ))}
+            <SortableEditorList
+              items={resume.sections.map((section) => section.id)}
+              onReorder={(sectionId, overId) =>
+                mutateResumeSection({
+                  type: "section.reorder",
+                  sectionId,
+                  overId,
+                })
+              }
+            >
+              {resume.sections.map((section) => (
+                <ResumeSectionCard
+                  key={section.id}
+                  t={t}
+                  documentT={documentT}
+                  section={section}
+                  canMoveUp={resume.sections[0]?.id !== section.id}
+                  canMoveDown={
+                    resume.sections[resume.sections.length - 1]?.id !==
+                    section.id
+                  }
+                  collapsed={openSectionId !== section.id}
+                  onToggle={() => toggleSection(section.id)}
+                  onMutation={mutateResumeSection}
+                  onRemoveSection={removeSection}
+                  onMoveSectionUp={(sectionId) => moveSection(sectionId, "up")}
+                  onMoveSectionDown={(sectionId) =>
+                    moveSection(sectionId, "down")
+                  }
+                />
+              ))}
+            </SortableEditorList>
 
             <AddSectionPopover t={t} onSelect={addResumeSection} />
           </>

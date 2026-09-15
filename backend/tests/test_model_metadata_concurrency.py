@@ -6,14 +6,12 @@ from threading import Barrier
 from unittest.mock import AsyncMock
 
 import pytest
-from fastapi.testclient import TestClient
 
 from app.config import get_settings
 from app.services import model_metadata
 
 
 def test_concurrent_cache_writes_leave_one_complete_snapshot(
-    client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ready_to_replace = Barrier(2)

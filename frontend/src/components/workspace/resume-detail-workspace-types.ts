@@ -123,6 +123,7 @@ interface ResumeDetailWorkspaceCommands {
   restoreTemplateDefaults: () => void;
   retryLoad: () => void;
   save: () => void | Promise<unknown>;
+  saveAndReload: (signal?: AbortSignal) => Promise<void>;
   saveTitle: () => void | Promise<void>;
   selectVersion: (versionId: string) => void;
   addSection: (section: ResumeSection) => void;
