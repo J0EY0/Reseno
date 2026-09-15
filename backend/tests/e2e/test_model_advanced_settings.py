@@ -58,7 +58,30 @@ def _expand_and_record(page: Page, dialog: Locator, reduced_motion: str) -> None
         """() => {
           window.__advancedFrames = [];
           window.__recordAdvanced = true;
+          window.__advancedAnimations = [];
+          document.addEventListener('animationstart', event => {
+            if (!window.__recordAdvanced || !event.target.matches(
+              '.model-output-settings-content-inner'
+            )) return;
+            const animation = event.target.getAnimations().find(
+              animation => animation.animationName === event.animationName
+            );
+            if (animation) {
+              animation.pause();
+              animation.currentTime = 0;
+              window.__advancedAnimations.push({animation, step: 0});
+            }
+          });
           const record = () => {
+            for (const sample of window.__advancedAnimations) {
+              if (sample.step < 8) {
+                sample.animation.currentTime =
+                  Number(sample.animation.effect.getTiming().duration) *
+                  sample.step++ / 8;
+              } else if (sample.animation.playState === 'paused') {
+                sample.animation.play();
+              }
+            }
             const dialog = document.querySelector('[data-slot="dialog-content"]');
             const content = document.querySelector('#model-output-settings-content');
             const rect = dialog.getBoundingClientRect();
@@ -78,6 +101,13 @@ def _expand_and_record(page: Page, dialog: Locator, reduced_motion: str) -> None
     dialog.locator("#model-output-settings").click()
     expect(dialog.locator("#model-context-window")).to_be_visible()
     page.wait_for_timeout(450)
+    page.wait_for_function(
+        """() => window.__advancedFrames.length > 5 &&
+          window.__advancedAnimations.every(({animation}) =>
+            animation.playState === 'finished' || animation.playState === 'idle'
+          )""",
+        timeout=5_000,
+    )
     frames = page.evaluate(
         "() => { window.__recordAdvanced = false; return window.__advancedFrames; }"
     )
