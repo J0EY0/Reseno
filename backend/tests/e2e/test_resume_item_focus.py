@@ -201,6 +201,11 @@ def test_loading_new_item_editor_does_not_reclaim_user_moved_focus(
         for route in blocked:
             route.continue_()
         page.unroute("**/inline-text-editor.tsx*", defer_editor)
+        page.wait_for_function(
+            "element => element.editor?.isInitialized === true",
+            arg=field.element_handle(),
+        )
+        page.evaluate("() => new Promise(requestAnimationFrame)")
         expect(field).to_be_visible()
         _settle_animations(card)
         expect(toggle).to_be_focused()
