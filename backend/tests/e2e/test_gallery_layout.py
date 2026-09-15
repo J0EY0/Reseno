@@ -741,8 +741,6 @@ def test_gallery_expand_motion_stays_in_phase_with_sidebar(
 
         trigger.click()
         page.wait_for_timeout(400)
-        trigger.click()
-        page.wait_for_timeout(80)
         reversed_motion = trigger.evaluate(
             """
             async trigger => {
@@ -753,6 +751,51 @@ def test_gallery_expand_motion_stays_in_phase_with_sidebar(
               const item = grid.querySelector(
                 ':scope > [data-gallery-item-id]'
               );
+              const getForwardAnimations = () => document.getAnimations().filter(
+                animation => animation.id === 'gallery-grid-reflow' || (
+                  animation instanceof CSSTransition
+                  && animation.transitionProperty === 'width'
+                  && animation.effect.target.matches(
+                    '[data-slot="sidebar-gap"], [data-slot="sidebar-container"]'
+                  )
+                )
+              );
+              const freezeReflow = new MutationObserver(() => {
+                for (const animation of getForwardAnimations()) {
+                  animation.pause();
+                }
+              });
+              freezeReflow.observe(grid, {
+                attributes: true,
+                attributeFilter: ['style'],
+              });
+              trigger.click();
+              await Promise.resolve();
+              for (const animation of getForwardAnimations()) {
+                animation.pause();
+              }
+              await new Promise(requestAnimationFrame);
+              await new Promise(resolve => setTimeout(resolve, 0));
+              freezeReflow.disconnect();
+              const forwardAnimations = getForwardAnimations();
+              if (
+                !forwardAnimations.some(animation =>
+                  animation.effect.target === sidebarGap
+                ) || !forwardAnimations.some(animation =>
+                  animation.id === 'gallery-grid-reflow'
+                )
+              ) {
+                throw new Error(
+                  'Sidebar and gallery animations must start before reversal'
+                );
+              }
+              for (const animation of forwardAnimations) {
+                animation.pause();
+              }
+              await Promise.all(forwardAnimations.map(animation => animation.ready));
+              for (const animation of forwardAnimations) {
+                animation.currentTime = 80;
+              }
               const initialX = item.getBoundingClientRect().x;
               const initialSidebarWidth = sidebarGap.getBoundingClientRect().width;
               const frames = [];
