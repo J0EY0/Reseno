@@ -458,7 +458,13 @@ def test_sidebar_motion_keeps_sparse_gallery_cards_stable(
 
               for (let index = 0; index < 60; index += 1) {
                 await new Promise(requestAnimationFrame);
-                await new Promise(resolve => setTimeout(resolve, 0));
+                await new Promise(resolve => {
+                  const observer = new ResizeObserver(() => {
+                    observer.disconnect();
+                    resolve();
+                  });
+                  observer.observe(grid);
+                });
                 captureFrame();
 
                 const hasSidebarMotion = sidebarGap
@@ -614,7 +620,13 @@ def test_gallery_expand_motion_stays_in_phase_with_sidebar(
               trigger.click();
               for (let index = 0; index < 60; index += 1) {
                 await new Promise(requestAnimationFrame);
-                await new Promise(resolve => setTimeout(resolve, 0));
+                await new Promise(resolve => {
+                  const observer = new ResizeObserver(() => {
+                    observer.disconnect();
+                    resolve();
+                  });
+                  observer.observe(grid);
+                });
                 const items = [...grid.querySelectorAll(
                   ':scope > [data-gallery-item-id]'
                 )];
@@ -805,7 +817,13 @@ def test_gallery_expand_motion_stays_in_phase_with_sidebar(
               trigger.click();
               for (let index = 0; index < 60; index += 1) {
                 await new Promise(requestAnimationFrame);
-                await new Promise(resolve => setTimeout(resolve, 0));
+                await new Promise(resolve => {
+                  const observer = new ResizeObserver(() => {
+                    observer.disconnect();
+                    resolve();
+                  });
+                  observer.observe(grid);
+                });
                 const currentItem = grid.querySelector(
                   ':scope > [data-gallery-item-id]'
                 );
