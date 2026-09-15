@@ -215,19 +215,18 @@ def test_arrow_moves_keep_focus_and_expansion_and_scroll_only_when_needed(
     expect(_item_toggle(first)).to_have_attribute("aria-expanded", "true")
     _item_toggle(first).click()
     _settle(page)
-    edge_id = experience.locator(ITEM).evaluate_all(
-        """items => {
-          const viewport = items[0].closest('.resume-editor-panel')
-            .getBoundingClientRect();
-          return items.slice(0, -1).filter(item => {
-            const header = item.querySelector('[data-slot="editor-item-header"]')
-              .getBoundingClientRect();
-            return header.top >= viewport.top + 4 &&
-              header.bottom <= viewport.bottom - 4;
-          }).at(-1).dataset.resumeItemId;
+    edge = _item(page, "experience-10")
+    edge.evaluate(
+        """element => {
+          const pane = element.closest('.resume-editor-panel');
+          const header = element.querySelector('[data-slot="editor-item-header"]');
+          pane.scrollTo({
+            top: pane.scrollTop + header.getBoundingClientRect().bottom -
+              pane.getBoundingClientRect().bottom + 4,
+            behavior: 'instant',
+          });
         }"""
     )
-    edge = _item(page, edge_id)
     edge_title = _item_title(edge)
     expect(edge_title).to_be_in_viewport(ratio=1)
     edge_down = _item_action(edge, messages["moveItemDown"])
