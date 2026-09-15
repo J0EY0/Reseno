@@ -29,6 +29,7 @@ dependencies = [
 dev = [
     "mypy>=1.13.0",
     "pytest>=8.3.0",
+    "pytest-xdist>=3.8.0",
     "ruff>=0.8.0",
     "types-authlib>=1.7.2.20260901",
 ]

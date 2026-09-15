@@ -127,6 +127,12 @@ def _stop_process(process: subprocess.Popen[str]) -> None:
         process.wait(timeout=5)
 
 
+@pytest.fixture(scope="session")
+def vite_cache_directory() -> Iterator[Path]:
+    with tempfile.TemporaryDirectory(prefix="reseno-vite-e2e-") as cache_dir:
+        yield Path(cache_dir)
+
+
 @pytest.fixture(scope="module")
 def workspace_servers(request: pytest.FixtureRequest) -> Iterator[tuple[str, str]]:
     """Start isolated backend/frontend servers and seed one resume."""
@@ -185,7 +191,9 @@ def workspace_servers(request: pytest.FixtureRequest) -> Iterator[tuple[str, str
         }
         frontend_env = {
             **os.environ,
-            "RESENO_VITE_CACHE_DIR": str(data_path / "vite-cache"),
+            "RESENO_VITE_CACHE_DIR": str(
+                request.getfixturevalue("vite_cache_directory")
+            ),
             "VITE_DEV_API_TARGET": backend_url,
         }
 

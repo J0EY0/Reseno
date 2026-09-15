@@ -34,7 +34,7 @@
     "test:view-transition-cleanup": "node --test --test-concurrency=4 scripts/verify-view-transition-cleanup.mjs",
     "test:model-config": "pnpm test:unit tests/model-config- tests/model-provider-icon && node scripts/run-tests.mjs model-config-boundaries",
     "test:workspace-network": "pnpm build && cd ../backend && RUN_BROWSER_E2E=1 uv run --locked pytest tests/e2e -q",
-    "test:workspace-network:smoke": "cd ../backend && RUN_BROWSER_E2E=1 uv run --locked pytest tests/e2e -m browser_smoke --strict-markers --maxfail=1 --durations=10 -q",
+    "test:workspace-network:smoke": "cd ../backend && RUN_BROWSER_E2E=1 uv run --locked pytest tests/e2e -m browser_smoke -n 2 --dist loadscope --max-worker-restart=0 --strict-markers --maxfail=1 --durations=10 -v",
     "test:agent-edits": "pnpm test:unit tests/resume-agent- tests/agent-session-locale && node scripts/run-tests.mjs resume-agent-edits",
     "test:resume-sections": "pnpm test:unit tests/resume-sections.test.ts",
     "test:domain-modules": "pnpm test:unit tests/inline-text-list-input tests/workspace-domain tests/resume-sections && node scripts/run-tests.mjs generate-template-presets resume-domain-boundaries",
