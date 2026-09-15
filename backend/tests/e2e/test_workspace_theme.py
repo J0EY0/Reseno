@@ -67,7 +67,7 @@ def test_template_gallery_default_actions_do_not_animate_during_theme_changes(
                         : []
                     ),
                   });
-                  if (now - startedAt >= 320) {
+                  if (now - startedAt >= 320 && frames.length >= 5) {
                     resolve();
                     return;
                   }
@@ -205,7 +205,7 @@ def test_resume_agent_composer_actions_do_not_animate_during_theme_changes(
                       ),
                     })),
                   });
-                  if (now - startedAt >= 320) {
+                  if (now - startedAt >= 320 && frames.length >= 5) {
                     resolve();
                     return;
                   }
@@ -444,7 +444,7 @@ def test_settings_theme_options_switch_palette_without_lagging_controls(
                       )
                     ),
                   });
-                  if (now - startedAt >= 220) {
+                  if (now - startedAt >= 220 && frames.length >= 5) {
                     resolve();
                     return;
                   }

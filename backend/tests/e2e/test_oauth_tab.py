@@ -381,6 +381,7 @@ def test_github_tab_completes_in_parent_without_document_navigation(
     flow.page.evaluate(
         """({prefix}) => {
       window.__tabStage = 'idle';
+      window.__tabStageFrameCounts = {};
       const capture = () => {
         const button = document.querySelector(
           '[role="group"][aria-label="GitHub"] button');
@@ -401,6 +402,8 @@ def test_github_tab_completes_in_parent_without_document_navigation(
           skeleton: Boolean(document.querySelector(
             '[data-slot="workspace-entry-skeleton"]')),
         }));
+        window.__tabStageFrameCounts[window.__tabStage] =
+          (window.__tabStageFrameCounts[window.__tabStage] ?? 0) + 1;
         requestAnimationFrame(capture);
       };
       requestAnimationFrame(capture);
@@ -412,6 +415,11 @@ def test_github_tab_completes_in_parent_without_document_navigation(
         flow.page.bring_to_front()
         flow.page.evaluate("stage => window.__tabStage = stage", stage)
         flow.page.wait_for_timeout(100)
+        flow.page.wait_for_function(
+            "stage => (window.__tabStageFrameCounts[stage] ?? 0) >= 2",
+            arg=stage,
+            timeout=5_000,
+        )
 
     flow.begin()
     expect(button).to_be_disabled()

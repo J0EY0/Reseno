@@ -5,7 +5,7 @@ import time
 from urllib.parse import urlparse
 
 import pytest
-from playwright.sync_api import Browser, Request, Route
+from playwright.sync_api import Browser, Page, Request, Route
 
 from tests.e2e.browser_support import authenticated_context as _authenticated_context
 from tests.e2e.workspace_frame_support import (
@@ -20,6 +20,16 @@ pytestmark = pytest.mark.skipif(
     os.getenv("RUN_BROWSER_E2E") != "1",
     reason="set RUN_BROWSER_E2E=1 to run browser integration tests",
 )
+
+
+def _wait_for_route_frames(page: Page, path: str) -> None:
+    page.wait_for_function(
+        """path => window.__workspaceFrames.filter(
+          frame => frame.path === path
+        ).length >= 2""",
+        arg=path,
+        timeout=5_000,
+    )
 
 
 @pytest.mark.browser_smoke
@@ -53,6 +63,7 @@ def test_resume_navigation_keeps_cached_views_mounted_and_preview_fits(
         page.wait_for_url(f"{frontend_url}/resume/{resume_id}")
         page.wait_for_load_state("networkidle")
         page.wait_for_timeout(600)
+        _wait_for_route_frames(page, f"/resume/{resume_id}")
         detail_frames = stop_workspace_frame_recording(page)
 
         preview_frame = page.locator('[data-slot="document-canvas-viewport"]')
@@ -104,6 +115,7 @@ def test_resume_navigation_keeps_cached_views_mounted_and_preview_fits(
         page.wait_for_url(f"{frontend_url}/resume")
         page.wait_for_load_state("networkidle")
         page.wait_for_timeout(600)
+        _wait_for_route_frames(page, "/resume")
         gallery_frames = stop_workspace_frame_recording(page)
         routed_gallery_frames = [
             frame for frame in gallery_frames if frame["path"] == "/resume"
@@ -562,6 +574,7 @@ def test_prepared_lateral_navigation_never_shows_loading_surface(
         page.wait_for_url(f"{frontend_url}{target_route}")
         page.wait_for_load_state("networkidle")
         page.wait_for_timeout(600)
+        _wait_for_route_frames(page, target_route)
         frames = stop_workspace_frame_recording(page)
         routed_frames = [frame for frame in frames if frame["path"] == target_route]
 
