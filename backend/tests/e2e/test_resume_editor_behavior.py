@@ -358,9 +358,33 @@ def test_rich_text_editor_lazy_mount_preserves_collapsible_height(
         (() => {
           window.__richEditorFrames = [];
           window.__recordRichEditorFrames = false;
+          window.__richEditorAnimations = [];
+          document.addEventListener('animationstart', event => {
+            if (!window.__recordRichEditorFrames || !event.target.closest(
+              '[data-slot="collapsible"]'
+            )?.querySelector('button[aria-label="技能: 展开或收起模块"]') ||
+              !event.animationName.startsWith('collapsible-')) return;
+            const animation = event.target.getAnimations().find(
+              animation => animation.animationName === event.animationName
+            );
+            if (animation) {
+              animation.pause();
+              animation.currentTime = 0;
+              window.__richEditorAnimations.push({animation, step: 0});
+            }
+          });
 
           const capture = (now) => {
             if (window.__recordRichEditorFrames) {
+              for (const sample of window.__richEditorAnimations) {
+                if (sample.step < 8) {
+                  sample.animation.currentTime =
+                    Number(sample.animation.effect.getTiming().duration) *
+                    sample.step++ / 8;
+                } else if (sample.animation.playState === 'paused') {
+                  sample.animation.play();
+                }
+              }
               const toggle = document.querySelector(
                 'button[aria-label="技能: 展开或收起模块"]',
               );
@@ -473,6 +497,12 @@ def test_rich_text_editor_lazy_mount_preserves_collapsible_height(
         editor.wait_for(state="visible")
         expect(editor).to_contain_text("Skill 1")
         page.wait_for_timeout(360)
+        page.wait_for_function(
+            """() => window.__richEditorAnimations.every(({animation}) =>
+              animation.playState === 'finished' || animation.playState === 'idle'
+            )""",
+            timeout=5_000,
+        )
         frames: list[dict[str, Any]] = page.evaluate(
             """
             () => {
@@ -535,6 +565,12 @@ def test_rich_text_editor_lazy_mount_preserves_collapsible_height(
             toggle.click()
             expect(toggle).to_have_attribute("aria-expanded", "false")
             page.wait_for_timeout(260)
+            page.wait_for_function(
+                """() => window.__richEditorAnimations.every(({animation}) =>
+                  animation.playState === 'finished' || animation.playState === 'idle'
+                )""",
+                timeout=5_000,
+            )
             closing_frames: list[dict[str, Any]] = page.evaluate(
                 """
                 () => {
@@ -583,6 +619,9 @@ def test_rich_text_editor_lazy_mount_preserves_collapsible_height(
             editor.wait_for(state="visible")
             expect(toggle).to_have_attribute("aria-expanded", "true")
             page.wait_for_timeout(50)
+            page.wait_for_function(
+                "() => window.__richEditorFrames.length > 0", timeout=5_000
+            )
             reduced_motion_frames: list[dict[str, Any]] = page.evaluate(
                 """
                 () => {

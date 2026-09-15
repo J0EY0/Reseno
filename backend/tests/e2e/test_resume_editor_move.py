@@ -41,15 +41,49 @@ def _record_arrow_move(page: Page, button: Locator, row: Locator) -> list[float]
         """button => {
           const row = button.closest('[data-resume-item-id], [data-resume-section-id]');
           const pane = row.closest('.resume-editor-panel');
+          const parent = row.parentElement;
           window.editorMoveSamples = {frames: [], done: false};
           button.addEventListener('click', () => {
             const started = performance.now();
-            function sample() {
+            const initialIndex = [...parent.children].indexOf(row);
+            let finished = false;
+            const capture = () => {
               window.editorMoveSamples.frames.push(
                 row.getBoundingClientRect().top + pane.scrollTop
               );
-              if (performance.now() - started < 400) requestAnimationFrame(sample);
-              else window.editorMoveSamples.done = true;
+            };
+            const observer = new MutationObserver(async () => {
+              if ([...parent.children].indexOf(row) === initialIndex) return;
+              observer.disconnect();
+              const animations = [...parent.children].flatMap(item =>
+                item.getAnimations().filter(animation =>
+                  animation.id === 'editor-reorder'
+                )
+              );
+              for (const animation of animations) animation.pause();
+              await Promise.all(animations.map(animation => animation.ready));
+              if (animations.length) {
+                for (const progress of [0.2, 0.4, 0.6, 0.8]) {
+                  for (const animation of animations) {
+                    animation.currentTime = Number(
+                      animation.effect.getTiming().duration
+                    ) * progress;
+                  }
+                  await new Promise(requestAnimationFrame);
+                  capture();
+                }
+                for (const animation of animations) animation.play();
+                await Promise.all(animations.map(animation => animation.finished));
+              }
+              await new Promise(requestAnimationFrame);
+              finished = true;
+            });
+            observer.observe(parent, {childList: true});
+            function sample() {
+              capture();
+              if (performance.now() - started < 400 || !finished) {
+                requestAnimationFrame(sample);
+              } else window.editorMoveSamples.done = true;
             }
             sample();
           }, {once: true});
