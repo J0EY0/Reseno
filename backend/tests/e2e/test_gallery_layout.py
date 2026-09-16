@@ -5,7 +5,7 @@ import time
 from typing import Any
 
 import pytest
-from playwright.sync_api import Browser, expect
+from playwright.sync_api import Browser, Page, expect
 
 from tests.e2e.browser_support import authenticated_context as _authenticated_context
 
@@ -13,6 +13,25 @@ pytestmark = pytest.mark.skipif(
     os.getenv("RUN_BROWSER_E2E") != "1",
     reason="set RUN_BROWSER_E2E=1 to run browser integration tests",
 )
+
+
+def _wait_for_sidebar_layout(page: Page, state: str) -> None:
+    page.wait_for_function(
+        """
+        state => {
+          const sidebar = document.querySelector('[data-slot="sidebar"]');
+          const container = document.querySelector('[data-slot="sidebar-container"]');
+          if (sidebar?.dataset.state !== state || !container) return false;
+          const width = container.getBoundingClientRect().width;
+          return Math.abs(width - (state === 'collapsed' ? 48 : 256)) <= 1
+            && !document.getAnimations().some(animation =>
+              animation.id === 'gallery-grid-reflow'
+              || animation.effect?.target?.closest('[data-slot="sidebar"]')
+            );
+        }
+        """,
+        arg=state,
+    )
 
 
 @pytest.mark.browser_smoke
@@ -281,7 +300,7 @@ def test_sidebar_reflows_gallery_cards_with_position_motion(
         assert motion["sawReflow"], motion
         assert motion["sameNode"], motion
 
-        page.wait_for_timeout(320)
+        _wait_for_sidebar_layout(page, "collapsed")
         collapsed = gallery_layout()
         collapsed_sidebar = sidebar_layout()
         assert collapsed["columns"] == 6, collapsed
@@ -302,14 +321,14 @@ def test_sidebar_reflows_gallery_cards_with_position_motion(
             """
         )
         trigger.click()
-        page.wait_for_timeout(400)
+        _wait_for_sidebar_layout(page, "collapsed")
         reversed_layout = gallery_layout()
         assert reversed_layout["columns"] == 6, reversed_layout
         assert reversed_layout["activeReflows"] == 0, reversed_layout
 
         page.emulate_media(reduced_motion="reduce")
         trigger.click()
-        page.wait_for_timeout(50)
+        _wait_for_sidebar_layout(page, "expanded")
         reduced_motion_layout = gallery_layout()
         reduced_motion_sidebar = sidebar_layout()
         assert reduced_motion_layout["columns"] == 5, reduced_motion_layout
@@ -590,7 +609,7 @@ def test_gallery_expand_motion_stays_in_phase_with_sidebar(
         expect(page.locator('[data-slot="sidebar"][data-state]')).to_have_count(1)
         trigger = page.locator('[data-slot="sidebar-trigger"]')
         trigger.click()
-        page.wait_for_timeout(400)
+        _wait_for_sidebar_layout(page, "collapsed")
         collapsed_column_count = page.locator('[data-slot="gallery-grid"]').evaluate(
             """
             grid => getComputedStyle(grid).gridTemplateColumns
@@ -752,7 +771,7 @@ def test_gallery_expand_motion_stays_in_phase_with_sidebar(
             }
 
         trigger.click()
-        page.wait_for_timeout(400)
+        _wait_for_sidebar_layout(page, "collapsed")
         reversed_motion = trigger.evaluate(
             """
             async trigger => {
@@ -786,10 +805,21 @@ def test_gallery_expand_motion_stays_in_phase_with_sidebar(
               for (const animation of getForwardAnimations()) {
                 animation.pause();
               }
-              await new Promise(requestAnimationFrame);
-              await new Promise(resolve => setTimeout(resolve, 0));
+              const deadline = performance.now() + 5000;
+              let forwardAnimations;
+              do {
+                await new Promise(requestAnimationFrame);
+                await new Promise(resolve => setTimeout(resolve, 0));
+                forwardAnimations = getForwardAnimations();
+                for (const animation of forwardAnimations) animation.pause();
+              } while (
+                (!forwardAnimations.some(animation =>
+                  animation.effect.target === sidebarGap
+                ) || !forwardAnimations.some(animation =>
+                  animation.id === 'gallery-grid-reflow'
+                )) && performance.now() < deadline
+              );
               freezeReflow.disconnect();
-              const forwardAnimations = getForwardAnimations();
               if (
                 !forwardAnimations.some(animation =>
                   animation.effect.target === sidebarGap

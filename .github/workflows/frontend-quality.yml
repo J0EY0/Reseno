@@ -9,14 +9,17 @@ permissions:
 
 concurrency:
   group: quality-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  queue: ${{ (github.ref == 'refs/heads/main' || github.ref_type == 'tag') && 'max' || 'single' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.ref_type != 'tag' }}
 
 jobs:
   changes:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       run_checks: ${{ github.ref_type == 'tag' && 'true' || steps.filter.outputs.code }}
+      image_inputs: ${{ github.ref_type == 'tag' && 'true' || steps.filter.outputs.image_inputs }}
+      container_validation: ${{ github.ref_type == 'tag' && 'true' || steps.filter.outputs.container_validation }}
     steps:
       - name: Check out repository
         if: github.ref_type != 'tag'
@@ -28,19 +31,15 @@ jobs:
         with:
           token: ''
           base: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.ref }}
-          predicate-quantifier: every
-          filters: |
-            code:
-              - '!README.md'
-              - '!README_ZH.md'
-              - '!docs/**'
+          predicate-quantifier: some-with-excludes
+          filters: .github/ci-paths.yml
 
   backend:
     needs: changes
     if: >-
       !cancelled() &&
       (needs.changes.result != 'success' || needs.changes.outputs.run_checks != 'false')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     defaults:
       run:
@@ -85,7 +84,7 @@ jobs:
     if: >-
       !cancelled() &&
       (needs.changes.result != 'success' || needs.changes.outputs.run_checks != 'false')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     defaults:
       run:
@@ -121,11 +120,11 @@ jobs:
     if: >-
       needs.changes.outputs.run_checks == 'true' &&
       (github.event_name == 'pull_request' ||
-      github.ref_name == github.event.repository.default_branch ||
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) ||
       github.ref == 'refs/heads/main' ||
       startsWith(github.ref, 'refs/tags/v'))
     needs: [changes, backend, frontend]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
       E2E_ARTIFACTS_DIR: ${{ github.workspace }}/backend/test-results/browser
@@ -183,14 +182,133 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  container-validation:
+    name: Container validation (${{ matrix.arch }})
+    needs: changes
+    if: >-
+      needs.changes.outputs.container_validation == 'true' &&
+      (github.event_name == 'pull_request' ||
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) ||
+      github.ref == 'refs/heads/main' ||
+      startsWith(github.ref, 'refs/tags/v'))
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+            platform: linux/amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            platform: linux/arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    env:
+      E2E_ARTIFACTS_DIR: ${{ github.workspace }}/backend/test-results/container
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+          python-version: "3.13"
+          version: "0.11.14"
+          working-directory: backend
+      - name: Install locked backend dependencies
+        working-directory: backend
+        run: uv sync --locked --all-groups
+      - name: Install Chromium
+        working-directory: backend
+        run: uv run --locked playwright install --with-deps chromium
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+      - name: Generate image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,format=long
+            type=semver,pattern={{version}},enable=${{ github.ref_type == 'tag' }}
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
+      - name: Build test container
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          push: false
+          tags: reseno-ci:check
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: mode=max
+          outputs: type=oci,dest=${{ runner.temp }}/container-${{ matrix.arch }}.tar
+          cache-from: |
+            type=gha,scope=reseno-container-${{ matrix.arch }}
+            type=gha,scope=reseno-container
+          cache-to: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && format('type=gha,scope=reseno-container-{0},mode=max', matrix.arch) || '' }}
+      - name: Load exported container
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          skopeo --override-os linux --override-arch "$ARCH" copy \
+            "oci-archive:$RUNNER_TEMP/container-$ARCH.tar" \
+            "docker-archive:$RUNNER_TEMP/runtime.tar:reseno-ci:check"
+          docker load --input "$RUNNER_TEMP/runtime.tar"
+          rm "$RUNNER_TEMP/runtime.tar"
+      - name: Test container startup and production flows
+        working-directory: backend
+        run: RUN_BROWSER_E2E=1 E2E_CONTAINER_IMAGE=reseno-ci:check uv run --locked pytest tests/e2e/test_production_frontend.py -q --junitxml=test-results/container-${{ matrix.arch }}.xml
+      - name: Save tested container
+        if: >-
+          github.event_name == 'push' &&
+          ((github.ref == 'refs/heads/main' && needs.changes.outputs.image_inputs == 'true') ||
+          startsWith(github.ref, 'refs/tags/v'))
+        uses: actions/upload-artifact@v7
+        with:
+          name: tested-container-${{ matrix.arch }}
+          path: ${{ runner.temp }}/container-${{ matrix.arch }}.tar
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: true
+          retention-days: 7
+      - name: Upload container test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: container-test-results-${{ matrix.arch }}
+          path: backend/test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  quality-gate:
+    name: Quality gate
+    if: always()
+    needs: [changes, backend, frontend, browser-smoke, container-validation]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Validate required results
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          EVENT_NAME: ${{ github.event_name }}
+          GIT_REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: python3 .github/scripts/quality-gate.py
+
   docker:
     name: Publish container
     if: >-
-      needs.changes.outputs.run_checks == 'true' &&
+      !cancelled() &&
+      needs.quality-gate.result == 'success' &&
       github.event_name == 'push' &&
-      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
-    needs: [changes, backend, frontend, browser-smoke]
-    runs-on: ubuntu-latest
+      ((github.ref == 'refs/heads/main' && needs.changes.outputs.image_inputs == 'true') ||
+      startsWith(github.ref, 'refs/tags/v'))
+    needs: [changes, quality-gate]
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
       contents: read
@@ -215,6 +333,22 @@ jobs:
             echo '::error::Release tags must point to a commit already merged into main.'
             exit 1
           fi
+      - name: Resolve current main
+        if: github.ref == 'refs/heads/main'
+        id: main
+        run: |
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          echo "sha=$(git rev-parse origin/main)" >> "$GITHUB_OUTPUT"
+      - name: Check current main image inputs
+        if: github.ref == 'refs/heads/main'
+        id: main-changes
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4
+        with:
+          token: ''
+          base: ${{ github.sha }}
+          ref: ${{ steps.main.outputs.sha }}
+          predicate-quantifier: some-with-excludes
+          filters: .github/ci-paths.yml
       - name: Generate image metadata
         id: meta
         uses: docker/metadata-action@v6
@@ -226,23 +360,46 @@ jobs:
             type=sha,format=long
             type=semver,pattern={{version}},enable=${{ github.ref_type == 'tag' }}
             type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
+      - name: Download tested containers
+        if: github.ref_type == 'tag' || steps.main-changes.outputs.image_inputs == 'false'
+        uses: actions/download-artifact@v8
+        with:
+          pattern: tested-container-*
+          path: ${{ runner.temp }}/tested-containers
+          merge-multiple: true
       - name: Log in to GHCR
+        if: github.ref_type == 'tag' || steps.main-changes.outputs.image_inputs == 'false'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build and push container
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      - name: Publish tested containers
+        if: github.ref_type == 'tag' || steps.main-changes.outputs.image_inputs == 'false'
+        env:
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          for arch in amd64 arm64; do
+            test -s "$RUNNER_TEMP/tested-containers/container-$arch.tar"
+          done
+          sources=()
+          for arch in amd64 arm64; do
+            archive="$RUNNER_TEMP/tested-containers/container-$arch.tar"
+            skopeo inspect --raw "oci-archive:$archive" > "$RUNNER_TEMP/manifest-$arch.json"
+            digest=$(skopeo manifest-digest "$RUNNER_TEMP/manifest-$arch.json")
+            skopeo copy --all --preserve-digests \
+              --authfile "${DOCKER_CONFIG:-$HOME/.docker}/config.json" \
+              --digestfile "$RUNNER_TEMP/digest-$arch" \
+              "oci-archive:$archive" "docker://$image@$digest"
+            test "$(cat "$RUNNER_TEMP/digest-$arch")" = "$digest"
+            sources+=("$image@$digest")
+          done
+          tags=()
+          while IFS= read -r tag; do
+            tags+=(--tag "$tag")
+          done <<< "$IMAGE_TAGS"
+          docker buildx imagetools create "${tags[@]}" "${sources[@]}"

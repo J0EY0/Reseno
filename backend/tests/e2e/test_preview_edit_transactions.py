@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
+from urllib.parse import urlparse
 
 import pytest
 from playwright.sync_api import Browser, Page, expect
@@ -192,8 +194,19 @@ def test_smart_fit_keeps_trial_styles_out_of_saved_edits(
             expect(fit).to_be_enabled(timeout=15000)
             expect(font_size).to_have_text("15 pt")
             page.keyboard.press("Escape")
-        page.keyboard.press("ControlOrMeta+s")
-        page.wait_for_timeout(300)
+        if operation == "edit":
+            with page.expect_response(
+                lambda response: (
+                    response.request.method == "PUT"
+                    and urlparse(response.url).path == f"/api/resumes/{resume_id}"
+                )
+            ) as save_response:
+                page.keyboard.press("ControlOrMeta+s")
+            assert save_response.value.ok
+        else:
+            page.keyboard.press("ControlOrMeta+s")
+        save_status = page.get_by_role("button", name="保存状态", exact=True)
+        expect(save_status).to_have_attribute("title", re.compile(r"^已保存(?: · |$)"))
         persisted = page.request.get(f"{frontend_url}/api/resumes/{resume_id}").json()[
             "data"
         ]["resume"]
@@ -336,7 +349,8 @@ def test_smart_fit_completion_and_undo_preserve_the_document(
             page.get_by_text("未能排到一页，已保留原排版", exact=True).wait_for()
         expect(stack).to_have_attribute("data-resume-page-count", initial_pages)
         page.keyboard.press("ControlOrMeta+s")
-        page.wait_for_timeout(200)
+        save_status = page.get_by_role("button", name="保存状态", exact=True)
+        expect(save_status).to_have_attribute("title", re.compile(r"^已保存(?: · |$)"))
         persisted = page.request.get(
             f"{frontend_url}/api/resumes/{baseline['id']}"
         ).json()["data"]["resume"]
