@@ -207,16 +207,11 @@ def test_inline_marks_preserve_input_geometry_and_saved_content(
 
         _open_section(page, "Publications")
         authors = page.get_by_role("textbox", name="作者", exact=True)
-        _select_all(authors)
-        authors.press("ArrowRight")
-        authors.press("Shift+ArrowLeft")
+        _select_text(authors, len("Jane Doe"), 1, backward=True)
         _inline_toolbar(page).get_by_role("button", name="上标", exact=True).click()
         expect(authors.locator("sup")).to_have_text("1")
         venue = page.get_by_role("textbox", name="期刊 / 会议", exact=True)
-        _select_all(venue)
-        venue.press("ArrowLeft")
-        venue.press("ArrowRight")
-        venue.press("Shift+ArrowRight")
+        _select_text(venue, 1, 1)
         _inline_toolbar(page).get_by_role("button", name="下标", exact=True).click()
         expect(venue.locator("sub")).to_have_text("2")
         expect(page.get_by_role("textbox", name="链接", exact=True)).to_have_value(
@@ -369,7 +364,9 @@ def test_inline_paste_flattens_paragraphs_and_keeps_plain_text(
 ACADEMIC_MARK = '[data-academic-italic="true"]'
 
 
-def _select_text(field: Locator, start: int, length: int) -> None:
+def _select_text(
+    field: Locator, start: int, length: int, *, backward: bool = False
+) -> None:
     element = field.element_handle()
     assert element is not None
 
@@ -400,12 +397,13 @@ def _select_text(field: Locator, start: int, length: int) -> None:
     wait_for_selection(0, len(field.text_content() or ""))
     field.press("ArrowLeft")
     wait_for_selection(0, 0)
-    for offset in range(1, start + 1):
+    anchor = start + length if backward else start
+    for offset in range(1, anchor + 1):
         field.press("ArrowRight")
         wait_for_selection(offset, offset)
     for offset in range(1, length + 1):
-        field.press("Shift+ArrowRight")
-        wait_for_selection(start, start + offset)
+        field.press("Shift+ArrowLeft" if backward else "Shift+ArrowRight")
+        wait_for_selection(anchor, anchor - offset if backward else anchor + offset)
 
 
 def _keyboard_academic_mark(

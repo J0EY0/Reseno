@@ -43,7 +43,7 @@ def test_github_login_callback_stays_pending_until_workspace_is_ready(
       function sample() {
         const spinner = document.querySelector(
           'svg[role="status"][aria-label="Loading"]');
-        console.debug('__OAUTH_LOGIN_RETURN_FRAME__' + JSON.stringify({
+        const frame = {
           time: performance.now(), path: location.pathname,
           login: visible(document.querySelector('#username')),
           busy: document.querySelector('[aria-label="Continue with GitHub"]')
@@ -58,7 +58,11 @@ def test_github_login_callback_stays_pending_until_workspace_is_ready(
             '[data-slot="sidebar-inset"]')),
           skeleton: Boolean(document.querySelector(
             '[data-slot="workspace-entry-skeleton"]')),
-        }));
+        };
+        window.__oauthReturnObserved ??= {};
+        window.__oauthReturnObserved.spinner ||= frame.spinner;
+        window.__oauthReturnObserved.workspace ||= frame.workspace;
+        console.debug('__OAUTH_LOGIN_RETURN_FRAME__' + JSON.stringify(frame));
         requestAnimationFrame(sample);
       }
       requestAnimationFrame(sample);
@@ -74,7 +78,7 @@ def test_github_login_callback_stays_pending_until_workspace_is_ready(
     flow.open()
     flow.start()
     flow.confirm()
-    flow.page.wait_for_timeout(100)
+    flow.page.wait_for_function("() => window.__oauthReturnObserved?.spinner")
     flow.finish()
     if workspace_delay_ms:
         flow.wait_count(flow.galleries, 1)
@@ -83,7 +87,7 @@ def test_github_login_callback_stays_pending_until_workspace_is_ready(
         flow.respond(flow.galleries[0], flow.gallery_data())
     expect(flow.page.locator('input[name="resume-search"]')).to_be_visible()
     expect(flow.page.get_by_role("dialog")).to_have_count(0)
-    flow.page.wait_for_timeout(100)
+    flow.page.wait_for_function("() => window.__oauthReturnObserved?.workspace")
     flow.assert_single_page()
     evidence = tmp_path / "oauth-current-page-return-frames.json"
     evidence.write_text(json.dumps(frames, ensure_ascii=False, indent=2))
