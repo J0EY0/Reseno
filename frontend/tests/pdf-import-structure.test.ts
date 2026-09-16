@@ -592,6 +592,7 @@ it("synthetic lexicon controls parsing", () => {
         dateRangeTerms: ["through+"],
         datePartSeparators: ["~"],
         datePartSuffixes: ["!"],
+        monthNames: [],
       },
     },
   };

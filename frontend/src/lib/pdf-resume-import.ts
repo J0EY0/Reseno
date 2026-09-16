@@ -7,7 +7,7 @@ import {
   PdfImportError,
   normalizePdfImportError,
 } from "./pdf-resume-import/errors";
-import { extractPdfLines } from "./pdf-resume-import/pdf-text-extraction";
+import { extractPdfText } from "./pdf-resume-import/pdf-text-extraction";
 import { fetchResumeImportParserConfig } from "./pdf-resume-import/parser-config";
 import { buildResumeFromPdfLines } from "./pdf-resume-import/parser";
 
@@ -17,6 +17,7 @@ export async function importResumeFromPdf(
 ): Promise<{
   resume: ResumeData;
   documentLocale: DocumentLocale;
+  sourcePageCount: number;
   unclassifiedLineCount: number;
 }> {
   signal?.throwIfAborted();
@@ -24,9 +25,9 @@ export async function importResumeFromPdf(
   const importSignal = signal
     ? AbortSignal.any([signal, controller.signal])
     : controller.signal;
-  const extraction = extractPdfLines(file, { signal: importSignal });
+  const extraction = extractPdfText(file, { signal: importSignal });
   try {
-    const [lines, { registry, lexicon }] = await Promise.all([
+    const [{ lines, pageCount }, { registry, lexicon }] = await Promise.all([
       extraction,
       waitForPdfImport(fetchResumeImportParserConfig(), importSignal),
     ]);
@@ -50,6 +51,7 @@ export async function importResumeFromPdf(
         lexicon,
       ),
       documentLocale,
+      sourcePageCount: pageCount,
     };
   } catch (error) {
     controller.abort();

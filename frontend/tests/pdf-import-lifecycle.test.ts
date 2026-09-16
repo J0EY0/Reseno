@@ -9,7 +9,7 @@ import {
   normalizePdfImportError,
 } from "@/lib/pdf-resume-import/errors";
 import {
-  extractPdfLines,
+  extractPdfText,
   MAX_PDF_IMPORT_BYTES,
 } from "@/lib/pdf-resume-import/pdf-text-extraction";
 import zh from "@/i18n/locales/zh.json";
@@ -87,7 +87,7 @@ function createExtraction({
       return new ArrayBuffer(1);
     },
   } as File;
-  return { extractPdfLines, MAX_PDF_IMPORT_BYTES, calls, file };
+  return { extractPdfText, MAX_PDF_IMPORT_BYTES, calls, file };
 }
 const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
 beforeEach(() => {
@@ -103,11 +103,25 @@ afterEach(() => {
 
 it("PDF extraction destroys its loading task after all pages succeed", async () => {
   const fixture = createExtraction();
-  const lines = await fixture.extractPdfLines(fixture.file);
+  const { lines, pageCount } = await fixture.extractPdfText(fixture.file);
+  assert.equal(pageCount, 2);
   assert.deepEqual(
     Array.from(lines, (line) => line.text),
     ["Page 1", "Page 2"],
   );
+  assert.equal(fixture.calls.destroys, 1);
+});
+
+it("PDF extraction counts a trailing page without text", async () => {
+  const fixture = createExtraction({
+    numPages: 2,
+    pageText: async (page) =>
+      page === 1 ? textContent("Page 1") : { items: [] },
+  });
+  const result = await fixture.extractPdfText(fixture.file);
+  assert.equal(result.pageCount, 2);
+  assert.equal(result.lines.length, 1);
+  assert.equal(result.lines[0]?.page, 1);
   assert.equal(fixture.calls.destroys, 1);
 });
 
@@ -125,7 +139,7 @@ it.each(["loading", "text"] as const)(
           },
     );
     await assert.rejects(
-      fixture.extractPdfLines(fixture.file),
+      fixture.extractPdfText(fixture.file),
       (error) => error === failure,
     );
     assert.equal(fixture.calls.destroys, 1);
@@ -136,7 +150,7 @@ it.each(["loading", "text"] as const)(
 it("PDF size is rejected before any file bytes are read", async () => {
   const fixture = createExtraction();
   await assert.rejects(
-    fixture.extractPdfLines({
+    fixture.extractPdfText({
       ...fixture.file,
       size: fixture.MAX_PDF_IMPORT_BYTES + 1,
     }),
@@ -148,10 +162,12 @@ it("PDF size is rejected before any file bytes are read", async () => {
 
 it("PDFs at the 50-page limit are accepted and larger documents fail before page extraction", async () => {
   const allowed = createExtraction({ numPages: 50 });
-  assert.equal((await allowed.extractPdfLines(allowed.file)).length, 50);
+  const result = await allowed.extractPdfText(allowed.file);
+  assert.equal(result.lines.length, 50);
+  assert.equal(result.pageCount, 50);
   assert.equal(allowed.calls.destroys, 1);
   const oversized = createExtraction({ numPages: 51 });
-  await assert.rejects(oversized.extractPdfLines(oversized.file), {
+  await assert.rejects(oversized.extractPdfText(oversized.file), {
     code: "PDF_IMPORT_TOO_MANY_PAGES",
   });
   assert.equal(oversized.calls.pages.length, 0);
@@ -163,7 +179,7 @@ it("cancelling before PDF import prevents file access", async () => {
   const controller = new AbortController();
   controller.abort();
   await assert.rejects(
-    fixture.extractPdfLines(fixture.file, { signal: controller.signal }),
+    fixture.extractPdfText(fixture.file, { signal: controller.signal }),
     { name: "AbortError" },
   );
   assert.equal(fixture.calls.reads, 0);
@@ -173,7 +189,7 @@ it("cancelling while reading PDF bytes returns promptly and never creates a docu
   const fixture = createExtraction();
   const buffer = deferred<ArrayBuffer>();
   const controller = new AbortController();
-  const request = fixture.extractPdfLines(
+  const request = fixture.extractPdfText(
     { ...fixture.file, arrayBuffer: () => buffer.promise },
     { signal: controller.signal },
   );
@@ -187,7 +203,7 @@ it("cancelling while reading PDF bytes returns promptly and never creates a docu
 it("cancelling during document loading destroys the pending worker exactly once", async () => {
   const fixture = createExtraction({ loading: deferred().promise });
   const controller = new AbortController();
-  const request = fixture.extractPdfLines(fixture.file, {
+  const request = fixture.extractPdfText(fixture.file, {
     signal: controller.signal,
   });
   await vi.waitFor(() => assert.equal(fixture.calls.documents, 1));
@@ -201,7 +217,7 @@ it("cancelling during page text extraction stops subsequent pages and destroys t
     pageText: () => deferred<PageText>().promise,
   });
   const controller = new AbortController();
-  const request = fixture.extractPdfLines(fixture.file, {
+  const request = fixture.extractPdfText(fixture.file, {
     signal: controller.signal,
   });
   await vi.waitFor(() => assert.deepEqual(fixture.calls.texts, [1]));

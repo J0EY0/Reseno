@@ -144,6 +144,26 @@ it("rotated text font size", () => {
   assert.equal(lines[0]?.fontSize, 10);
 });
 
+it("retains the dominant text font for structural heading recognition", () => {
+  const lines = textContentToLines(
+    {
+      items: [
+        textItem("•", 30, 700, { width: 4, fontName: "symbol" }),
+        textItem("Community Involvement", 40, 700, {
+          fontName: "heading",
+        }),
+        textItem("Supported community workshops.", 40, 680, {
+          fontName: "body",
+        }),
+      ],
+    },
+    1,
+  );
+
+  assert.equal(lines[0]?.fontName, "heading");
+  assert.equal(lines[1]?.fontName, "body");
+});
+
 it("continuous han glyph tokens", () => {
   const lines = textContentToLines(
     {
@@ -180,8 +200,8 @@ it("document language detection", () => {
       line("Иван Петров", 0),
       line("Software Engineer", 1),
     ]),
-    "zh",
-    "a non-Latin script should default to Chinese",
+    "en",
+    "a non-Chinese script should use the non-Chinese document locale",
   );
   assert.equal(
     detectDocumentLocale([line("Resume", 0)]),

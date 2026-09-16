@@ -17,6 +17,7 @@ class ResumeImportLocaleLexiconResponse(BaseModel):
     date_range_terms: list[str] = Field(alias="dateRangeTerms")
     date_part_separators: list[str] = Field(alias="datePartSeparators")
     date_part_suffixes: list[str] = Field(alias="datePartSuffixes")
+    month_names: list[str] = Field(alias="monthNames")
 
     @field_validator(
         "document_title_terms",
@@ -24,6 +25,7 @@ class ResumeImportLocaleLexiconResponse(BaseModel):
         "date_range_terms",
         "date_part_separators",
         "date_part_suffixes",
+        "month_names",
     )
     @classmethod
     def validate_non_empty_terms(cls, terms: list[str]) -> list[str]:

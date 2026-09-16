@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "reseno-backend"
-version = "0.2.0"
+version = "0.2.1"
 description = "FastAPI backend for Reseno"
 requires-python = ">=3.12"
 dependencies = [

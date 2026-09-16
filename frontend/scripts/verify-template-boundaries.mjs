@@ -211,7 +211,7 @@ const previewStyles = await readFile(new URL("index.css", srcDir), "utf8");
 for (const layout of ["columns", "inline"]) {
   assert(
     new RegExp(
-      `\\[data-resume-list-layout=["']${layout}["']\\] > div > ul`,
+      `\\[data-resume-list-layout=["']${layout}["']\\] > div > (?:ul|:is\\(ul,\\s*ol\\))`,
     ).test(previewStyles),
     `${layout} lists must style the sanitized rich-text wrapper used by previews.`,
   );

@@ -3,38 +3,57 @@
     "en": {
       "documentTitleTerms": [
         "resume",
+        "résumé",
+        "cv",
         "curriculum vitae",
         "curriculum",
         "vitae"
       ],
-      "currentPeriodTerms": [
-        "present",
-        "current"
-      ],
-      "dateRangeTerms": [],
+      "currentPeriodTerms": ["present", "current"],
+      "dateRangeTerms": ["to"],
       "datePartSeparators": [],
-      "datePartSuffixes": []
+      "datePartSuffixes": [],
+      "monthNames": [
+        "January",
+        "Jan",
+        "February",
+        "Feb",
+        "March",
+        "Mar",
+        "April",
+        "Apr",
+        "May",
+        "June",
+        "Jun",
+        "July",
+        "Jul",
+        "August",
+        "Aug",
+        "September",
+        "Sep",
+        "Sept",
+        "October",
+        "Oct",
+        "November",
+        "Nov",
+        "December",
+        "Dec"
+      ]
     },
     "zh": {
       "documentTitleTerms": [
         "简历",
-        "个人简历"
+        "个人简历",
+        "簡歷",
+        "個人簡歷",
+        "履歷",
+        "個人履歷"
       ],
-      "currentPeriodTerms": [
-        "至今",
-        "今",
-        "现在"
-      ],
-      "dateRangeTerms": [
-        "至",
-        "到"
-      ],
-      "datePartSeparators": [
-        "年"
-      ],
-      "datePartSuffixes": [
-        "月"
-      ]
+      "currentPeriodTerms": ["至今", "今", "现在", "現在"],
+      "dateRangeTerms": ["至", "到"],
+      "datePartSeparators": ["年"],
+      "datePartSuffixes": ["月"],
+      "monthNames": []
     }
   }
 }

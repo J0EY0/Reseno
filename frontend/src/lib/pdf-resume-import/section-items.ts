@@ -2,15 +2,26 @@ import { createId } from "@/lib/resume";
 import type { SectionKind } from "@/types/resume";
 
 import { looksLikeShortLabel } from "./basic-contact";
+import { buildAchievementItems } from "./achievement-items";
+import type { ParsedSectionItem } from "./section-item-types";
+import {
+  extractStandaloneYear,
+  groupExperienceLines,
+  groupExperienceRows,
+  groupPublicationLines,
+  looksLikeHighlightLine,
+  normalizeBulletLine,
+  type ExperienceLine,
+} from "./section-item-groups";
 import type { TextLine } from "./pdf-text-extraction";
 import {
   PDF_IMPORT_PROFILE,
   extractPeriod,
-  looksLikePeriodLine,
   type ResumeImportLexiconContext,
 } from "./parser-config";
 import {
   countMatches,
+  countLeadingWordGraphemes,
   countTextGraphemes,
   joinWrappedLines,
   normalizeWhitespace,
@@ -18,29 +29,16 @@ import {
   splitLabeledValue,
 } from "./text-heuristics";
 
-type ExperienceLine = TextLine & {
-  isBullet: boolean;
-  hasPeriod: boolean;
-};
-
-// PDF parsing first produces a layout-oriented item. A single adapter below
-// maps that intermediate shape into the canonical kind-specific V2 contract.
-export type ParsedSectionItem = {
-  id: string;
-  title: string;
-  subtitle: string;
-  meta: string;
-  period: string;
-  description: string;
-  highlights: string[];
-};
 export function buildSectionItems(
   lines: TextLine[],
   kind: SectionKind,
   lexiconContext: ResumeImportLexiconContext,
 ): ParsedSectionItem[] {
   if (isListSectionKind(kind)) {
-    return buildListSectionItems(lines, kind);
+    return buildListSectionItems(lines);
+  }
+  if (kind === "achievement") {
+    return buildAchievementItems(lines, lexiconContext);
   }
 
   const groups =
@@ -52,87 +50,82 @@ export function buildSectionItems(
     .filter(hasItemText);
 }
 
-function groupPublicationLines(
-  lines: TextLine[],
-  lexiconContext: ResumeImportLexiconContext,
-) {
-  const groups: ExperienceLine[][] = [];
-  let current: ExperienceLine[] = [];
-  let currentHasPeriod = false;
-  const rows = groupExperienceRows(
-    lines
-      .map((line) => {
-        const parsed = parseExperienceLine(line, lexiconContext);
-        return {
-          ...parsed,
-          hasPeriod:
-            parsed.hasPeriod || Boolean(extractStandaloneYear(parsed.text)),
-        };
-      })
-      .filter((line) => line.text),
-  );
-
-  for (const row of rows) {
-    const rowHasPeriod = row.some((line) => line.hasPeriod);
-    if (current.length > 0 && currentHasPeriod && rowHasPeriod) {
-      groups.push(current);
-      current = [];
-      currentHasPeriod = false;
-    }
-    current.push(...row);
-    currentHasPeriod ||= rowHasPeriod;
-  }
-
-  if (current.length > 0) {
-    groups.push(current);
-  }
-  return groups;
-}
-
 export function isListSectionKind(kind: SectionKind) {
   return kind === "simple_list";
 }
 
-function buildListSectionItems(
-  lines: TextLine[],
-  kind: SectionKind,
-): ParsedSectionItem[] {
+function buildListSectionItems(lines: TextLine[]): ParsedSectionItem[] {
   const items: ParsedSectionItem[] = [];
-  let labeledItem: { item: ParsedSectionItem; line: TextLine } | null = null;
+  let current: {
+    item: ParsedSectionItem;
+    line: TextLine;
+    labeled: boolean;
+  } | null = null;
 
   for (const line of lines) {
-    const labeled = splitLabeledListLine(line.text);
+    const text = normalizeBulletLine(line.text);
+    const labeled = splitLabeledListLine(text);
+    if (
+      current &&
+      !labeled &&
+      text === normalizeWhitespace(line.text) &&
+      (looksLikeMeasuredListContinuation(current.line, line, lines) ||
+        (current.labeled &&
+          !current.line.width &&
+          looksLikeListContinuation(current.line, line)))
+    ) {
+      const field = current.labeled ? "subtitle" : "title";
+      current.item[field] = joinWrappedLines([current.item[field], text]);
+      current.line = line;
+      continue;
+    }
+
     if (labeled) {
       const item = buildItem({
         title: labeled.label,
         subtitle: labeled.value,
       });
       items.push(item);
-      labeledItem = { item, line };
+      current = { item, line, labeled: true };
       continue;
     }
 
-    if (labeledItem && looksLikeListContinuation(labeledItem.line, line)) {
-      labeledItem.item.subtitle = joinWrappedLines([
-        labeledItem.item.subtitle,
-        line.text,
-      ]);
-      labeledItem.line = line;
-      continue;
-    }
-
-    labeledItem = null;
-    if (kind === "simple_list") {
-      items.push(buildItem({ title: line.text }));
-      continue;
-    }
-
-    items.push(
-      ...splitInlineList(line.text).map((value) => buildItem({ title: value })),
-    );
+    const item = buildItem({ title: text });
+    items.push(item);
+    current = { item, line, labeled: false };
   }
 
   return items.filter(hasItemText);
+}
+
+function looksLikeMeasuredListContinuation(
+  previous: TextLine,
+  current: TextLine,
+  lines: TextLine[],
+) {
+  if (!previous.width || !looksLikeListContinuation(previous, current)) {
+    return false;
+  }
+  const fontSize = Math.max(previous.fontSize, current.fontSize);
+  if (Math.abs(previous.fontSize - current.fontSize) > fontSize * 0.05) {
+    return false;
+  }
+  const columnWidth = Math.max(
+    ...lines
+      .filter(
+        (line) =>
+          line.page === previous.page &&
+          Math.abs(line.x - previous.x) <=
+            fontSize * PDF_IMPORT_PROFILE.layout.listContinuationXScale,
+      )
+      .map((line) => line.width ?? 0),
+  );
+  const leadingWordWidth = current.width
+    ? (current.width * countLeadingWordGraphemes(current.text)) /
+      Math.max(1, countTextGraphemes(current.text))
+    : 0;
+  const wrapAllowance = Math.max(fontSize * 2, leadingWordWidth + fontSize / 2);
+  return previous.width >= columnWidth - wrapAllowance;
 }
 
 function looksLikeListContinuation(previous: TextLine, current: TextLine) {
@@ -164,129 +157,6 @@ function splitLabeledListLine(value: string) {
     : null;
 }
 
-function groupExperienceLines(
-  lines: TextLine[],
-  lexiconContext: ResumeImportLexiconContext,
-) {
-  // Experience-like sections usually contain a compact header followed by
-  // body copy. Use visual rows for the boundary check so a right-column date
-  // remains part of the same item as the left-column company or project name.
-  const groups: ExperienceLine[][] = [];
-  let current: ExperienceLine[] = [];
-  const parsedLines = lines
-    .map((line) => parseExperienceLine(line, lexiconContext))
-    .filter((line) => line.text);
-  const rows = groupExperienceRows(parsedLines);
-  let currentHasBody = false;
-  let currentHasPeriod = false;
-
-  for (const [index, row] of rows.entries()) {
-    const startsNew =
-      current.length > 0 &&
-      currentHasBody &&
-      looksLikeExperienceHeaderStart(rows, index);
-    if (startsNew) {
-      groups.push(current);
-      current = [];
-      currentHasBody = false;
-      currentHasPeriod = false;
-    }
-
-    current.push(...row);
-    const rowHasPeriod = row.some((line) => line.hasPeriod);
-    // Vector bullets are absent from PDF.js text. Once a dated header has been
-    // followed by another row, the current item has enough structural body
-    // evidence to let a later dated header start the next item, even when the
-    // body text is short and has no terminal punctuation.
-    currentHasBody ||= currentHasPeriod && !rowHasPeriod;
-    currentHasPeriod ||= rowHasPeriod;
-    currentHasBody ||= row.some(
-      (line) => line.isBullet || looksLikeHighlightLine(line.text),
-    );
-  }
-
-  if (current.length > 0) {
-    groups.push(current);
-  }
-
-  return groups;
-}
-
-function groupExperienceRows(lines: ExperienceLine[]) {
-  const rows: ExperienceLine[][] = [];
-
-  for (const line of lines) {
-    const row = rows.find((candidate) => {
-      const anchor = candidate[0];
-      if (!anchor || anchor.page !== line.page) {
-        return false;
-      }
-      const tolerance =
-        Math.max(anchor.fontSize, line.fontSize) *
-        PDF_IMPORT_PROFILE.layout.headerRowToleranceScale;
-      return Math.abs(anchor.y - line.y) <= tolerance;
-    });
-
-    if (row) {
-      row.push(line);
-    } else {
-      rows.push([line]);
-    }
-  }
-
-  return rows.map((row) => [...row].sort((left, right) => left.x - right.x));
-}
-
-function looksLikeExperienceHeaderStart(
-  rows: ExperienceLine[][],
-  startIndex: number,
-) {
-  const candidateRows = rows.slice(
-    startIndex,
-    startIndex + PDF_IMPORT_PROFILE.text.maxHeaderRowsPerItem,
-  );
-  let periodRowIndex = -1;
-
-  for (const [index, row] of candidateRows.entries()) {
-    if (
-      row.some((line) => line.isBullet || looksLikeHighlightLine(line.text))
-    ) {
-      break;
-    }
-    if (row.some((line) => line.hasPeriod)) {
-      periodRowIndex = index;
-      break;
-    }
-  }
-
-  if (periodRowIndex < 0) {
-    return false;
-  }
-
-  if (periodRowIndex <= PDF_IMPORT_PROFILE.text.maxDirectPeriodRowIndex) {
-    return true;
-  }
-
-  // A distant date is only reliable when the preceding rows already form a
-  // visible multi-column header. In a plain single-column PDF, accepting any
-  // short line before a later date would move the previous item's final body
-  // sentence into the next experience.
-  return candidateRows.slice(0, periodRowIndex).some((row) => row.length > 1);
-}
-
-function parseExperienceLine(
-  rawLine: TextLine,
-  lexiconContext: ResumeImportLexiconContext,
-): ExperienceLine {
-  const text = normalizeBulletLine(rawLine.text);
-  return {
-    ...rawLine,
-    text,
-    isBullet: isBulletLine(rawLine.text),
-    hasPeriod: looksLikePeriodLine(text, lexiconContext),
-  };
-}
-
 function groupToItem(
   group: ExperienceLine[],
   kind: SectionKind,
@@ -308,7 +178,9 @@ function groupToItem(
   let highlightLastLine: ExperienceLine | null = null;
 
   for (const line of group) {
-    const text = normalizeWhitespace(line.text.replace(period, ""));
+    const text = normalizeWhitespace(
+      line.text.replace(period, "").replace(/[(（]\s*[)）]/g, ""),
+    );
     if (!text) {
       continue;
     }
@@ -358,7 +230,9 @@ function groupToItem(
 
     if (
       headerLines.length < PDF_IMPORT_PROFILE.text.maxHeaderLinesPerItem &&
-      !looksLikeHighlightLine(text)
+      (line.hasPeriod ||
+        (!looksLikeHighlightLine(text) &&
+          !isIndentedBodyLine(line, headerLines)))
     ) {
       headerLines.push({ ...line, text });
     } else {
@@ -373,19 +247,25 @@ function groupToItem(
   return buildItem({
     ...item,
     period,
-    description,
+    description: [item.description, description].filter(Boolean).join("\n\n"),
     highlights,
   });
 }
 
-function extractStandaloneYear(value: string) {
-  const match = value.trim().match(/^\d{4}$/);
-  if (!match) {
-    return "";
+function isIndentedBodyLine(line: ExperienceLine, header: ExperienceLine[]) {
+  const first = header[0];
+  if (!first || first.page !== line.page) {
+    return false;
   }
-  const year = Number(match[0]);
-  const { minYear, maxYear } = PDF_IMPORT_PROFILE.dates;
-  return year >= minYear && year <= maxYear ? match[0] : "";
+  const tolerance =
+    line.fontSize * PDF_IMPORT_PROFILE.layout.listContinuationXScale;
+  return (
+    line.y <
+      first.y -
+        line.fontSize * PDF_IMPORT_PROFILE.layout.headerRowToleranceScale &&
+    line.x > first.x + tolerance &&
+    !header.some((cell) => Math.abs(cell.x - line.x) <= tolerance)
+  );
 }
 
 function looksLikeWrappedBodyContinuation(
@@ -438,7 +318,16 @@ function headerLinesToItem(
     return {
       title: firstRow[0]?.text ?? "",
       subtitle: laterLeftCells.join(" · "),
-      meta: rightCells.join(" · "),
+      meta: (kind === "project"
+        ? rightCells.filter(looksLikeListMetaLine)
+        : rightCells
+      ).join(" · "),
+      description:
+        kind === "project"
+          ? rightCells
+              .filter((text) => !looksLikeListMetaLine(text))
+              .join("\n\n")
+          : "",
     };
   }
 
@@ -446,9 +335,17 @@ function headerLinesToItem(
   // Field placement is best-effort. When the shape is unclear, preserve text in
   // subtitle/meta rather than dropping it or forcing a brittle semantic guess.
   if (kind === "education") {
-    const meta = textLines.find(looksLikeScoreMetaLine) ?? "";
-    const remaining = textLines.filter((line) => line !== meta);
-    const title = pickMostLikelyTitleLine(remaining) ?? "";
+    const fields = textLines.flatMap((line) =>
+      line
+        .split(/[|｜]/)
+        .map((part) => part.trim())
+        .filter(Boolean),
+    );
+    const meta = fields.find(looksLikeScoreMetaLine) ?? "";
+    const remaining = fields.filter((line) => line !== meta);
+    const title = /[|｜]/.test(textLines[0] ?? "")
+      ? (remaining[0] ?? "")
+      : (pickMostLikelyTitleLine(remaining) ?? "");
     const subtitle = remaining.filter((line) => line !== title).join(" · ");
     return { title, subtitle, meta };
   }
@@ -491,17 +388,6 @@ function splitTitleAndSubtitle(value: string): [string, string] {
 
   return [parts[0] ?? value, parts.slice(1).join(" · ")];
 }
-export function looksLikeHighlightLine(line: string) {
-  // Avoid content-word dictionaries here. A line is treated as body text only
-  // when its shape looks like a sentence or a dense comma-separated statement.
-  return (
-    countTextGraphemes(line) >
-      PDF_IMPORT_PROFILE.text.minLongDescriptionGraphemes ||
-    /[。；;.]$/.test(line) ||
-    countMatches(line, /[，,、]/g) >= PDF_IMPORT_PROFILE.text.minDenseCommaCount
-  );
-}
-
 function appendHighlightLine(highlights: string[], line: string) {
   if (looksLikeHighlightLine(line)) {
     highlights.push(line);
@@ -574,11 +460,4 @@ function hasItemText(item: ParsedSectionItem) {
     item.description,
     ...item.highlights,
   ].some((value) => value.trim());
-}
-
-function normalizeBulletLine(line: string) {
-  return normalizeWhitespace(line.replace(/^[•·*●○◦▪▫-]+\s*/, ""));
-}
-export function isBulletLine(line: string) {
-  return /^[\s•·*●○◦▪▫-]+/.test(line);
 }

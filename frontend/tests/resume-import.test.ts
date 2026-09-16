@@ -4,12 +4,18 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { importResumesIntoWorkspace } from "@/components/workspace/resume-gallery-import";
 import { defaultMessages } from "@/i18n";
 import { importResumePayload } from "@/lib/import-api";
+import { importResumeFromPdf } from "@/lib/pdf-resume-import";
+import { fitImportedResumeToOnePage } from "@/components/workspace/pdf-import-layout";
 import { createEmptyResume } from "@/lib/resume";
 import { getBuiltInTemplates } from "@/lib/templates";
 import { createResumeApi, createTemplateApi } from "@/lib/workspace-api";
 import type { ImportResumeResponse, ResumeArtifactItem } from "@/types/api";
 
 vi.mock("@/lib/import-api", () => ({ importResumePayload: vi.fn() }));
+vi.mock("@/lib/pdf-resume-import", () => ({ importResumeFromPdf: vi.fn() }));
+vi.mock("@/components/workspace/pdf-import-layout", () => ({
+  fitImportedResumeToOnePage: vi.fn(),
+}));
 vi.mock("@/lib/workspace-api", () => ({
   createResumeApi: vi.fn(),
   createTemplateApi: vi.fn(),
@@ -153,3 +159,51 @@ it("keeps committed imports on cancellation and resumes the remaining batch", as
     vi.mocked(createResumeApi).mock.calls.map(([request]) => request.title),
   ).toEqual(["1", "2", "3"]);
 });
+
+it.each([1, 2])(
+  "fits only a single-page PDF before persisting it (source pages=%s)",
+  async (sourcePageCount) => {
+    prepare({ templates: [], resumes: [] });
+    const resume = createEmptyResume();
+    vi.mocked(importResumeFromPdf).mockResolvedValue({
+      resume,
+      documentLocale: "en",
+      sourcePageCount,
+      unclassifiedLineCount: 0,
+    });
+    const fittedStyle = {
+      template: "minimal",
+      typography: { fontFamily: "inter" as const, fontSize: 14 },
+      templateSettings: { bodyLineHeight: 1.4, itemGap: 0.4 },
+    };
+    let finishLayout!: () => void;
+    vi.mocked(fitImportedResumeToOnePage).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishLayout = () => resolve(fittedStyle);
+        }),
+    );
+    const pending = importResumesIntoWorkspace(
+      new File(["pdf"], "source.pdf", { type: "application/pdf" }),
+    );
+    if (sourcePageCount === 1) {
+      await vi.waitFor(() =>
+        expect(fitImportedResumeToOnePage).toHaveBeenCalledOnce(),
+      );
+      expect(createResumeApi).not.toHaveBeenCalled();
+      finishLayout();
+    }
+    const result = await pending;
+    expect(result.importedCount).toBe(1);
+    expect(createResumeApi).toHaveBeenCalledOnce();
+    const [request] = vi.mocked(createResumeApi).mock.calls[0];
+    expect(request.resume).toBe(resume);
+    if (sourcePageCount === 1) {
+      expect(request).toMatchObject(fittedStyle);
+    } else {
+      expect(fitImportedResumeToOnePage).not.toHaveBeenCalled();
+      expect(request.templateSettings).toBeNull();
+      expect(request.typography).toBeUndefined();
+    }
+  },
+);

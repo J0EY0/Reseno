@@ -234,7 +234,12 @@ it("retries every malformed configuration without poisoning the cache, then reus
   Date.now = () => fakeNow;
   try {
     parserConfigResponseMode = "success";
-    const { resume: imported, documentLocale } = await importResumeFromPdf(pdf);
+    const {
+      resume: imported,
+      documentLocale,
+      sourcePageCount,
+    } = await importResumeFromPdf(pdf);
+    assert.equal(sourcePageCount, 2);
     assert.equal(documentLocale, "en");
     assert.equal(imported.basic.name, "Test User");
     assert.equal(imported.basic.email, "test.user@example.com");
@@ -304,6 +309,7 @@ it("imports a short real PDF and destroys its PDF.js loading task exactly once",
     "a short text-layer resume must not be rejected by an arbitrary length floor",
   );
   assert.equal(shortImport.documentLocale, "en");
+  assert.equal(shortImport.sourcePageCount, 1);
 });
 
 it("preserves unclassified real PDF content exactly once with the localized fallback title", async () => {
@@ -329,6 +335,17 @@ it("preserves unclassified real PDF content exactly once with the localized fall
     "Other",
     "fallback section titles must come from the registry and detected document language",
   );
+});
+
+it("reports a trailing blank source page independently of extracted text", async () => {
+  const result = await importResumeFromPdf(
+    createPdfFile([
+      ["Example User", "example@example.com", "Skills", "TypeScript, Python"],
+      [],
+    ]),
+  );
+  assert.equal(result.sourcePageCount, 2);
+  assert.equal(result.resume.basic.name, "Example User");
 });
 
 it("rejects oversized, invalid, and meaningless real PDFs", async () => {
@@ -362,3 +379,45 @@ it("keeps one deep public PDF import interface", async () => {
     "the product PDF importer must keep one deep public interface",
   );
 });
+
+it.each(["zh", "en"])(
+  "imports English dates and section labels with a %s workspace locale",
+  async (locale) => {
+    localStorage.setItem("reseno-locale", locale);
+    const result = await importResumeFromPdf(
+      createPdfFile([
+        [
+          "Example Person",
+          "person@example.com",
+          "Academic Background",
+          "Example University",
+          "September 2018 - June 2022",
+          "Studied computer science and software engineering.",
+          "Professional Experience",
+          "First Company",
+          "Jul 2022 - Dec 2023",
+          "Built reliable document processing services.",
+          "Second Company",
+          "Jan 2024 - Present",
+          "Delivered accessible editing and review workflows.",
+          "Technical Expertise",
+          "TypeScript, Python, SQL",
+        ],
+      ]),
+    );
+    assert.equal(result.documentLocale, "en");
+    assert.deepEqual(
+      result.resume.sections.map(({ title }) => title),
+      ["Academic Background", "Professional Experience", "Technical Expertise"],
+    );
+    assert.deepEqual(
+      requiredSection(result.resume, "experience").items.map(
+        ({ company, period }) => ({ company, period }),
+      ),
+      [
+        { company: "First Company", period: "Jul 2022 - Dec 2023" },
+        { company: "Second Company", period: "Jan 2024 - Present" },
+      ],
+    );
+  },
+);

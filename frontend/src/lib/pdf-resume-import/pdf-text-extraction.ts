@@ -2,6 +2,7 @@ import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
 import { waitForPdfImport } from "./abort";
 import { PdfImportError } from "./errors";
+import { findRepeatedColumnStarts } from "./column-gaps";
 
 import { PDF_IMPORT_PROFILE, median } from "./parser-config";
 import {
@@ -13,6 +14,7 @@ import {
 
 type PdfTextItem = {
   str?: string;
+  fontName?: string;
   dir?: string;
   transform?: number[];
   width?: number;
@@ -47,9 +49,11 @@ export type TextLine = {
   text: string;
   page: number;
   pageWidth?: number;
+  width?: number;
   x: number;
   y: number;
   fontSize: number;
+  fontName?: string;
 };
 type PositionedTextItem = {
   text: string;
@@ -58,15 +62,16 @@ type PositionedTextItem = {
   x: number;
   y: number;
   fontSize: number;
+  fontName?: string;
   width: number;
 };
 export const MAX_PDF_IMPORT_BYTES = 10 * 1024 * 1024;
 export const MAX_PDF_IMPORT_PAGES = 50;
 
-export async function extractPdfLines(
+export async function extractPdfText(
   file: File,
   { signal }: { signal?: AbortSignal } = {},
-): Promise<TextLine[]> {
+): Promise<{ lines: TextLine[]; pageCount: number }> {
   signal?.throwIfAborted();
   if (file.size > MAX_PDF_IMPORT_BYTES) {
     throw new PdfImportError("PDF_IMPORT_FILE_TOO_LARGE");
@@ -99,7 +104,7 @@ export async function extractPdfLines(
         ...textContentToLinesForResumeImport(content, pageNumber, pageWidth),
       );
     }
-    return lines;
+    return { lines, pageCount: document.numPages };
   } finally {
     signal?.removeEventListener("abort", onAbort);
     await destroy();
@@ -132,6 +137,7 @@ export function textContentToLinesForResumeImport(
           x: Number(transform[4] ?? 0),
           y: Number(transform[5] ?? 0),
           fontSize: resolveTextItemFontSize(item, transform),
+          fontName: item.fontName,
           width: Number(item.width ?? 0),
         };
       }),
@@ -140,6 +146,7 @@ export function textContentToLinesForResumeImport(
   const lineTolerance = estimateLineTolerance(items);
   const wordGap = estimateWordGap(items);
   const buckets = groupTextItemsByLine(items, lineTolerance);
+  const columnStarts = findRepeatedColumnStarts(buckets, wordGap, pageWidth);
 
   const lines = buckets
     .flatMap((bucket) => {
@@ -148,8 +155,9 @@ export function textContentToLinesForResumeImport(
       // shared y-coordinate so right-side metadata cannot sort before the
       // left-side title later in the import pipeline.
       const visualRowY = median(bucket.map((item) => item.y));
-      return splitLineBucketByColumnGap(bucket, wordGap).map((column) =>
-        textItemBucketToLine(column, page, pageWidth, wordGap, visualRowY),
+      return splitLineBucketByColumnGap(bucket, wordGap, columnStarts).map(
+        (column) =>
+          textItemBucketToLine(column, page, pageWidth, wordGap, visualRowY),
       );
     })
     .filter((line) => line.text);
@@ -231,6 +239,7 @@ function groupTextItemsByLine(
 function splitLineBucketByColumnGap(
   bucket: PositionedTextItem[],
   wordGap: number,
+  columnStarts: Set<number>,
 ) {
   const sorted = [...bucket].sort((left, right) => left.x - right.x);
   const columnGap = wordGap * PDF_IMPORT_PROFILE.layout.minColumnGapWords;
@@ -240,7 +249,10 @@ function splitLineBucketByColumnGap(
 
   for (const item of sorted) {
     const gap = item.x - previousEnd;
-    if (current.length > 0 && gap > columnGap) {
+    if (
+      current.length > 0 &&
+      (gap > columnGap || columnStarts.has(item.sourceIndex))
+    ) {
       lines.push(current);
       current = [];
     }
@@ -270,14 +282,30 @@ function textItemBucketToLine(
   const text = joinLineItems(sorted, wordGap, direction);
   const averageFontSize =
     sorted.reduce((sum, item) => sum + item.fontSize, 0) / sorted.length;
+  const fontWeights = new Map<string, number>();
+  for (const item of sorted) {
+    if (item.fontName) {
+      fontWeights.set(
+        item.fontName,
+        (fontWeights.get(item.fontName) ?? 0) + countTextGraphemes(item.text),
+      );
+    }
+  }
+  const fontName = [...fontWeights].sort(
+    (left, right) => right[1] - left[1],
+  )[0]?.[0];
 
   return {
     text,
     page,
     pageWidth: pageWidth > 0 ? pageWidth : undefined,
     x: Math.min(...sorted.map((item) => item.x)),
+    width:
+      Math.max(...sorted.map((item) => item.x + item.width)) -
+      Math.min(...sorted.map((item) => item.x)),
     y: visualRowY,
     fontSize: averageFontSize,
+    ...(fontName ? { fontName } : {}),
   };
 }
 

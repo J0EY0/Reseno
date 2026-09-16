@@ -32,6 +32,7 @@ type ResumeImportLexiconLocale = {
   dateRangeTerms: string[];
   datePartSeparators: string[];
   datePartSuffixes: string[];
+  monthNames: string[];
 };
 
 export type ResumeImportLexiconResponse = {
@@ -122,7 +123,7 @@ export const PDF_IMPORT_PROFILE = {
     contactScanLineLimit: 8,
     genericSectionHeadingSkipLines: 4,
     genericSectionHeadingScale: 1.15,
-    maxGenericSectionHeadingGraphemes: 18,
+    maxGenericSectionHeadingGraphemes: 64,
     maxHeaderLinesPerItem: 4,
     maxHeaderRowsPerItem: 3,
     maxNameGraphemes: 32,
@@ -288,7 +289,8 @@ function isResumeImportLexiconLocale(value: unknown) {
     isStringArray(value.currentPeriodTerms) &&
     isStringArray(value.dateRangeTerms) &&
     isStringArray(value.datePartSeparators) &&
-    isStringArray(value.datePartSuffixes)
+    isStringArray(value.datePartSuffixes) &&
+    isStringArray(value.monthNames)
   );
 }
 
@@ -368,6 +370,7 @@ export function createResumeImportLexiconContext(
   const datePartSuffixes = localeLexicons.flatMap(
     (locale) => locale.datePartSuffixes,
   );
+  const monthNames = localeLexicons.flatMap((locale) => locale.monthNames);
 
   if (documentTitleTerms.size === 0 || currentPeriodTerms.length === 0) {
     throw new PdfImportError("INVALID_RESUME_IMPORT_LEXICON");
@@ -380,6 +383,7 @@ export function createResumeImportLexiconContext(
       dateRangeTerms,
       datePartSeparators,
       datePartSuffixes,
+      monthNames,
     }),
   };
 }
@@ -419,11 +423,13 @@ function buildPeriodPattern({
   dateRangeTerms,
   datePartSeparators,
   datePartSuffixes,
+  monthNames,
 }: {
   currentPeriodTerms: string[];
   dateRangeTerms: string[];
   datePartSeparators: string[];
   datePartSuffixes: string[];
+  monthNames: string[];
 }) {
   if (currentPeriodTerms.length === 0) {
     throw new PdfImportError("INVALID_RESUME_IMPORT_LEXICON");
@@ -459,12 +465,25 @@ function buildPeriodPattern({
     `(?:${datePartSeparatorPattern})${monthNumberPattern}` +
     localizedDateSuffix;
   const monthPattern = `(?:${compactMonthPattern}|${separatedMonthPattern})?`;
-  const datePattern = `${yearPattern}${monthPattern}`;
+  const monthNamePattern = literalAlternation(monthNames);
+  const namedMonthPattern = monthNamePattern
+    ? `(?:${monthNamePattern})\\.?`
+    : "";
+  const datePattern = [
+    ...(namedMonthPattern
+      ? [
+          `${namedMonthPattern}\\s+${yearPattern}`,
+          `${yearPattern}\\s+${namedMonthPattern}`,
+        ]
+      : []),
+    `${monthNumberPattern}[./]${yearPattern}`,
+    `${yearPattern}${monthPattern}`,
+  ].join("|");
 
   return new RegExp(
-    `(?<![\\p{L}\\p{N}])${datePattern}\\s*` +
+    `(?<![\\p{L}\\p{N}./])(?:${datePattern})\\s*` +
       `(?:${rangeSeparatorPattern})\\s*` +
-      `(?:${datePattern}|${currentPeriodPattern})(?![\\p{L}\\p{N}])`,
+      `(?:${datePattern}|${currentPeriodPattern})(?![\\p{L}\\p{N}]|[./]\\d)`,
     "giu",
   );
 }

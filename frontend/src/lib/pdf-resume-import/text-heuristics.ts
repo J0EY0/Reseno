@@ -3,6 +3,10 @@ const GRAPHEME_SEGMENTER =
   typeof Intl.Segmenter === "function"
     ? new Intl.Segmenter(undefined, { granularity: "grapheme" })
     : null;
+const WORD_SEGMENTER =
+  typeof Intl.Segmenter === "function"
+    ? new Intl.Segmenter(undefined, { granularity: "word" })
+    : null;
 const CJK_COMPATIBILITY_CHARACTER_PATTERN = /[\u2e80-\u2fff\uf900-\ufaff]/gu;
 const CJK_RADICAL_TEXT_EQUIVALENTS: Readonly<Record<string, string>> = {
   // U+2EDA has no NFKC mapping, but Type3 fonts can expose it for the
@@ -24,7 +28,8 @@ export function joinWrappedLines(lines: string[]) {
     // Chinese PDF text commonly wraps without an explicit separator. English
     // prose still needs a space when two physical lines are joined.
     const separator =
-      /[\p{Script=Han}]$/u.test(result) && /^[\p{Script=Han}]/u.test(normalized)
+      /[\p{Script=Han}，。！？；：、（）【】「」『』《》]$/u.test(result) &&
+      /^[\p{Script=Han}，。！？；：、（）【】「」『』《》]/u.test(normalized)
         ? ""
         : " ";
     return `${result}${separator}${normalized}`;
@@ -58,6 +63,14 @@ export function countMatches(value: string, pattern: RegExp) {
 
 export function countTextGraphemes(value: string) {
   return splitTextGraphemes(value).length;
+}
+
+export function countLeadingWordGraphemes(value: string) {
+  if (!WORD_SEGMENTER) {
+    throw new PdfImportError("PDF_IMPORT_UNSUPPORTED_GRAPHEME_SEGMENTATION");
+  }
+  const first = WORD_SEGMENTER.segment(value.trim())[Symbol.iterator]().next();
+  return countTextGraphemes(first.value?.segment ?? "");
 }
 
 function splitTextGraphemes(value: string) {

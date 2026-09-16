@@ -3,19 +3,25 @@ import type { DocumentLocale } from "@/types/resume";
 import type { TextLine } from "./pdf-text-extraction";
 import { normalizeMatchingText } from "./text-heuristics";
 
-const LETTER_PATTERN = /\p{L}/gu;
-const LATIN_LETTER_PATTERN = /^\p{Script=Latin}$/u;
+const HAN_LETTER_PATTERN = /\p{Script=Han}/gu;
+const OTHER_CJK_LETTER_PATTERN =
+  /[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/gu;
+const OTHER_WORD_PATTERN = /[\p{L}\p{M}]+/gu;
 
 export function detectPdfResumeDocumentLocale(
   lines: TextLine[],
 ): DocumentLocale {
-  const letterLines = lines
+  const text = lines
     .map((line) => normalizeMatchingText(line.text))
-    .filter((line) => /\p{L}/u.test(line));
-  const letters = letterLines.join("").match(LETTER_PATTERN) ?? [];
-  const containsOnlyLatinLetters =
-    letters.length > 0 &&
-    letters.every((letter) => LATIN_LETTER_PATTERN.test(letter));
+    .join(" ")
+    .replace(/\S+@\S+|(?:https?:\/\/|www\.)\S+/giu, " ");
+  const hanLetters = text.match(HAN_LETTER_PATTERN)?.length ?? 0;
+  const otherCjkLetters = text.match(OTHER_CJK_LETTER_PATTERN)?.length ?? 0;
+  const otherWords =
+    text
+      .replace(HAN_LETTER_PATTERN, " ")
+      .replace(OTHER_CJK_LETTER_PATTERN, " ")
+      .match(OTHER_WORD_PATTERN)?.length ?? 0;
 
-  return containsOnlyLatinLetters ? "en" : "zh";
+  return hanLetters > otherWords + otherCjkLetters ? "zh" : "en";
 }

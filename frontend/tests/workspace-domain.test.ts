@@ -105,6 +105,35 @@ it.each([
   },
 );
 
+it("keeps a readable font when tighter spacing fits before the next smaller size", async () => {
+  const current: SmartOnePageStyleSnapshot = {
+    typography: { fontFamily: "inter", fontSize: 16 },
+    templateSettings: null,
+  };
+  let rendered = current;
+  const applyStyle = vi.fn((style: SmartOnePageStyleSnapshot) => {
+    rendered = style;
+  });
+  const result = await fitResumeToOnePage(
+    current,
+    createTemplateSettings("minimal"),
+    {
+      applyStyle,
+      measurePageCount: async () =>
+        rendered.typography.fontSize <= 14 &&
+        (rendered.templateSettings?.itemGap ?? Infinity) <= 0.5 &&
+        (rendered.templateSettings?.bodyLineHeight ?? Infinity) <= 1.42
+          ? 1
+          : 2,
+    },
+  );
+  expect(result.status).toBe("applied");
+  expect(rendered.typography.fontSize).toBe(14);
+  expect(
+    applyStyle.mock.calls.every(([style]) => style.typography.fontSize >= 14),
+  ).toBe(true);
+});
+
 it.each([
   ["/resume", { kind: "resume-gallery" }],
   ["/resume/abc", { kind: "resume-detail", id: "abc" }],
