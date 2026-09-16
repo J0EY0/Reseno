@@ -7,7 +7,18 @@
         "zh": "教育经历",
         "en": "Education"
       },
-      "aliases": ["education", "教育", "教育背景", "教育经历", "school"]
+      "aliases": [
+        "education",
+        "academic background",
+        "educational background",
+        "education and training",
+        "教育",
+        "教育背景",
+        "教育经历",
+        "教育經歷",
+        "學歷",
+        "school"
+      ]
     },
     {
       "kind": "experience",
@@ -30,7 +41,12 @@
         "工作经验",
         "职业经历",
         "实习",
-        "实习经历"
+        "实习经历",
+        "工作經歷",
+        "工作經驗",
+        "職業經歷",
+        "實習",
+        "實習經歷"
       ]
     },
     {
@@ -45,10 +61,17 @@
         "projects",
         "selected projects",
         "project experience",
+        "project work",
         "项目",
         "项目经历",
         "项目经验",
-        "代表项目"
+        "代表项目",
+        "项目实践",
+        "項目經歷",
+        "項目經驗",
+        "專案經歷",
+        "專案經驗",
+        "項目實踐"
       ]
     },
     {
@@ -74,7 +97,11 @@
         "发表论文",
         "论文发表",
         "代表性论文",
-        "科研成果"
+        "科研成果",
+        "學術發表",
+        "學術論文",
+        "發表論文",
+        "論文發表"
       ]
     },
     {
@@ -90,6 +117,11 @@
         "awards",
         "award",
         "honors",
+        "honours",
+        "honors and awards",
+        "honors & awards",
+        "honours and awards",
+        "awards and honors",
         "certificates",
         "certificate",
         "certifications",
@@ -98,7 +130,14 @@
         "荣誉奖项",
         "证书",
         "资格证书",
-        "证书与荣誉"
+        "证书与荣誉",
+        "荣誉奖励",
+        "獲獎經歷",
+        "榮譽獎項",
+        "榮譽獎勵",
+        "證書",
+        "資格證書",
+        "證書與榮譽"
       ]
     },
     {
@@ -113,6 +152,8 @@
         "simple_list",
         "skills",
         "skill",
+        "technical skills",
+        "technical expertise",
         "languages",
         "language",
         "other",
@@ -122,9 +163,14 @@
         "custom section",
         "技能",
         "专业技能",
+        "技术能力",
+        "專業技能",
+        "技術能力",
+        "技術棧",
         "技术栈",
         "语言",
         "语言能力",
+        "語言能力",
         "其他",
         "其他经历",
         "其他信息",

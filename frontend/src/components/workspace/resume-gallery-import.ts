@@ -113,8 +113,23 @@ export async function importResumesIntoWorkspace(
     file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
   if (isPdfImport) {
     const { importResumeFromPdf } = await import("@/lib/pdf-resume-import");
-    const { documentLocale, resume, unclassifiedLineCount } =
+    const { documentLocale, resume, sourcePageCount, unclassifiedLineCount } =
       await importResumeFromPdf(file, { signal: options.signal });
+    let style: Pick<
+      ResumeCreateRequest,
+      "template" | "typography" | "templateSettings"
+    > = {
+      templateSettings: null,
+    };
+    if (sourcePageCount === 1) {
+      const { fitImportedResumeToOnePage } =
+        await import("./pdf-import-layout");
+      style = await fitImportedResumeToOnePage(
+        resume,
+        documentLocale,
+        options.signal,
+      );
+    }
     batch.unclassifiedLineCount = unclassifiedLineCount;
     batch.resumes.push({
       documentLocale,
@@ -124,7 +139,7 @@ export async function importResumesIntoWorkspace(
         file.name.replace(/\.pdf$/i, ""),
         documentLocale === "zh" ? "简历" : "Resume",
       ),
-      templateSettings: null,
+      ...style,
     });
   } else {
     const bundle = await importResumePayload(file, {

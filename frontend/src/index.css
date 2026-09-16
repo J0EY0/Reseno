@@ -555,16 +555,18 @@ html:has(.app-shell--document)::-webkit-scrollbar {
 .resume-rich-text ul,
 .resume-rich-text ol {
   margin: 0.04em 0 0;
-  padding-left: 1em;
+  padding-left: var(--rich-text-list-indent);
 }
 
 .rich-text-editor ul,
 .resume-rich-text ul {
+  --rich-text-list-indent: 1.5em;
   list-style: disc;
 }
 
 .rich-text-editor ol,
 .resume-rich-text ol {
+  --rich-text-list-indent: 2.5em;
   list-style: decimal;
 }
 
@@ -599,21 +601,17 @@ html:has(.app-shell--document)::-webkit-scrollbar {
   column-gap: 1.5em;
 }
 
-.resume-rich-text[data-resume-list-layout="inline"] > ul,
-.resume-rich-text[data-resume-list-layout="inline"] > ol,
-.resume-rich-text[data-resume-list-layout="inline"] > div > ul,
-.resume-rich-text[data-resume-list-layout="inline"] > div > ol {
+.resume-rich-text[data-resume-list-layout="inline"] > :is(ul, ol),
+.resume-rich-text[data-resume-list-layout="inline"] > div > :is(ul, ol) {
   display: flex;
   flex-wrap: wrap;
   gap: 0 1em;
   padding-left: 0;
 }
 
-.resume-rich-text[data-resume-list-layout="inline"] > ul > li,
-.resume-rich-text[data-resume-list-layout="inline"] > ol > li,
-.resume-rich-text[data-resume-list-layout="inline"] > div > ul > li,
-.resume-rich-text[data-resume-list-layout="inline"] > div > ol > li {
-  margin-left: 1em;
+.resume-rich-text[data-resume-list-layout="inline"] > :is(ul, ol) > li,
+.resume-rich-text[data-resume-list-layout="inline"] > div > :is(ul, ol) > li {
+  margin-left: var(--rich-text-list-indent);
 }
 
 .resume-page {

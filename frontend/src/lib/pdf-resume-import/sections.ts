@@ -12,6 +12,10 @@ import type {
 
 import type { TextLine } from "./pdf-text-extraction";
 import {
+  createSectionHeadingDetector,
+  looksLikeUndatedItemHeading,
+} from "./section-headings";
+import {
   PDF_IMPORT_PROFILE,
   looksLikePeriodLine,
   median,
@@ -19,18 +23,10 @@ import {
   type ResumeImportLexiconContext,
   type SectionRegistryContext,
 } from "./parser-config";
-import {
-  buildSectionItems,
-  isBulletLine,
-  isListSectionKind,
-  looksLikeHighlightLine,
-  type ParsedSectionItem,
-} from "./section-items";
-import {
-  countTextGraphemes,
-  splitInlineList,
-  splitLabeledValue,
-} from "./text-heuristics";
+import { buildSectionItems, isListSectionKind } from "./section-items";
+import type { ParsedSectionItem } from "./section-item-types";
+import { isBulletLine, looksLikeHighlightLine } from "./section-item-groups";
+import { splitInlineList, splitLabeledValue } from "./text-heuristics";
 
 type SectionCandidate = {
   rawTitle: string;
@@ -54,9 +50,20 @@ export function splitSections(
   const bodyFontSize = median(
     lines.map((line) => line.fontSize).filter(Boolean),
   );
+  const titleMatches = lines.map((line) =>
+    classifySectionTitle(line.text, registryContext),
+  );
+  const isHeadingStyle = createSectionHeadingDetector(
+    lines,
+    new Set(
+      titleMatches.flatMap((match, index) =>
+        match.confidence > 0 ? [index] : [],
+      ),
+    ),
+  );
 
   for (const [index, line] of lines.entries()) {
-    const titleMatch = classifySectionTitle(line.text, registryContext);
+    const titleMatch = titleMatches[index];
     const inlineTitleMatch = splitInlineSectionTitle(
       line.text,
       registryContext,
@@ -75,28 +82,27 @@ export function splitSections(
     const effectiveInlineTitleMatch: ReturnType<
       typeof splitInlineSectionTitle
     > = keepsInlineListItem ? null : inlineTitleMatch;
-    // A resume name is often the largest line on page one. Only treat font-size
-    // signals as generic section headings after the contact block; explicit
-    // localized aliases from the backend section registry still match anywhere.
-    const canUseFontHeading =
-      index > PDF_IMPORT_PROFILE.text.genericSectionHeadingSkipLines;
-    const isFontOnlyHeading =
-      canUseFontHeading &&
-      line.fontSize >
-        bodyFontSize * PDF_IMPORT_PROFILE.text.genericSectionHeadingScale &&
-      countTextGraphemes(line.text) <=
-        PDF_IMPORT_PROFILE.text.maxGenericSectionHeadingGraphemes;
+    const isVisualHeading =
+      !isBulletLine(line.text) &&
+      !looksLikePeriodLine(line.text, lexiconContext) &&
+      isHeadingStyle(line, index);
     const keepsExperienceItemHeader =
       current !== null &&
       !isListSectionKind(current.kind) &&
       titleMatch.confidence === 0 &&
       effectiveInlineTitleMatch === null &&
-      isFontOnlyHeading &&
-      looksLikeDatedExperienceHeader(lines, index, lexiconContext);
+      isVisualHeading &&
+      (looksLikeDatedExperienceHeader(lines, index, lexiconContext) ||
+        (current.confidence > 0 &&
+          looksLikeUndatedItemHeading(
+            line,
+            lines[index + 1],
+            current.lines[0] ?? lines[current.startLineIndex],
+          )));
     const looksLikeHeading =
       titleMatch.confidence > 0 ||
       Boolean(effectiveInlineTitleMatch) ||
-      (isFontOnlyHeading && !keepsExperienceItemHeader);
+      (isVisualHeading && !keepsExperienceItemHeader);
 
     if (looksLikeHeading) {
       const sectionTitle: string =
@@ -168,11 +174,7 @@ export function sectionCandidateToResumeSection(
       : "simple_list";
   const parsedItems = buildSectionItems(candidate.lines, kind, lexiconContext);
 
-  return createCanonicalSection(
-    kind,
-    kind === "simple_list" ? candidate.rawTitle : "",
-    parsedItems,
-  );
+  return createCanonicalSection(kind, candidate.rawTitle, parsedItems);
 }
 
 function createCanonicalSection(
@@ -311,7 +313,16 @@ function classifySectionTitle(
   registryContext: SectionRegistryContext,
 ): ClassifiedSectionTitle {
   const normalized = normalizeTitle(title);
-  const kind = registryContext.kindByAlias.get(normalized);
+  const parts = title
+    .split(/[|｜/／()（）]/u)
+    .map((part) => normalizeTitle(part))
+    .filter(Boolean);
+  const partKinds = parts.map((part) => registryContext.kindByAlias.get(part));
+  const compoundKind =
+    parts.length > 1 && partKinds.every((kind) => kind && kind === partKinds[0])
+      ? partKinds[0]
+      : undefined;
+  const kind = registryContext.kindByAlias.get(normalized) ?? compoundKind;
   if (kind) {
     return {
       kind,

@@ -21,6 +21,7 @@ def _locale_payload(
         "dateRangeTerms": [],
         "datePartSeparators": [],
         "datePartSuffixes": [],
+        "monthNames": [],
     }
 
 
@@ -38,16 +39,30 @@ def test_resume_import_lexicon_matches_parser_contract() -> None:
 
     assert locales["en"].document_title_terms == [
         "resume",
+        "résumé",
+        "cv",
         "curriculum vitae",
         "curriculum",
         "vitae",
     ]
-    assert locales["zh"].document_title_terms == ["简历", "个人简历"]
+    assert locales["zh"].document_title_terms == [
+        "简历",
+        "个人简历",
+        "簡歷",
+        "個人簡歷",
+        "履歷",
+        "個人履歷",
+    ]
     assert locales["en"].current_period_terms == ["present", "current"]
-    assert locales["zh"].current_period_terms == ["至今", "今", "现在"]
+    assert locales["zh"].current_period_terms == ["至今", "今", "现在", "現在"]
+    assert locales["en"].date_range_terms == ["to"]
     assert locales["zh"].date_range_terms == ["至", "到"]
     assert locales["zh"].date_part_separators == ["年"]
     assert locales["zh"].date_part_suffixes == ["月"]
+    assert {"January", "Jan", "September", "Sep", "Sept", "December", "Dec"} <= set(
+        locales["en"].month_names
+    )
+    assert locales["zh"].month_names == []
 
     for locale in locales.values():
         for terms in (
@@ -56,6 +71,7 @@ def test_resume_import_lexicon_matches_parser_contract() -> None:
             locale.date_range_terms,
             locale.date_part_separators,
             locale.date_part_suffixes,
+            locale.month_names,
         ):
             assert all(term.strip() for term in terms)
 
@@ -64,6 +80,17 @@ def test_resume_import_lexicon_matches_parser_contract() -> None:
     "payload",
     [
         {"locales": {}},
+        {
+            "locales": {
+                "en": {
+                    **_locale_payload(
+                        document_title_terms=["resume"],
+                        current_period_terms=["present"],
+                    ),
+                    "monthNames": [" "],
+                },
+            },
+        },
         {
             "locales": {
                 "en": _locale_payload(

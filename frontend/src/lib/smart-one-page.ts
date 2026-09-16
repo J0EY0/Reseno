@@ -71,12 +71,6 @@ type SmartOnePageResult =
     }
   | { status: "no-fit" };
 
-function getNextSmallerFontSize(fontSize: number) {
-  const smallerSizes = resumeFontSizeOptions.filter((size) => size < fontSize);
-
-  return smallerSizes.at(-1) ?? fontSize;
-}
-
 function compactNumber(
   current: number,
   target: number | undefined,
@@ -146,29 +140,19 @@ function createCandidates(
   typography: ResumeTypographySettings,
   settings: ResumeTemplateSettings,
 ) {
-  const candidates: SmartOnePageStyleSnapshot[] = [];
-  let fontSize = typography.fontSize;
-
-  layoutLevels.forEach((level, index) => {
-    if (index > 0) {
-      fontSize = Math.max(minimumFontSize, getNextSmallerFontSize(fontSize));
-    }
-
-    candidates.push({
-      typography: { ...typography, fontSize },
-      templateSettings: createSettingsCandidate(settings, level),
-    });
-  });
-
-  const strongestLevel = layoutLevels[layoutLevels.length - 1];
-
-  while (fontSize > minimumFontSize) {
-    fontSize = Math.max(minimumFontSize, getNextSmallerFontSize(fontSize));
-    candidates.push({
-      typography: { ...typography, fontSize },
-      templateSettings: createSettingsCandidate(settings, strongestLevel),
-    });
-  }
+  const fontSizes = [
+    typography.fontSize,
+    ...resumeFontSizeOptions
+      .filter((size) => size >= minimumFontSize && size < typography.fontSize)
+      .reverse(),
+  ];
+  const candidates: SmartOnePageStyleSnapshot[] = fontSizes.flatMap(
+    (fontSize) =>
+      layoutLevels.map((level) => ({
+        typography: { ...typography, fontSize },
+        templateSettings: createSettingsCandidate(settings, level),
+      })),
+  );
 
   return candidates.filter(
     (candidate, index, allCandidates) =>
