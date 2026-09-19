@@ -168,7 +168,7 @@ Reseno 通过 GitHub App Manifest 流程创建归你所有的私有 GitHub App�
 
 运行检查前，先在 `backend` 中执行 `uv sync --locked --all-groups`，安装开发依赖。
 
-在表中指定的目录运行各条命令。依赖和工具版本以锁文件及[质量检查工作流](.github/workflows/frontend-quality.yml)为准。
+在表中指定的目录运行各条命令。工具版本由 `frontend/.node-version`、`frontend/package.json`、`backend/.python-version` 声明，依赖以锁文件为准；CI 入口见[质量检查工作流](.github/workflows/frontend-quality.yml)。
 
 | 目录       | 任务                                         | 命令                                                             |
 | ---------- | -------------------------------------------- | ---------------------------------------------------------------- |
@@ -177,11 +177,22 @@ Reseno 通过 GitHub App Manifest 流程创建归你所有的私有 GitHub App�
 | `backend`  | lint 与类型检查                              | `uv run --locked ruff check . && uv run --locked mypy app`       |
 | `backend`  | 默认后端测试集                               | `uv run --locked pytest -q`                                      |
 | `frontend` | 浏览器冒烟测试                               | `pnpm test:workspace-network:smoke`                              |
-| `backend`  | 完整浏览器 E2E 测试集                        | `RUN_BROWSER_E2E=1 uv run --locked pytest tests/e2e -q`          |
+| `frontend` | 本机运行完整 CI 浏览器检查                     | `pnpm test:browser:ci`                                            |
+| `frontend` | 在共用 Linux 镜像中运行完整 CI 浏览器检查        | `pnpm test:browser:linux`                                         |
 | `frontend` | 重新生成契约与模板预设                       | `pnpm generate:agent-contract && pnpm generate:template-presets` |
 
-浏览器测试前，在 `frontend` 中运行 `pnpm build`，在 `backend` 中运行 `uv run --locked playwright install chromium`（Linux 上添加 `--with-deps`）。
-未设置 `RUN_BROWSER_E2E=1` 而跳过的浏览器测试不算通过；冒烟测试命令会自动设置此变量。
+本机浏览器测试前，在 `backend` 中运行 `uv run --locked playwright install chromium`（Linux 上添加 `--with-deps`）。
+`test:browser:ci` 会构建前端，并依次运行生产托管、生产 chunk 恢复、双 worker 的 dev 模式冒烟和 PDF ATS 测试。
+CI 使用 `test:browser:linux` 对应的 Docker 脚本和相同测试入口。本地运行此命令需要 Docker；依赖和浏览器在镜像内安装，不挂载本机数据库、凭据或依赖目录。
+两种入口均在 `backend/test-results/` 下按次保存测试结果、失败截图、trace 和服务日志；任一阶段失败即停止，不自动重试。
+
+Linux 镜像固定操作系统、运行时和浏览器版本。Apple Silicon 本机默认运行 Linux ARM64，GitHub 浏览器任务运行 AMD64；
+需要复现同一架构时可设置 `DOCKER_DEFAULT_PLATFORM=linux/amd64`，但模拟执行会有额外开销。
+macOS 本机的 PDF 检查在安装 Swift 时还会覆盖 PDFKit。
+
+`check:frontend`、定向测试和 `test:workspace-network:smoke` 只代表各自范围。
+后端 pytest 未设置 `RUN_BROWSER_E2E=1` 时会跳过浏览器测试，跳过不算通过。
+功能分支 push 的绿色结果也不包含浏览器任务；Pull request、`main` 和 tag 才执行完整浏览器检查。
 
 ### 本地构建镜像（可选）
 

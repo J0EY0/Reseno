@@ -60,7 +60,6 @@ jobs:
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           enable-cache: true
-          python-version: "3.13"
           version: "0.11.14"
           working-directory: backend
       - name: Install locked backend dependencies
@@ -108,7 +107,6 @@ jobs:
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           enable-cache: true
-          python-version: "3.13"
           version: "0.11.14"
           working-directory: backend
       - name: Install locked backend dependencies
@@ -157,7 +155,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: 24
+          node-version-file: frontend/.node-version
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
       - name: Install frontend dependencies
@@ -174,54 +172,13 @@ jobs:
       startsWith(github.ref, 'refs/tags/'))
     needs: [changes, backend, frontend]
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
-    env:
-      E2E_ARTIFACTS_DIR: ${{ github.workspace }}/backend/test-results/browser
+    timeout-minutes: 30
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
-      - name: Set up uv and Python
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
-        with:
-          enable-cache: true
-          python-version: "3.13"
-          version: "0.11.14"
-          working-directory: backend
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v6
-        with:
-          version: 11.9.0
-          run_install: false
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: 24
-          cache: pnpm
-          cache-dependency-path: frontend/pnpm-lock.yaml
-      - name: Install locked backend dependencies
-        working-directory: backend
-        run: uv sync --locked --all-groups
-      - name: Install frontend dependencies
+      - name: Run Linux browser checks
         working-directory: frontend
-        run: pnpm install --frozen-lockfile
-      - name: Install Chromium
-        working-directory: backend
-        run: uv run --locked playwright install --with-deps chromium
-      - name: Build production frontend
-        working-directory: frontend
-        run: pnpm build --manifest
-      - name: Test production frontend hosting
-        working-directory: backend
-        run: RUN_BROWSER_E2E=1 uv run --locked pytest tests/e2e/test_production_frontend.py -q --junitxml=test-results/production.xml
-      - name: Test production editor chunk recovery
-        working-directory: backend
-        run: RUN_BROWSER_E2E=1 E2E_FRONTEND_MODE=preview uv run --locked pytest tests/e2e/test_editor_chunk_recovery.py -q --junitxml=test-results/editor-chunk-recovery.xml
-      - name: Run browser smoke tests
-        working-directory: frontend
-        run: pnpm test:workspace-network:smoke --junitxml=test-results/browser-smoke.xml
-      - name: Run PDF ATS tests
-        working-directory: backend
-        run: RUN_BROWSER_E2E=1 uv run --locked pytest tests/e2e/test_pdf_ats.py -q --junitxml=test-results/pdf-ats.xml
+        run: bash ../.github/scripts/check-browser-linux.sh
       - name: Upload browser test results
         if: always()
         uses: actions/upload-artifact@v7
@@ -261,7 +218,6 @@ jobs:
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           enable-cache: true
-          python-version: "3.13"
           version: "0.11.14"
           working-directory: backend
       - name: Install locked backend dependencies

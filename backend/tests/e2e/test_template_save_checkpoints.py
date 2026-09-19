@@ -311,7 +311,9 @@ def test_template_discard_restores_autosave_when_its_response_is_lost(
         } == {key: value for key, value in baseline.items() if key != "updatedAt"}
         page.clock.fast_forward(60_000)
         assert len(committed) == 1
-        page.goto(f"{frontend_url}/template/{template_id}", wait_until="networkidle")
+        page.goto(
+            f"{frontend_url}/template/{template_id}", wait_until="domcontentloaded"
+        )
         expect(page.locator('[data-slot="template-editor-title"]')).to_have_text(
             baseline["name"]
         )

@@ -54,7 +54,9 @@
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",
     "test:api-client": "pnpm test:unit tests/api-client-*.test.ts",
-    "test:auth": "pnpm test:unit tests/auth- tests/oauth- && node scripts/run-tests.mjs auth-setup"
+    "test:auth": "pnpm test:unit tests/auth- tests/oauth- && node scripts/run-tests.mjs auth-setup",
+    "test:browser:ci": "node scripts/check-browser-ci.mjs",
+    "test:browser:linux": "bash ../.github/scripts/check-browser-linux.sh"
   },
   "dependencies": {
     "@base-ui/react": "^1.0.0",
@@ -123,5 +125,9 @@
     "typescript-eslint": "^8.57.0",
     "vite": "^8.0.1",
     "vitest": "5.0.0"
+  },
+  "packageManager": "pnpm@11.9.0",
+  "engines": {
+    "node": "24.x"
   }
 }

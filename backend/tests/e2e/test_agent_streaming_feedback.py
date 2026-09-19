@@ -10,7 +10,7 @@ import pytest
 from playwright.sync_api import Browser, Request, Route, expect
 from playwright.sync_api import Error as PlaywrightError
 
-from tests.e2e.browser_support import RouteReady
+from tests.e2e.browser_support import DeferredRoute
 from tests.e2e.browser_support import authenticated_context as _authenticated_context
 from tests.e2e.workspace_network_support import ApiRequest, api_request_key
 
@@ -32,32 +32,20 @@ def test_first_agent_expand_keeps_one_stable_loading_shell(
         viewport={"width": 1440, "height": 900},
     )
     page = context.new_page()
-    held_module_routes: list[Route] = []
-    held_recovery_routes: list[Route] = []
-    module_ready = RouteReady()
-    recovery_ready = RouteReady()
     module_pattern = "**/src/components/copilot/copilot-panel.tsx*"
     recovery_pattern = f"**/api/agent/resumes/{resume_id}/recovery"
-
-    def hold_module(route: Route) -> None:
-        held_module_routes.append(route)
-        module_ready.set()
-
-    def hold_recovery(route: Route) -> None:
-        held_recovery_routes.append(route)
-        recovery_ready.set()
 
     try:
         page.goto(
             f"{frontend_url}/resume/{resume_id}",
             wait_until="networkidle",
         )
-        page.route(module_pattern, hold_module)
-        page.route(recovery_pattern, hold_recovery)
+        deferred_module = DeferredRoute(page, module_pattern)
+        deferred_recovery = DeferredRoute(page, recovery_pattern)
 
         trigger = page.locator('.resume-workspace [data-slot="agent-panel-toggle"]')
         trigger.evaluate("button => button.click()")
-        module_ready.wait(page)
+        deferred_module.wait()
 
         loading = page.locator(
             '[data-slot="agent-panel-stable-loader"] '
@@ -110,19 +98,13 @@ def test_first_agent_expand_keeps_one_stable_loading_shell(
         assert fallback_shell["count"] == 1, fallback_shell
         assert fallback_shell["statusCount"] == 1, fallback_shell
 
-        page.unroute(module_pattern, hold_module)
-        for route in held_module_routes:
-            try:
-                route.continue_()
-            except PlaywrightError:
-                pass
-        held_module_routes.clear()
+        deferred_module.release()
         page.wait_for_function(
             "() => window.__firstAgentPanelShell?.isConnected === true"
         )
         expect(trigger).to_have_attribute("data-agent-status", "loading")
-        recovery_ready.wait(page)
-        assert held_recovery_routes
+        deferred_recovery.wait()
+        assert deferred_recovery.pending
 
         hydration_shell = page.evaluate(
             """
@@ -180,13 +162,7 @@ def test_first_agent_expand_keeps_one_stable_loading_shell(
             for key in ("height", "width", "x", "y")
         ), {"fallback": fallback_shell, "hydration": hydration_shell}
 
-        page.unroute(recovery_pattern, hold_recovery)
-        for route in held_recovery_routes:
-            try:
-                route.continue_()
-            except PlaywrightError:
-                pass
-        held_recovery_routes.clear()
+        deferred_recovery.release()
         loading.wait_for(state="hidden")
         ready_shell = page.evaluate(
             """
@@ -205,16 +181,6 @@ def test_first_agent_expand_keeps_one_stable_loading_shell(
         )
         assert ready_shell == {"count": 1, "sameNode": True}
     finally:
-        for route in held_module_routes:
-            try:
-                route.continue_()
-            except PlaywrightError:
-                pass
-        for route in held_recovery_routes:
-            try:
-                route.continue_()
-            except PlaywrightError:
-                pass
         context.close()
 
 
