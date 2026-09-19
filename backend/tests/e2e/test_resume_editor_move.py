@@ -362,6 +362,15 @@ def test_touch_arrow_moves_reveal_the_heading_below_the_sticky_toolbar(
     expect(_item_toggle(moving)).to_have_attribute("aria-expanded", "false")
     document = _save_and_read(page, base, resume_id)
     assert document["sections"][0]["items"][3]["id"] == "experience-5"
+    title.evaluate(
+        """element => {
+          window.scrollBy({
+            top: element.getBoundingClientRect().top - window.innerHeight / 3,
+            behavior: 'instant',
+          });
+        }"""
+    )
+    after_scroll = page.evaluate("window.scrollY")
     down = _item_action(moving, messages["moveItemDown"])
     down.tap()
     _settle(page)

@@ -14,16 +14,16 @@ export const RATCHET_THRESHOLD = 0.95;
 
 export const conditionalFontCssBudgets = [
   {
-    name: "Noto Sans SC",
-    manifestKeySuffix: "/@fontsource-variable/noto-sans-sc/wght.css",
-    maxRawBytes: 110_000,
-    maxGzipBytes: 45_000,
+    name: "Resume sans fonts",
+    manifestKeySuffix: "src/assets/fonts/resume-sans.css",
+    maxRawBytes: 5 * 110_000,
+    maxGzipBytes: 5 * 35_000,
   },
   {
-    name: "Noto Serif SC",
-    manifestKeySuffix: "/@fontsource-variable/noto-serif-sc/wght.css",
-    maxRawBytes: 110_000,
-    maxGzipBytes: 45_000,
+    name: "Resume serif fonts",
+    manifestKeySuffix: "src/assets/fonts/resume-serif.css",
+    maxRawBytes: 5 * 110_000,
+    maxGzipBytes: 5 * 35_000,
   },
 ];
 

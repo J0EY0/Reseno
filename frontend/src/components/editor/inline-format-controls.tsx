@@ -32,9 +32,11 @@ const marks = [
 export function InlineFormatControls({
   editor,
   t,
+  visibleMarks,
 }: {
   editor: Editor | null;
   t: AppMessages;
+  visibleMarks?: readonly (typeof marks)[number]["name"][];
 }) {
   const active =
     useEditorState({
@@ -67,18 +69,20 @@ export function InlineFormatControls({
         }
       }}
     >
-      {marks.map(({ name, label, icon: Icon }) => (
-        <ToggleGroupItem
-          key={name}
-          value={name}
-          disabled={!editor}
-          className="size-8 rounded-sm px-0"
-          title={t[label]}
-          aria-label={t[label]}
-        >
-          <Icon className="size-4" />
-        </ToggleGroupItem>
-      ))}
+      {marks
+        .filter(({ name }) => !visibleMarks || visibleMarks.includes(name))
+        .map(({ name, label, icon: Icon }) => (
+          <ToggleGroupItem
+            key={name}
+            value={name}
+            disabled={!editor}
+            className="size-8 rounded-sm px-0"
+            title={t[label]}
+            aria-label={t[label]}
+          >
+            <Icon className="size-4" />
+          </ToggleGroupItem>
+        ))}
     </ToggleGroup>
   );
 }

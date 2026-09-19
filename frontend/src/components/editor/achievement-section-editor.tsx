@@ -1,4 +1,6 @@
 import { Input } from "@/components/ui/input";
+import { FieldGroup } from "@/components/ui/field";
+import { getRichTextPlainText } from "@/lib/rich-text";
 import type { AchievementItem } from "@/types/resume";
 
 import { FormField } from "./form-field";
@@ -33,8 +35,23 @@ export function AchievementSectionEditor({
       key={item.id}
       itemId={item.id}
       index={index}
-      itemLabel={t.itemCountSingular}
+      itemLabel={t.itemLabel}
       title={item.name}
+      titleEditor={
+        <InlineTextInput
+          autoFocus={item.id === initiallyOpenItemId}
+          t={t}
+          aria-label={t.fieldLabels.achievementName}
+          value={item.name}
+          className={`${compactResumeFieldClassName} editor-item-title`}
+          placeholder={t.placeholders.achievementName}
+          onChange={(value) => updateItem(item, { name: value })}
+        />
+      }
+      summary={[item.issuer, item.date]
+        .map((value) => getRichTextPlainText(value).trim())
+        .filter(Boolean)
+        .join(" · ")}
       initiallyOpen={item.id === initiallyOpenItemId}
       canMoveUp={index > 0}
       canMoveDown={index < section.items.length - 1}
@@ -46,38 +63,29 @@ export function AchievementSectionEditor({
       onMoveUp={() => onMoveItem(item.id, "up")}
       onMoveDown={() => onMoveItem(item.id, "down")}
     >
-      <div className="grid min-w-0 gap-3 md:grid-cols-2">
-        <FormField label={t.fieldLabels.achievementName}>
-          <InlineTextInput
-            autoFocus={item.id === initiallyOpenItemId}
-            t={t}
-            aria-label={t.fieldLabels.achievementName}
-            value={item.name}
-            className={compactResumeFieldClassName}
-            placeholder={t.placeholders.achievementName}
-            onChange={(value) => updateItem(item, { name: value })}
-          />
-        </FormField>
-        <FormField label={t.fieldLabels.issuer}>
-          <InlineTextInput
-            t={t}
-            aria-label={t.fieldLabels.issuer}
-            value={item.issuer}
-            className={compactResumeFieldClassName}
-            placeholder={t.placeholders.issuer}
-            onChange={(value) => updateItem(item, { issuer: value })}
-          />
-        </FormField>
-        <FormField label={t.fieldLabels.date}>
-          <InlineTextInput
-            t={t}
-            aria-label={t.fieldLabels.date}
-            value={item.date}
-            className={compactResumeFieldClassName}
-            placeholder={t.placeholders.date}
-            onChange={(value) => updateItem(item, { date: value })}
-          />
-        </FormField>
+      <FieldGroup className="min-w-0 gap-4">
+        <FieldGroup className="grid min-w-0 gap-4 @min-[20rem]/field-group:grid-cols-2">
+          <FormField label={t.fieldLabels.issuer}>
+            <InlineTextInput
+              t={t}
+              aria-label={t.fieldLabels.issuer}
+              value={item.issuer}
+              className={compactResumeFieldClassName}
+              placeholder={t.placeholders.issuer}
+              onChange={(value) => updateItem(item, { issuer: value })}
+            />
+          </FormField>
+          <FormField label={t.fieldLabels.date}>
+            <InlineTextInput
+              t={t}
+              aria-label={t.fieldLabels.date}
+              value={item.date}
+              className={compactResumeFieldClassName}
+              placeholder={t.placeholders.date}
+              onChange={(value) => updateItem(item, { date: value })}
+            />
+          </FormField>
+        </FieldGroup>
         <FormField label={t.fieldLabels.url}>
           <Input
             type="url"
@@ -88,7 +96,7 @@ export function AchievementSectionEditor({
             onChange={(event) => updateItem(item, { url: event.target.value })}
           />
         </FormField>
-        <FormField label={t.fieldLabels.description} className="md:col-span-2">
+        <FormField label={t.fieldLabels.description}>
           <InlineTextInput
             t={t}
             aria-label={t.fieldLabels.description}
@@ -99,7 +107,7 @@ export function AchievementSectionEditor({
             onChange={(value) => updateItem(item, { description: value })}
           />
         </FormField>
-      </div>
+      </FieldGroup>
     </ResumeItemEditorShell>
   ));
 }

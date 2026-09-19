@@ -5,9 +5,10 @@ Chromium, and inspect the generated PDF bytes:
 
     RUN_BROWSER_E2E=1 pytest tests/e2e/test_pdf_ats.py -q
 
-The matrix always checks pypdf and PDF.js. Set PDFTOTEXT_EXECUTABLE to include
-Poppler as a third extractor. Set PDF_ATS_OUTPUT_DIR to retain the generated
-matrix for visual inspection; otherwise pytest uses its temporary directory.
+The matrix always checks pypdf and PDF.js, and checks PDFKit on macOS when
+swiftc is available. Set PDFTOTEXT_EXECUTABLE to include Poppler. Set
+PDF_ATS_OUTPUT_DIR to retain the generated matrix for visual inspection;
+otherwise pytest uses its temporary directory.
 """
 
 from __future__ import annotations
@@ -18,8 +19,9 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import unicodedata
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any, Literal
 
@@ -44,6 +46,7 @@ TEMPLATE_IDS = (
 )
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 PDFJS_TEXT_EXTRACTOR = REPOSITORY_ROOT / "frontend" / "scripts" / "extract-pdf-text.mjs"
+PDFKIT_TEXT_EXTRACTOR = Path(__file__).with_name("extract_pdfkit_text.swift")
 ATS_MARKERS = (
     "HEADER_SENTINEL",
     "EXPERIENCE_1_SENTINEL",
@@ -59,6 +62,39 @@ ATS_MARKERS = (
 )
 
 
+@pytest.fixture(scope="session")
+def pdfkit_text_extractor(
+    tmp_path_factory: pytest.TempPathFactory,
+    record_testsuite_property: Callable[[str, object], None],
+) -> Path | None:
+    if sys.platform != "darwin":
+        record_testsuite_property("PDFKit extraction", "not run: requires macOS")
+        return None
+    swiftc = shutil.which("swiftc")
+    if swiftc is None:
+        record_testsuite_property("PDFKit extraction", "not run: swiftc unavailable")
+        return None
+
+    build_dir = tmp_path_factory.mktemp("pdfkit-extractor")
+    executable = build_dir / "extract-pdfkit-text"
+    subprocess.run(
+        [
+            swiftc,
+            "-module-cache-path",
+            str(build_dir / "module-cache"),
+            str(PDFKIT_TEXT_EXTRACTOR),
+            "-o",
+            str(executable),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    record_testsuite_property("PDFKit extraction", "enabled")
+    return executable
+
+
 def _experience_item(index: int, locale: Literal["en", "zh"]) -> dict[str, Any]:
     is_zh = locale == "zh"
     marker = f" EXPERIENCE_{index}_SENTINEL"
@@ -67,7 +103,7 @@ def _experience_item(index: int, locale: Literal["en", "zh"]) -> dict[str, Any]:
         "company": f"{'北辰数据科技' if is_zh else 'Northstar Analytics'} {index}",
         "position": "资深平台工程师" if is_zh else "Staff Platform Engineer",
         "location": "中国上海" if is_zh else "Shanghai, China",
-        "period": f"202{index % 4} - 202{(index % 4) + 1}",
+        "period": "2024.09 - 2027.06",
         "description": (
             "负责多语言文档系统与可靠导出链路。"
             if is_zh
@@ -75,6 +111,9 @@ def _experience_item(index: int, locale: Literal["en", "zh"]) -> dict[str, Any]:
         )
         + marker,
         "highlights": [
+            "使用 Golang / Swift 开发文档系统。"
+            if is_zh
+            else "Built document systems with Golang / Swift.",
             (
                 "将文档处理错误率降低 37%，并覆盖跨部门交付。"
                 if is_zh
@@ -99,7 +138,7 @@ def _create_probe_resume(
         "name": "陈艾文" if is_zh else "Avery Chen",
         "headline": "ATS 系统工程师" if is_zh else "ATS Systems Engineer",
         "phone": "+86 138-0000-0000",
-        "email": "avery.chen@example.com",
+        "email": "avery_chen@example.com",
         "location": "中国上海" if is_zh else "Shanghai, China",
         "avatar": "",
         "summary": (
@@ -112,7 +151,7 @@ def _create_probe_resume(
                 "id": "ats-portfolio",
                 "type": "url",
                 "label": "作品集" if is_zh else "Portfolio",
-                "value": "https://example.com/avery-chen",
+                "value": "https://example.com/avery_chen",
             }
         ],
     }
@@ -223,10 +262,10 @@ def _create_probe_resume(
                     "id": "ats-skills-1",
                     "content": (
                         "<ul><li>SKILLS_SENTINEL Python 与 TypeScript</li>"
-                        "<li>PDF 与 Unicode 质量保证</li></ul>"
+                        "<li>PDF 与 Unicode 质量保证；实现 get_user_name</li></ul>"
                         if is_zh
                         else "<ul><li>SKILLS_SENTINEL Python and TypeScript</li>"
-                        "<li>PDF and Unicode quality assurance</li></ul>"
+                        "<li>PDF quality assurance and get_user_name</li></ul>"
                     ),
                 }
             ],
@@ -258,10 +297,10 @@ def _assert_ats_text(
     assert "Page 1" not in collapsed
     assert "Loading" not in collapsed
     assert "加载中" not in collapsed
-    assert "avery.chen@example.com" in collapsed, (
+    assert "avery_chen@example.com" in collapsed, (
         f"{extractor} split or dropped the email address"
     )
-    assert "https://example.com/avery-chen" in collapsed, (
+    assert "https://example.com/avery_chen" in collapsed, (
         f"{extractor} split or dropped the portfolio URL"
     )
     if locale == "en":
@@ -270,12 +309,28 @@ def _assert_ats_text(
         for phrase in ("陈艾文", "工作经历", "复旦大学", "可靠简历解析研究"):
             assert phrase in compact, f"{extractor} dropped CJK text: {phrase}"
 
+    if extractor in {"pdfjs", "pdfkit"}:
+        phrases = ["2024.09 - 2027.06", "Golang / Swift", "get_user_name"]
+        if locale == "zh":
+            phrases.extend(
+                (
+                    "构建可靠的多语言简历导出系统。",
+                    "负责多语言文档系统与可靠导出链路。",
+                    "使用 Golang / Swift 开发文档系统。",
+                )
+            )
+        else:
+            phrases.append("Built document systems with Golang / Swift.")
+        for phrase in phrases:
+            assert phrase in collapsed, f"{extractor} split copied text: {phrase}"
+
+    marker_text = text if extractor in {"pdfjs", "pdfkit"} else compact
     marker_positions: list[int] = []
     for marker in ATS_MARKERS:
-        assert compact.count(marker) == 1, (
+        assert marker_text.count(marker) == 1, (
             f"{extractor} must extract {marker} exactly once"
         )
-        marker_positions.append(compact.index(marker))
+        marker_positions.append(marker_text.index(marker))
     assert marker_positions == sorted(marker_positions), (
         f"{extractor} changed the canonical section reading order"
     )
@@ -306,8 +361,19 @@ def _assert_pdf_structure(reader: PdfReader) -> None:
         for font_ref in fonts.values():
             font = font_ref.get_object()
             assert "/ToUnicode" in font, "Every PDF font needs a Unicode map"
-            if font.get("/Subtype") == "/Type3":
-                assert font.get("/CharProcs"), "Type3 font must contain glyph programs"
+            assert font.get("/Subtype") != "/Type3", (
+                "PDF text must use embedded outline fonts, not Type3 glyph programs"
+            )
+            outline_fonts = (
+                font["/DescendantFonts"] if font.get("/Subtype") == "/Type0" else [font]
+            )
+            for outline_font_ref in outline_fonts:
+                outline_font = outline_font_ref.get_object()
+                descriptor = outline_font["/FontDescriptor"].get_object()
+                assert any(
+                    key in descriptor
+                    for key in ("/FontFile", "/FontFile2", "/FontFile3")
+                ), "PDF font outlines must be embedded"
 
 
 def _extract_with_poppler(pdf_path: Path) -> str | None:
@@ -343,6 +409,22 @@ def _extract_with_pdfjs(pdf_path: Path) -> str:
     return "\n".join(pages)
 
 
+def _extract_with_pdfkit(pdf_path: Path, executable: Path) -> str:
+    result = subprocess.run(
+        [str(executable), str(pdf_path)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    pages = json.loads(result.stdout)
+    assert isinstance(pages, list) and pages
+    assert all(isinstance(page, str) and page.strip() for page in pages), (
+        "PDFKit found a text-empty page"
+    )
+    return "\n".join(pages)
+
+
 def _iter_pdf_uris(reader: PdfReader) -> Iterable[str]:
     for page in reader.pages:
         for annotation_ref in page.get("/Annots", []):
@@ -352,13 +434,19 @@ def _iter_pdf_uris(reader: PdfReader) -> Iterable[str]:
                 yield str(action["/URI"])
 
 
-@pytest.mark.parametrize("template_id", TEMPLATE_IDS)
+@pytest.mark.parametrize(
+    ("template_id", "font_family"),
+    [pytest.param(template_id, None, id=template_id) for template_id in TEMPLATE_IDS]
+    + [pytest.param("minimal", "noto_sans_sc", id="noto-sans-sc")],
+)
 @pytest.mark.parametrize("locale", ("en", "zh"))
 def test_all_builtin_templates_export_ats_readable_pdf(
     browser: Browser,
     workspace_servers: tuple[str, str],
     tmp_path: Path,
+    pdfkit_text_extractor: Path | None,
     template_id: str,
+    font_family: str | None,
     locale: Literal["en", "zh"],
 ) -> None:
     frontend_url, _ = workspace_servers
@@ -377,6 +465,8 @@ def test_all_builtin_templates_export_ats_readable_pdf(
         assert create_response.ok
         created = create_response.json()["data"]["resume"]
         resume_id = str(created["id"])
+        if font_family is not None:
+            created["typography"]["fontFamily"] = font_family
 
         save_response = context.request.put(
             f"{frontend_url}/api/resumes/{resume_id}",
@@ -408,7 +498,8 @@ def test_all_builtin_templates_export_ats_readable_pdf(
         assert download_response.ok
         pdf_bytes = download_response.body()
 
-        pdf_path = tmp_path / f"ats-{template_id}-{locale}.pdf"
+        pdf_name = f"ats-{template_id}-{font_family or 'default'}-{locale}.pdf"
+        pdf_path = tmp_path / pdf_name
         pdf_path.write_bytes(pdf_bytes)
         if output_dir_value := os.getenv("PDF_ATS_OUTPUT_DIR"):
             output_dir = Path(output_dir_value)
@@ -429,15 +520,21 @@ def test_all_builtin_templates_export_ats_readable_pdf(
             extractor="pdfjs",
             locale=locale,
         )
+        if pdfkit_text_extractor is not None:
+            _assert_ats_text(
+                _extract_with_pdfkit(pdf_path, pdfkit_text_extractor),
+                extractor="pdfkit",
+                locale=locale,
+            )
 
         poppler_text = _extract_with_poppler(pdf_path)
         if poppler_text is not None:
             _assert_ats_text(poppler_text, extractor="pdftotext", locale=locale)
 
         uris = set(_iter_pdf_uris(reader))
-        assert "mailto:avery.chen@example.com" in uris
+        assert "mailto:avery_chen@example.com" in uris
         assert "tel:+86 138-0000-0000" in uris
-        assert "https://example.com/avery-chen" in uris
+        assert "https://example.com/avery_chen" in uris
         assert "https://example.com/projects/resume-platform" in uris
         assert "https://example.com/publications/resume-parsing" in uris
         assert "https://example.com/awards/engineering" in uris

@@ -1,4 +1,6 @@
 import { Input } from "@/components/ui/input";
+import { FieldGroup } from "@/components/ui/field";
+import { getRichTextPlainText } from "@/lib/rich-text";
 import type { PublicationItem } from "@/types/resume";
 
 import { FormField } from "./form-field";
@@ -33,8 +35,24 @@ export function PublicationSectionEditor({
       key={item.id}
       itemId={item.id}
       index={index}
-      itemLabel={t.itemCountSingular}
+      itemLabel={t.itemLabel}
       title={item.title}
+      titleEditor={
+        <InlineTextInput
+          autoFocus={item.id === initiallyOpenItemId}
+          t={t}
+          aria-label={t.fieldLabels.publicationTitle}
+          multiline
+          value={item.title}
+          className={`${compactResumeFieldClassName} editor-item-title`}
+          placeholder={t.placeholders.publicationTitle}
+          onChange={(value) => updateItem(item, { title: value })}
+        />
+      }
+      summary={[item.venue, item.date]
+        .map((value) => getRichTextPlainText(value).trim())
+        .filter(Boolean)
+        .join(" · ")}
       initiallyOpen={item.id === initiallyOpenItemId}
       canMoveUp={index > 0}
       canMoveDown={index < section.items.length - 1}
@@ -46,23 +64,8 @@ export function PublicationSectionEditor({
       onMoveUp={() => onMoveItem(item.id, "up")}
       onMoveDown={() => onMoveItem(item.id, "down")}
     >
-      <div className="grid min-w-0 gap-3 md:grid-cols-2">
-        <FormField
-          label={t.fieldLabels.publicationTitle}
-          className="md:col-span-2"
-        >
-          <InlineTextInput
-            autoFocus={item.id === initiallyOpenItemId}
-            t={t}
-            aria-label={t.fieldLabels.publicationTitle}
-            multiline
-            value={item.title}
-            className={`${compactResumeFieldClassName} min-h-16`}
-            placeholder={t.placeholders.publicationTitle}
-            onChange={(value) => updateItem(item, { title: value })}
-          />
-        </FormField>
-        <FormField label={t.fieldLabels.authors} className="md:col-span-2">
+      <FieldGroup className="min-w-0 gap-4">
+        <FormField label={t.fieldLabels.authors}>
           <InlineTextInput
             t={t}
             aria-label={t.fieldLabels.authors}
@@ -73,27 +76,29 @@ export function PublicationSectionEditor({
             onChange={(value) => updateItem(item, { authors: value })}
           />
         </FormField>
-        <FormField label={t.fieldLabels.venue}>
-          <InlineTextInput
-            t={t}
-            aria-label={t.fieldLabels.venue}
-            value={item.venue}
-            className={compactResumeFieldClassName}
-            placeholder={t.placeholders.venue}
-            onChange={(value) => updateItem(item, { venue: value })}
-          />
-        </FormField>
-        <FormField label={t.fieldLabels.date}>
-          <InlineTextInput
-            t={t}
-            aria-label={t.fieldLabels.date}
-            value={item.date}
-            className={compactResumeFieldClassName}
-            placeholder={t.placeholders.date}
-            onChange={(value) => updateItem(item, { date: value })}
-          />
-        </FormField>
-        <FormField label={t.fieldLabels.url} className="md:col-span-2">
+        <FieldGroup className="grid min-w-0 gap-4 @min-[20rem]/field-group:grid-cols-2">
+          <FormField label={t.fieldLabels.venue}>
+            <InlineTextInput
+              t={t}
+              aria-label={t.fieldLabels.venue}
+              value={item.venue}
+              className={compactResumeFieldClassName}
+              placeholder={t.placeholders.venue}
+              onChange={(value) => updateItem(item, { venue: value })}
+            />
+          </FormField>
+          <FormField label={t.fieldLabels.date}>
+            <InlineTextInput
+              t={t}
+              aria-label={t.fieldLabels.date}
+              value={item.date}
+              className={compactResumeFieldClassName}
+              placeholder={t.placeholders.date}
+              onChange={(value) => updateItem(item, { date: value })}
+            />
+          </FormField>
+        </FieldGroup>
+        <FormField label={t.fieldLabels.url}>
           <Input
             type="url"
             inputMode="url"
@@ -103,7 +108,7 @@ export function PublicationSectionEditor({
             onChange={(event) => updateItem(item, { url: event.target.value })}
           />
         </FormField>
-        <FormField label={t.fieldLabels.description} className="md:col-span-2">
+        <FormField label={t.fieldLabels.description}>
           <InlineTextInput
             t={t}
             aria-label={t.fieldLabels.description}
@@ -114,7 +119,7 @@ export function PublicationSectionEditor({
             onChange={(value) => updateItem(item, { description: value })}
           />
         </FormField>
-      </div>
+      </FieldGroup>
     </ResumeItemEditorShell>
   ));
 }

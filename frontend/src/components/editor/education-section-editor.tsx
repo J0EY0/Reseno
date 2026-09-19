@@ -1,3 +1,5 @@
+import { FieldGroup } from "@/components/ui/field";
+import { getRichTextPlainText } from "@/lib/rich-text";
 import type { EducationItem } from "@/types/resume";
 
 import { FormField } from "./form-field";
@@ -35,8 +37,23 @@ export function EducationSectionEditor({
       key={item.id}
       itemId={item.id}
       index={index}
-      itemLabel={t.itemCountSingular}
+      itemLabel={t.itemLabel}
       title={item.school}
+      titleEditor={
+        <InlineTextInput
+          autoFocus={item.id === initiallyOpenItemId}
+          t={t}
+          aria-label={t.fieldLabels.school}
+          value={item.school}
+          className={`${compactResumeFieldClassName} editor-item-title`}
+          placeholder={t.placeholders.school}
+          onChange={(value) => updateItem(item, { school: value })}
+        />
+      }
+      summary={[item.degree, item.major, item.period]
+        .map((value) => getRichTextPlainText(value).trim())
+        .filter(Boolean)
+        .join(" · ")}
       initiallyOpen={item.id === initiallyOpenItemId}
       canMoveUp={index > 0}
       canMoveDown={index < section.items.length - 1}
@@ -48,48 +65,49 @@ export function EducationSectionEditor({
       onMoveUp={() => onMoveItem(item.id, "up")}
       onMoveDown={() => onMoveItem(item.id, "down")}
     >
-      <div className="grid min-w-0 gap-3 md:grid-cols-2">
-        <FormField label={t.fieldLabels.school}>
-          <InlineTextInput
-            autoFocus={item.id === initiallyOpenItemId}
-            t={t}
-            aria-label={t.fieldLabels.school}
-            value={item.school}
-            className={compactResumeFieldClassName}
-            placeholder={t.placeholders.school}
-            onChange={(value) => updateItem(item, { school: value })}
-          />
-        </FormField>
-        <FormField label={t.fieldLabels.degree}>
-          <InlineTextInput
-            t={t}
-            aria-label={t.fieldLabels.degree}
-            value={item.degree}
-            className={compactResumeFieldClassName}
-            placeholder={t.placeholders.degree}
-            onChange={(value) => updateItem(item, { degree: value })}
-          />
-        </FormField>
-        <FormField label={t.fieldLabels.major}>
-          <InlineTextInput
-            t={t}
-            aria-label={t.fieldLabels.major}
-            value={item.major}
-            className={compactResumeFieldClassName}
-            placeholder={t.placeholders.major}
-            onChange={(value) => updateItem(item, { major: value })}
-          />
-        </FormField>
-        <FormField label={t.fieldLabels.gpa}>
-          <InlineTextInput
-            t={t}
-            aria-label={t.fieldLabels.gpa}
-            value={item.gpa}
-            className={compactResumeFieldClassName}
-            placeholder={t.placeholders.gpa}
-            onChange={(value) => updateItem(item, { gpa: value })}
-          />
-        </FormField>
+      <FieldGroup className="min-w-0 gap-4">
+        <FieldGroup className="grid min-w-0 gap-4 @min-[20rem]/field-group:grid-cols-2">
+          <FormField label={t.fieldLabels.degree}>
+            <InlineTextInput
+              t={t}
+              aria-label={t.fieldLabels.degree}
+              value={item.degree}
+              className={compactResumeFieldClassName}
+              placeholder={t.placeholders.degree}
+              onChange={(value) => updateItem(item, { degree: value })}
+            />
+          </FormField>
+          <FormField label={t.fieldLabels.period}>
+            <InlineTextInput
+              t={t}
+              aria-label={t.fieldLabels.period}
+              value={item.period}
+              className={compactResumeFieldClassName}
+              placeholder={t.placeholders.period}
+              onChange={(value) => updateItem(item, { period: value })}
+            />
+          </FormField>
+          <FormField label={t.fieldLabels.major}>
+            <InlineTextInput
+              t={t}
+              aria-label={t.fieldLabels.major}
+              value={item.major}
+              className={compactResumeFieldClassName}
+              placeholder={t.placeholders.major}
+              onChange={(value) => updateItem(item, { major: value })}
+            />
+          </FormField>
+          <FormField label={t.fieldLabels.gpa}>
+            <InlineTextInput
+              t={t}
+              aria-label={t.fieldLabels.gpa}
+              value={item.gpa}
+              className={compactResumeFieldClassName}
+              placeholder={t.placeholders.gpa}
+              onChange={(value) => updateItem(item, { gpa: value })}
+            />
+          </FormField>
+        </FieldGroup>
         <FormField label={t.fieldLabels.location}>
           <InlineTextInput
             t={t}
@@ -100,17 +118,7 @@ export function EducationSectionEditor({
             onChange={(value) => updateItem(item, { location: value })}
           />
         </FormField>
-        <FormField label={t.fieldLabels.period}>
-          <InlineTextInput
-            t={t}
-            aria-label={t.fieldLabels.period}
-            value={item.period}
-            className={compactResumeFieldClassName}
-            placeholder={t.placeholders.period}
-            onChange={(value) => updateItem(item, { period: value })}
-          />
-        </FormField>
-        <FormField label={t.fieldLabels.description} className="md:col-span-2">
+        <FormField label={t.fieldLabels.description}>
           <InlineTextInput
             t={t}
             aria-label={t.fieldLabels.description}
@@ -126,7 +134,7 @@ export function EducationSectionEditor({
           value={item.highlights}
           onChange={(highlights) => updateItem(item, { highlights })}
         />
-      </div>
+      </FieldGroup>
     </ResumeItemEditorShell>
   ));
 }

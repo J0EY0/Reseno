@@ -10,6 +10,8 @@ const [
   templateGallery,
   recycleBinPanel,
   previewStyles,
+  sansFonts,
+  serifFonts,
 ] = await Promise.all([
   readFile(new URL("main.tsx", sourceRoot), "utf8"),
   readFile(
@@ -30,28 +32,40 @@ const [
     new URL("components/preview/resume-preview-styles.ts", sourceRoot),
     "utf8",
   ),
+  readFile(new URL("assets/fonts/resume-sans.css", sourceRoot), "utf8"),
+  readFile(new URL("assets/fonts/resume-serif.css", sourceRoot), "utf8"),
 ]);
 
 assert(
   mainEntry.includes("@fontsource-variable/inter/wght.css") &&
-    mainEntry.includes("@fontsource-variable/ibm-plex-sans/wght.css") &&
     mainEntry.includes("@fontsource/ibm-plex-mono/latin-400.css") &&
     mainEntry.includes("@fontsource/ibm-plex-mono/latin-500.css"),
-  "Existing UI, Plex, and monospace fonts must remain globally available.",
+  "UI and monospace fonts must remain globally available.",
 );
 assert(
-  !mainEntry.includes("@fontsource-variable/noto-sans-sc/wght.css") &&
-    !mainEntry.includes("@fontsource-variable/noto-serif-sc/wght.css"),
-  "Noto resume fonts must not remain in the application entrypoint.",
+  !/@fontsource(?:-variable)?\/(?:noto-|ibm-plex-sans)/.test(mainEntry),
+  "Resume fonts must not remain in the application entrypoint.",
 );
+for (const family of [
+  "inter",
+  "ibm-plex-sans",
+  "noto-sans-sc",
+  "noto-serif-sc",
+]) {
+  for (const weight of [400, 500, 600, 700, 800]) {
+    if (family === "ibm-plex-sans" && weight === 800) continue;
+    assert(
+      (family === "noto-serif-sc" ? serifFonts : sansFonts).includes(
+        `@import "@fontsource/${family}/${weight}.css"`,
+      ),
+      `${family} ${weight} must be included in the resume font stylesheet.`,
+    );
+  }
+}
 assert(
-  /import\(\s*["']@fontsource-variable\/noto-sans-sc\/wght\.css["']\s*\)/.test(
-    fontLoader,
-  ) &&
-    /import\(\s*["']@fontsource-variable\/noto-serif-sc\/wght\.css["']\s*\)/.test(
-      fontLoader,
-    ),
-  "Both Noto stylesheets must use statically analyzable dynamic imports.",
+  fontLoader.includes('import("@/assets/fonts/resume-sans.css")') &&
+    fontLoader.includes('import("@/assets/fonts/resume-serif.css")'),
+  "Both resume font stylesheets must use statically analyzable dynamic imports.",
 );
 assert(
   !thumbnail.includes("useResumeFontReadyToken") &&
@@ -67,11 +81,12 @@ assert(
   "Each thumbnail collection must prepare its visible font set at collection scope.",
 );
 assert(
-  /inter:\s*[\s\S]{0,300}Noto Sans SC Variable/.test(previewStyles) &&
-    /noto_sans_sc:\s*[\s\S]{0,300}Noto Sans SC Variable/.test(previewStyles) &&
-    /plex:\s*[\s\S]{0,300}Noto Sans SC Variable/.test(previewStyles) &&
-    /serif:\s*[\s\S]{0,300}Noto Serif SC Variable/.test(previewStyles),
-  "Conditional assets must preserve the exact preview font fallback stacks.",
+  !previewStyles.includes(' Variable"') &&
+    /inter:\s*[\s\S]{0,200}Noto Sans SC/.test(previewStyles) &&
+    /noto_sans_sc:\s*[\s\S]{0,200}Noto Sans SC/.test(previewStyles) &&
+    /plex:\s*[\s\S]{0,200}Noto Sans SC/.test(previewStyles) &&
+    /serif:\s*[\s\S]{0,200}Noto Serif SC/.test(previewStyles),
+  "Resume previews and exports must use the static font families.",
 );
 
 console.log("Conditional resume font loading verified.");

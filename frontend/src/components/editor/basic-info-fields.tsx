@@ -16,6 +16,7 @@ import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -23,6 +24,7 @@ import {
 
 import { FormField } from "./form-field";
 import { InlineTextInput } from "./inline-text-input";
+import { compactResumeFieldClassName } from "./resume-section-editor-fields";
 
 export type BasicInfoFieldsProps = {
   t: AppMessages;
@@ -107,6 +109,7 @@ export function BasicInfoFields({
         <div className="grid min-w-0 gap-3 [grid-template-columns:repeat(auto-fit,minmax(180px,1fr))]">
           <FormField label={t.fieldLabels.name}>
             <InlineTextInput
+              className={compactResumeFieldClassName}
               t={t}
               aria-label={t.fieldLabels.name}
               value={basic.name}
@@ -115,6 +118,7 @@ export function BasicInfoFields({
           </FormField>
           <FormField label={t.fieldLabels.headline}>
             <InlineTextInput
+              className={compactResumeFieldClassName}
               t={t}
               aria-label={t.fieldLabels.headline}
               value={basic.headline}
@@ -123,6 +127,7 @@ export function BasicInfoFields({
           </FormField>
           <FormField label={t.fieldLabels.phone}>
             <Input
+              className={compactResumeFieldClassName}
               name="phone"
               type="tel"
               autoComplete="tel"
@@ -132,6 +137,7 @@ export function BasicInfoFields({
           </FormField>
           <FormField label={t.fieldLabels.email}>
             <Input
+              className={compactResumeFieldClassName}
               name="email"
               type="email"
               autoComplete="email"
@@ -141,6 +147,7 @@ export function BasicInfoFields({
           </FormField>
           <FormField label={t.fieldLabels.location}>
             <InlineTextInput
+              className={compactResumeFieldClassName}
               t={t}
               aria-label={t.fieldLabels.location}
               value={basic.location}
@@ -155,7 +162,7 @@ export function BasicInfoFields({
               t={t}
               aria-label={t.fieldLabels.summary}
               multiline
-              className="min-h-24"
+              className={`${compactResumeFieldClassName} min-h-24`}
               placeholder={t.placeholders.summary}
               value={basic.summary}
               onChange={(value) => onUpdateBasic("summary", value)}
@@ -170,7 +177,7 @@ export function BasicInfoFields({
         </p>
         <Button
           type="button"
-          variant="outline"
+          variant="ghost"
           size="sm"
           onClick={onAddCustomField}
         >
@@ -182,7 +189,7 @@ export function BasicInfoFields({
         {basic.customFields.map((field) => (
           <div
             key={field.id}
-            className="grid gap-3 rounded-xl border border-border/70 bg-muted/40 p-3 md:grid-cols-[minmax(110px,0.65fr)_minmax(0,1fr)_minmax(0,1.35fr)_auto]"
+            className="grid min-w-0 grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] gap-4 py-2"
           >
             <FormField label={t.fieldLabels.fieldType}>
               <Select
@@ -195,32 +202,41 @@ export function BasicInfoFields({
                   )
                 }
               >
-                <SelectTrigger className="w-full">
+                <SelectTrigger
+                  className={`w-full ${compactResumeFieldClassName}`}
+                >
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {(
-                    Object.entries(t.contactFieldTypes) as Array<
-                      [ContactFieldType, string]
-                    >
-                  ).map(([value, label]) => (
-                    <SelectItem key={value} value={value}>
-                      {label}
-                    </SelectItem>
-                  ))}
+                  <SelectGroup>
+                    {(
+                      Object.entries(t.contactFieldTypes) as Array<
+                        [ContactFieldType, string]
+                      >
+                    ).map(([value, label]) => (
+                      <SelectItem key={value} value={value}>
+                        {label}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
                 </SelectContent>
               </Select>
             </FormField>
             <FormField label={t.fieldLabels.fieldName}>
               <Input
+                className={compactResumeFieldClassName}
                 value={field.label}
                 onChange={(event) =>
                   onUpdateCustomField(field.id, "label", event.target.value)
                 }
               />
             </FormField>
-            <FormField label={t.fieldLabels.fieldValue}>
+            <FormField
+              label={t.fieldLabels.fieldValue}
+              className="col-span-2 row-start-2"
+            >
               <Input
+                className={compactResumeFieldClassName}
                 type={
                   field.type === "email"
                     ? "email"
@@ -240,7 +256,7 @@ export function BasicInfoFields({
               type="button"
               variant="ghost"
               size="icon"
-              className="self-end"
+              className="col-start-3 row-start-2 self-end"
               onClick={() => onRemoveCustomField(field.id)}
             >
               <span className="sr-only">{t.removeField}</span>×

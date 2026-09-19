@@ -15,17 +15,19 @@ export function ResumeSectionDeleteDialog({
   sectionId,
   t,
   onOpenChange,
+  onCloseAutoFocus,
   onRemoveSection,
 }: {
   open: boolean;
   sectionId: string;
   t: AppMessages;
   onOpenChange: (open: boolean) => void;
+  onCloseAutoFocus: (event: Event) => void;
   onRemoveSection: (sectionId: string) => void;
 }) {
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
-      <AlertDialogContent size="sm">
+      <AlertDialogContent size="sm" onCloseAutoFocus={onCloseAutoFocus}>
         <AlertDialogHeader>
           <AlertDialogTitle>{t.confirmDeleteSectionTitle}</AlertDialogTitle>
           <AlertDialogDescription>

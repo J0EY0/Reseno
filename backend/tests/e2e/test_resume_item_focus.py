@@ -23,6 +23,13 @@ SECTION_FIELDS = [
     ("publication", "论文标题"),
     ("achievement", "证书 / 荣誉名称"),
 ]
+ADD_ITEM_LABELS = {
+    "education": "添加教育经历",
+    "experience": "添加工作经历",
+    "project": "添加项目",
+    "publication": "添加论文",
+    "achievement": "添加奖项",
+}
 
 
 def _create_resume(page: Page, base: str, *, existing_item: bool) -> str:
@@ -75,7 +82,7 @@ def _open_section(page: Page, title: str) -> Locator:
     toggle = page.get_by_role("button", name=f"{title}: 展开或收起模块", exact=True)
     if toggle.get_attribute("aria-expanded") != "true":
         toggle.click()
-    return toggle.locator('xpath=ancestor::*[@data-slot="card"][1]')
+    return toggle.locator("xpath=ancestor::*[@data-resume-section-id][1]")
 
 
 def _settle_animations(card: Locator) -> None:
@@ -107,7 +114,7 @@ def test_new_resume_items_receive_keyboard_input_without_an_extra_click(
         page.goto(f"{base}/resume/{resume_id}", wait_until="networkidle")
         for kind, field_label in SECTION_FIELDS:
             card = _open_section(page, kind.title())
-            add = card.get_by_role("button", name="添加条目", exact=True)
+            add = card.get_by_role("button", name=ADD_ITEM_LABELS[kind], exact=True)
             for index in (1, 2):
                 add.click()
                 expect(card.locator("h4")).to_have_count(index)
@@ -189,7 +196,7 @@ def test_loading_new_item_editor_does_not_reclaim_user_moved_focus(
         resume_id = _create_resume(page, base, existing_item=False)
         page.goto(f"{base}/resume/{resume_id}", wait_until="domcontentloaded")
         card = _open_section(page, "Experience")
-        card.get_by_role("button", name="添加条目", exact=True).click()
+        card.get_by_role("button", name="添加工作经历", exact=True).click()
         expect(card.locator("h4")).to_have_count(1)
         field = card.get_by_role("textbox", name="公司 / 组织", exact=True)
         expect(field).to_have_count(0)

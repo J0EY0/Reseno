@@ -96,7 +96,8 @@ def test_resume_section_delete_dialog_loads_and_preserves_exit_presence(
 
     try:
         page.goto(f"{frontend_url}/resume/{resume_id}", wait_until="networkidle")
-        page.locator('button[aria-label$=": 删除模块"]').first.click()
+        page.locator('button[aria-label$=": 更多操作"]').first.click()
+        page.get_by_role("menuitem", name="删除模块", exact=True).click()
 
         dialog = page.locator('[data-slot="alert-dialog-content"]')
         overlay = page.locator('[data-slot="alert-dialog-overlay"]')
@@ -207,7 +208,8 @@ def test_resume_section_operations_keep_a_single_open_editor(
         expect(education).to_have_attribute("aria-expanded", "false")
         expect(open_sections).to_have_count(1)
 
-        page.get_by_role("button", name="教育经历: 删除模块", exact=True).click()
+        page.get_by_role("button", name="教育经历: 更多操作", exact=True).click()
+        page.get_by_role("menuitem", name="删除模块", exact=True).click()
         dialog = page.get_by_role("alertdialog")
         dialog.get_by_role("button", name="删除模块", exact=True).click()
         expect(education).to_have_count(0)
@@ -228,7 +230,8 @@ def test_resume_section_operations_keep_a_single_open_editor(
             "项目经历",
         ]
 
-        page.get_by_role("button", name="项目经历: 删除模块", exact=True).click()
+        page.get_by_role("button", name="项目经历: 更多操作", exact=True).click()
+        page.get_by_role("menuitem", name="删除模块", exact=True).click()
         dialog.get_by_role("button", name="删除模块", exact=True).click()
         expect(project).to_have_count(0)
         expect(open_sections).to_have_count(0)
@@ -330,7 +333,7 @@ def test_project_tech_stack_is_saved_without_blurring_the_input(
 
 
 @pytest.mark.browser_smoke
-@pytest.mark.parametrize("item_count", [3, 16])
+@pytest.mark.parametrize("item_count", [3, 4, 16])
 def test_rich_text_editor_lazy_mount_preserves_collapsible_height(
     browser: Browser,
     workspace_servers: tuple[str, str],

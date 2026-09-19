@@ -31,6 +31,9 @@ export default defineConfig({
     },
   },
   build: {
+    assetsInlineLimit: (filePath) => {
+      if (/\.(?:woff2?|ttf|otf)$/.test(filePath)) return false;
+    },
     chunkSizeWarningLimit: 480,
     rolldownOptions: {
       output: {

@@ -16,7 +16,7 @@ export function EditorCollapseButton({
       <Button
         type="button"
         variant="ghost"
-        size="icon"
+        size="icon-sm"
         className="cursor-pointer"
         data-slot="editor-toggle-trigger"
         aria-label={label}

@@ -4,14 +4,13 @@ import type { ResumeFontFamily, ResumeTemplateSettings } from "@/types/resume";
 
 const fontFamilyMap: Record<ResumeFontFamily, string> = {
   inter:
-    '"Inter Variable","Inter","Noto Sans SC Variable","Noto Sans SC","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif',
+    '"Inter","Noto Sans SC","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif',
   noto_sans_sc:
-    '"Noto Sans SC Variable","Noto Sans SC","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif',
+    '"Noto Sans SC","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif',
   serif:
-    '"Noto Serif SC Variable","Noto Serif SC","Source Serif 4","Songti SC","STSong","Times New Roman",serif',
-  times:
-    '"Times New Roman",Times,"Liberation Serif","Noto Serif SC Variable","Noto Serif SC",serif',
-  plex: '"IBM Plex Sans Variable","IBM Plex Sans","Noto Sans SC Variable","Noto Sans SC","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif',
+    '"Noto Serif SC","Source Serif 4","Songti SC","STSong","Times New Roman",serif',
+  times: '"Times New Roman",Times,"Liberation Serif","Noto Serif SC",serif',
+  plex: '"IBM Plex Sans","Noto Sans SC","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif',
 };
 
 export function createResumePreviewStyles({

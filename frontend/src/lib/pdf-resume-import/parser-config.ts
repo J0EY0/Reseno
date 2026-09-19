@@ -451,6 +451,7 @@ function buildPeriodPattern({
     "-",
     "–",
     "—",
+    "~",
     ...dateRangeTerms,
   ]);
   const currentPeriodPattern = literalAlternation(currentPeriodTerms);
