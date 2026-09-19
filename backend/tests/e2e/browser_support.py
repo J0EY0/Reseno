@@ -1,9 +1,10 @@
 import asyncio
 import json
+from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
 
-from playwright.sync_api import Browser, BrowserContext, Page
+from playwright.sync_api import Browser, BrowserContext, Page, Route
 
 browser_session: dict[str, str] = {}
 
@@ -44,6 +45,37 @@ class RouteReady:
             }""",
             name,
         )
+
+
+class DeferredRoute:
+    """Hold matching requests until release, then continue future requests."""
+
+    def __init__(self, page: Page, pattern: str) -> None:
+        self._page = page
+        self._pending: list[Route] = []
+        self._ready = RouteReady()
+        self._released = False
+        page.route(pattern, self._capture)
+
+    @property
+    def pending(self) -> tuple[Route, ...]:
+        return tuple(self._pending)
+
+    def _capture(self, route: Route) -> None:
+        if self._released:
+            route.continue_()
+        else:
+            self._pending.append(route)
+            self._ready.set()
+
+    def wait(self, *, timeout: float = 5_000) -> None:
+        self._ready.wait(self._page, timeout=timeout)
+
+    def release(self, action: Callable[[Route], None] = Route.continue_) -> None:
+        self._released = True
+        pending, self._pending = self._pending, []
+        for route in pending:
+            action(route)
 
 
 def authenticated_context(

@@ -14,7 +14,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from pypdf import PdfReader
 
 from app.services.pdf import _wait_for_resume_render
-from tests.e2e.browser_support import authenticated_context
+from tests.e2e.browser_support import DeferredRoute, authenticated_context
 
 pytestmark = pytest.mark.skipif(
     os.getenv("RUN_BROWSER_E2E") != "1",
@@ -107,30 +107,30 @@ def test_pdf_ready_waits_for_delayed_assets_before_exporting_all_pages(
     frontend_url, _ = workspace_servers
     context = authenticated_context(browser)
     page = context.new_page()
-    pending: list[Route] = []
     try:
         url = _create_render_url(context, frontend_url, avatar=asset == "image")
         pattern = "**/*.woff2*" if asset == "font" else "**/render-readiness-avatar.png"
-        page.route(pattern, lambda route: pending.append(route))
+        deferred_asset = DeferredRoute(page, pattern)
         page.goto(url, wait_until="domcontentloaded")
         page.wait_for_selector('[data-export-root="resume-page"]', state="attached")
+        deferred_asset.wait()
         if asset == "image":
             page.wait_for_function("document.fonts.status === 'loaded'")
         page.wait_for_timeout(3_200)
-        assert pending
+        assert deferred_asset.pending
         assert (
             page.locator("[data-pdf-ready]").get_attribute("data-pdf-ready") == "false"
         )
 
-        for route in pending:
+        def release_asset(route: Route) -> None:
             if outcome == "failed":
                 route.abort("failed")
             elif asset == "image":
                 route.fulfill(content_type="image/png", body=AVATAR_PNG)
             else:
                 route.continue_()
-        pending.clear()
-        page.unroute(pattern)
+
+        deferred_asset.release(release_asset)
         page.wait_for_selector("[data-pdf-ready='true']")
         assert page.evaluate("document.fonts.status") == "loaded"
         if asset == "image":
@@ -143,8 +143,6 @@ def test_pdf_ready_waits_for_delayed_assets_before_exporting_all_pages(
             }
         _assert_multipage_pdf(page)
     finally:
-        for route in pending:
-            route.abort()
         context.close()
 
 

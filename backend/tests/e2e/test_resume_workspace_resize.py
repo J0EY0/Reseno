@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from playwright.sync_api import Browser, Locator, Page, Route, expect
 
-from tests.e2e.browser_support import authenticated_context
+from tests.e2e.browser_support import DeferredRoute, authenticated_context
 
 pytestmark = [
     pytest.mark.browser_smoke,
@@ -364,20 +364,18 @@ def test_cold_section_menu_receives_keyboard_focus_and_returns_it_on_escape(
     resize_workspace: tuple[Page, dict[str, Any]],
 ) -> None:
     page, messages = resize_workspace
-    pending: list[Route] = []
-    pattern = "**/add-section-menu.tsx*"
-    page.route(pattern, lambda route: pending.append(route))
+    deferred_menu = DeferredRoute(page, "**/add-section-menu.tsx*")
     trigger = page.get_by_role("button", name=messages["addSection"], exact=True)
     popover = page.locator('[data-slot="popover-content"]')
     try:
         trigger.focus()
         trigger.press("Enter")
+        deferred_menu.wait()
         expect(popover.locator('[aria-busy="true"]')).to_be_visible()
-        assert pending, "the menu module must remain deferred through opening"
-        for route in pending:
-            route.continue_()
-        pending.clear()
-        page.unroute(pattern)
+        assert deferred_menu.pending, (
+            "the menu module must remain deferred through opening"
+        )
+        deferred_menu.release()
         menu = popover.locator('[data-slot="command"]')
         expect(menu).to_be_focused()
         menu.press("Escape")
@@ -400,9 +398,8 @@ def test_cold_section_menu_receives_keyboard_focus_and_returns_it_on_escape(
         expect(section).to_have_count(before + 1)
         expect(section.last).to_have_attribute("aria-expanded", "true")
     finally:
-        for route in pending:
+        for route in deferred_menu.pending:
             route.abort()
-        page.unroute(pattern)
 
 
 def test_resizing_preserves_live_editors_and_restores_widths_after_reload(

@@ -219,7 +219,8 @@ Before running checks, run `uv sync --locked --all-groups` in `backend` to
 install the development dependencies.
 
 Run each command in the directory shown. Dependency and tool versions are
-defined in the lock files and the [quality workflow](.github/workflows/frontend-quality.yml).
+defined in `frontend/.node-version`, `frontend/package.json`,
+`backend/.python-version`, the lock files and the [quality workflow](.github/workflows/frontend-quality.yml).
 
 | Directory  | Task                                                            | Command                                                          |
 | ---------- | --------------------------------------------------------------- | ---------------------------------------------------------------- |
@@ -228,13 +229,29 @@ defined in the lock files and the [quality workflow](.github/workflows/frontend-
 | `backend`  | Lint and types                                                  | `uv run --locked ruff check . && uv run --locked mypy app`       |
 | `backend`  | Default backend tests                                           | `uv run --locked pytest -q`                                      |
 | `frontend` | Browser smoke tests                                             | `pnpm test:workspace-network:smoke`                              |
-| `backend`  | Full browser E2E suite                                          | `RUN_BROWSER_E2E=1 uv run --locked pytest tests/e2e -q`          |
+| `frontend` | Complete CI browser checks on the host                           | `pnpm test:browser:ci`                                            |
+| `frontend` | Complete CI browser checks in the shared Linux image             | `pnpm test:browser:linux`                                         |
 | `frontend` | Regenerate contracts and template presets                       | `pnpm generate:agent-contract && pnpm generate:template-presets` |
 
-Before browser tests, run `pnpm build` in `frontend` and
-`uv run --locked playwright install chromium` in `backend` (add `--with-deps`
-on Linux). Browser tests skipped without `RUN_BROWSER_E2E=1` do not count as
-passed; the smoke command sets it automatically.
+For native browser tests, install Chromium with `uv run --locked playwright install chromium`
+in `backend` (add `--with-deps` on Linux). `test:browser:ci` builds the frontend
+and runs production hosting, production chunk recovery, dev-mode smoke tests with
+two workers, and PDF ATS tests. CI uses `test:browser:linux`'s Docker script and
+the same test entry point. That command requires Docker; dependencies and browsers
+are installed inside the image, with no host database, credentials or dependency
+directories mounted. Results, failure screenshots, traces and server logs are saved
+in a separate directory per run under `backend/test-results/` in both environments.
+Each stage stops on failure; tests are not automatically retried.
+
+The Linux image fixes OS, runtime and browser versions. On Apple Silicon it runs
+Linux ARM64; GitHub's browser job uses AMD64. Set `DOCKER_DEFAULT_PLATFORM=linux/amd64`
+when reproducing that architecture locally, allowing for emulation overhead.
+Native macOS PDF checks additionally exercise PDFKit when Swift is installed.
+
+`check:frontend`, targeted tests and `test:workspace-network:smoke` cover only their
+named scope. Backend pytest skips browser tests unless `RUN_BROWSER_E2E=1` is set;
+skips do not count as passes. A green feature-branch push also does not include
+the browser job: complete browser checks run on pull requests, `main` and tags.
 
 ### Build a local image (optional)
 

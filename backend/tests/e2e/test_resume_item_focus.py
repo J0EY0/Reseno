@@ -4,9 +4,9 @@ import os
 from typing import Any
 
 import pytest
-from playwright.sync_api import Browser, Locator, Page, Route, expect
+from playwright.sync_api import Browser, Locator, Page, expect
 
-from tests.e2e.browser_support import authenticated_context
+from tests.e2e.browser_support import DeferredRoute, authenticated_context
 
 pytestmark = [
     pytest.mark.browser_smoke,
@@ -186,16 +186,7 @@ def test_loading_new_item_editor_does_not_reclaim_user_moved_focus(
         reduced_motion=reduced_motion,
     )
     page = context.new_page()
-    blocked: list[Route] = []
-    released = False
-
-    def defer_editor(route: Route) -> None:
-        if released:
-            route.continue_()
-        else:
-            blocked.append(route)
-
-    page.route("**/inline-text-editor.tsx*", defer_editor)
+    deferred_editor = DeferredRoute(page, "**/inline-text-editor.tsx*")
     try:
         resume_id = _create_resume(page, base, existing_item=False)
         page.goto(f"{base}/resume/{resume_id}", wait_until="domcontentloaded")
@@ -204,14 +195,15 @@ def test_loading_new_item_editor_does_not_reclaim_user_moved_focus(
         expect(card.locator("h4")).to_have_count(1)
         field = card.get_by_role("textbox", name="公司 / 组织", exact=True)
         expect(field).to_have_count(0)
-        assert blocked, "the lazy inline editor request must be held before focus moves"
+        deferred_editor.wait()
+        assert deferred_editor.pending, (
+            "the lazy inline editor request must be held before focus moves"
+        )
         toggle = page.get_by_role(
             "button", name="Experience: 展开或收起模块", exact=True
         )
         toggle.focus()
-        released = True
-        for route in blocked:
-            route.continue_()
+        deferred_editor.release()
         page.wait_for_function(
             "element => element.editor?.isInitialized === true",
             arg=field.element_handle(),
