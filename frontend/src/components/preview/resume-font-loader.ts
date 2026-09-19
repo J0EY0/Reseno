@@ -10,41 +10,35 @@ interface ReadyFontSnapshot {
   token: object;
 }
 
-let notoSansStylesPromise: Promise<unknown> | null = null;
-let notoSerifStylesPromise: Promise<unknown> | null = null;
+let sansStylesPromise: Promise<unknown> | null = null;
+let serifStylesPromise: Promise<unknown> | null = null;
 
-function loadNotoSansStyles() {
-  // Keep literal import paths so Vite emits one predictable optional CSS entry.
-  notoSansStylesPromise ??=
-    import("@fontsource-variable/noto-sans-sc/wght.css").catch((error) => {
-      notoSansStylesPromise = null;
+function loadSansStyles() {
+  sansStylesPromise ??= import("@/assets/fonts/resume-sans.css").catch(
+    (error) => {
+      sansStylesPromise = null;
       throw error;
-    });
+    },
+  );
 
-  return notoSansStylesPromise;
+  return sansStylesPromise;
 }
 
-function loadNotoSerifStyles() {
-  notoSerifStylesPromise ??=
-    import("@fontsource-variable/noto-serif-sc/wght.css").catch((error) => {
-      notoSerifStylesPromise = null;
+function loadSerifStyles() {
+  serifStylesPromise ??= import("@/assets/fonts/resume-serif.css").catch(
+    (error) => {
+      serifStylesPromise = null;
       throw error;
-    });
+    },
+  );
 
-  return notoSerifStylesPromise;
+  return serifStylesPromise;
 }
-
-const resumeFontStyleLoaders: Record<ResumeFontFamily, () => Promise<unknown>> =
-  {
-    inter: loadNotoSansStyles,
-    noto_sans_sc: loadNotoSansStyles,
-    plex: loadNotoSansStyles,
-    serif: loadNotoSerifStyles,
-    times: loadNotoSerifStyles,
-  };
 
 export function loadResumeFontStyles(fontFamily: ResumeFontFamily) {
-  return resumeFontStyleLoaders[fontFamily]();
+  return fontFamily === "serif" || fontFamily === "times"
+    ? loadSerifStyles()
+    : loadSansStyles();
 }
 
 function waitForAnimationFrame() {

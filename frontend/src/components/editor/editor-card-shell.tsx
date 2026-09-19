@@ -4,9 +4,7 @@ import type { ReactNode } from "react";
 import { ResourceErrorBoundary } from "@/components/resource-error-boundary";
 import type { EditorSortActivator } from "@/components/editor/use-editor-sortable";
 import { EditorCollapseButton } from "@/components/editor/editor-collapse-button";
-import { Card, CardContent } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
-import { cn } from "@/lib/utils";
 
 export function EditorCardShell({
   icon: Icon,
@@ -32,17 +30,14 @@ export function EditorCardShell({
   const Title = sort ? "button" : "div";
 
   return (
-    <Card
+    <section
       data-collapsed={collapsed ? "true" : "false"}
-      className={cn(
-        "gap-0 overflow-hidden border-border/75 py-0 transition-[border-color,box-shadow] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)]",
-        !collapsed && "border-primary/20",
-      )}
+      className="min-w-0 border-b border-border/70"
     >
       <Collapsible open={!collapsed} onOpenChange={onToggle}>
         <div
           data-slot="editor-card-header"
-          className="flex min-h-[60px] items-center gap-2 px-4 py-3"
+          className="flex min-h-[60px] items-center gap-2 py-2"
         >
           <h3 className="min-w-0 flex-1">
             <Title
@@ -54,10 +49,11 @@ export function EditorCardShell({
               aria-label={sort ? title : undefined}
               className="flex min-h-9 w-full items-center gap-2.5 rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
             >
-              <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary/8 text-primary">
-                <Icon aria-hidden="true" className="size-4" />
-              </span>
-              <span className="flex min-w-0 items-baseline gap-2 text-sm font-semibold leading-5 tracking-tight">
+              <Icon
+                aria-hidden="true"
+                className="size-[18px] shrink-0 text-muted-foreground"
+              />
+              <span className="flex min-w-0 items-baseline gap-2 text-sm font-medium leading-5">
                 <span className="min-w-0 truncate" title={title}>
                   {title}
                 </span>
@@ -69,7 +65,7 @@ export function EditorCardShell({
               </span>
             </Title>
           </h3>
-          <div className="flex shrink-0 items-center gap-1">
+          <div className="flex shrink-0 items-center">
             {headerAction ? (
               <div className="editor-heading-actions">
                 <ResourceErrorBoundary className="fixed bottom-4 right-4 z-50 max-w-sm bg-background shadow-lg">
@@ -81,11 +77,11 @@ export function EditorCardShell({
           </div>
         </div>
         <CollapsibleContent className="collapsible-content">
-          <CardContent className="collapsible-content-inner grid gap-4 border-t border-border/70 p-4">
+          <div className="collapsible-content-inner grid gap-6 pb-3">
             <ResourceErrorBoundary>{children}</ResourceErrorBoundary>
-          </CardContent>
+          </div>
         </CollapsibleContent>
       </Collapsible>
-    </Card>
+    </section>
   );
 }

@@ -19,9 +19,10 @@ try {
     const content = await page.getTextContent();
     pages.push(
       content.items
-        .map((item) => ("str" in item ? item.str : ""))
-        .filter(Boolean)
-        .join(" "),
+        .map((item) =>
+          "str" in item ? item.str + (item.hasEOL ? "\n" : "") : "",
+        )
+        .join(""),
     );
   }
 } finally {

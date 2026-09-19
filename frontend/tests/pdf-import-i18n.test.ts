@@ -23,6 +23,8 @@ it("recognizes English month dates and both numeric date orders", () => {
     "01.2020 – 12.2023",
     "2020年01月 至 现在",
     "2020.01 - 至今",
+    "2024-09 ~ 2027-06",
+    "2024.09 ~ 至今",
   ]) {
     assert.equal(extractPeriod([period], context), period);
   }

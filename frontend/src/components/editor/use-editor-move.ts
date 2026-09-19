@@ -55,7 +55,7 @@ export function useEditorMove(
       item,
       y: before.top - item.getBoundingClientRect().top,
     }));
-    const heading = node.current?.querySelector<HTMLButtonElement>(
+    const heading = node.current?.querySelector<HTMLElement>(
       '[data-slot="editor-sort-trigger"]',
     );
     const reducedMotion = window.matchMedia(

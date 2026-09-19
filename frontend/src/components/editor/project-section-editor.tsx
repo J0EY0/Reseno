@@ -1,5 +1,6 @@
 import { Input } from "@/components/ui/input";
 import { FieldGroup } from "@/components/ui/field";
+import { getRichTextPlainText } from "@/lib/rich-text";
 import type { ProjectItem } from "@/types/resume";
 
 import { FormField } from "./form-field";
@@ -38,8 +39,23 @@ export function ProjectSectionEditor({
       key={item.id}
       itemId={item.id}
       index={index}
-      itemLabel={t.itemCountSingular}
+      itemLabel={t.itemLabel}
       title={item.name}
+      titleEditor={
+        <InlineTextInput
+          autoFocus={item.id === initiallyOpenItemId}
+          t={t}
+          aria-label={t.fieldLabels.projectName}
+          value={item.name}
+          className={`${compactResumeFieldClassName} editor-item-title`}
+          placeholder={t.placeholders.projectName}
+          onChange={(value) => updateItem(item, { name: value })}
+        />
+      }
+      summary={[item.role, item.period]
+        .map((value) => getRichTextPlainText(value).trim())
+        .filter(Boolean)
+        .join(" · ")}
       initiallyOpen={item.id === initiallyOpenItemId}
       canMoveUp={index > 0}
       canMoveDown={index < section.items.length - 1}
@@ -52,18 +68,7 @@ export function ProjectSectionEditor({
       onMoveDown={() => onMoveItem(item.id, "down")}
     >
       <FieldGroup className="min-w-0 gap-4">
-        <FormField label={t.fieldLabels.projectName}>
-          <InlineTextInput
-            autoFocus={item.id === initiallyOpenItemId}
-            t={t}
-            aria-label={t.fieldLabels.projectName}
-            value={item.name}
-            className={compactResumeFieldClassName}
-            placeholder={t.placeholders.projectName}
-            onChange={(value) => updateItem(item, { name: value })}
-          />
-        </FormField>
-        <FieldGroup className="grid min-w-0 gap-4 @min-[24rem]/field-group:grid-cols-2">
+        <FieldGroup className="grid min-w-0 gap-4 @min-[20rem]/field-group:grid-cols-2">
           <FormField label={t.fieldLabels.role}>
             <InlineTextInput
               t={t}

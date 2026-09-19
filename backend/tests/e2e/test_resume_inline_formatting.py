@@ -94,7 +94,7 @@ def _open_section(page: Page, title: str) -> Locator:
     toggle = page.get_by_role("button", name=f"{title}: 展开或收起模块", exact=True)
     if toggle.get_attribute("aria-expanded") != "true":
         toggle.click()
-    card = toggle.locator('xpath=ancestor::*[@data-slot="card"][1]')
+    card = toggle.locator("xpath=ancestor::*[@data-resume-section-id][1]")
     item_toggle = card.get_by_role("button", name="展开或收起条目 1", exact=True)
     if item_toggle.get_attribute("aria-expanded") != "true":
         item_toggle.click()
@@ -201,6 +201,12 @@ def test_inline_marks_preserve_input_geometry_and_saved_content(
         expect(location.locator("u")).to_have_text("Taipei")
         company.click()
         company.press("Tab")
+        remove = page.get_by_role("button", name="删除条目 1", exact=True)
+        expect(remove).to_be_focused()
+        remove.press("Tab")
+        toggle = page.get_by_role("button", name="展开或收起条目 1", exact=True)
+        expect(toggle).to_be_focused()
+        toggle.press("Tab")
         expect(position).to_be_focused()
         expect(period).to_have_text("2024 - 2026")
         expect(period).to_have_attribute("contenteditable", "true")
@@ -510,12 +516,16 @@ def test_academic_italic_is_local_in_inline_fields_and_highlights(
             expect(company).to_have_text("Research Lab")
             assert page.evaluate("window.academicInjected") is None
 
-        group = page.get_by_role("group", name="要点", exact=True)
-        highlights = group.locator('[contenteditable="true"]')
+        highlights = page.get_by_role("textbox", name="要点", exact=True)
+        group = page.locator(".group\\/rich-editor").filter(has=highlights)
         highlights.click()
         highlights.press_sequentially("Built robust systems")
         _select_text(highlights, len("Built "), len("robust"))
-        fixed_toolbar = group.get_by_role("toolbar", name="文字格式", exact=True)
+        group.get_by_role("button", name="更多格式", exact=True).click()
+        expect(highlights).to_be_focused()
+        fixed_toolbar = group.get_by_role(
+            "toolbar", name="文字格式", exact=True
+        ).filter(has=page.get_by_role("button", name="学术花体", exact=True))
         fancy = fixed_toolbar.get_by_role("button", name="学术花体", exact=True)
         fancy.click()
         expect(highlights.locator(ACADEMIC_MARK)).to_have_text("robust")

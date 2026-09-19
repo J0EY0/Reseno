@@ -2,7 +2,6 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { createBrowserRouter, RouterProvider } from "react-router-dom";
 import { AppRouteErrorPage } from "./components/app-route-error-page.tsx";
-import "@fontsource-variable/ibm-plex-sans/wght.css";
 import "@fontsource-variable/inter/wght.css";
 import "./assets/fonts/latin-modern/italic.css";
 import "@fontsource/ibm-plex-mono/latin-400.css";

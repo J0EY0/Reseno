@@ -380,6 +380,44 @@ it("keeps one deep public PDF import interface", async () => {
   );
 });
 
+it("imports tilde-separated education dates without treating them as GPA", async () => {
+  const { resume } = await importResumeFromPdf(
+    createPdfFile([
+      [
+        "Example Person",
+        "person@example.com",
+        "Education",
+        "Example University",
+        "2024-09 ~ 2027-06",
+        "GPA: 3.7 / 4.0",
+        "Example College",
+        "2019-09 ~ 2023-06",
+        "GPA: 3.77 / 4.50",
+      ],
+    ]),
+  );
+
+  assert.deepEqual(
+    requiredSection(resume, "education").items.map(
+      ({ school, degree, gpa, period }) => ({ school, degree, gpa, period }),
+    ),
+    [
+      {
+        school: "Example University",
+        degree: "",
+        gpa: "GPA: 3.7 / 4.0",
+        period: "2024-09 ~ 2027-06",
+      },
+      {
+        school: "Example College",
+        degree: "",
+        gpa: "GPA: 3.77 / 4.50",
+        period: "2019-09 ~ 2023-06",
+      },
+    ],
+  );
+});
+
 it.each(["zh", "en"])(
   "imports English dates and section labels with a %s workspace locale",
   async (locale) => {

@@ -75,7 +75,7 @@ function ContactItemText({
   return (
     <a
       href={item.href}
-      className="text-inherit no-underline hover:underline"
+      className="text-inherit no-underline [font-kerning:none] hover:underline"
       target={opensNewTab ? "_blank" : undefined}
       rel={opensNewTab ? "noreferrer noopener" : undefined}
     >

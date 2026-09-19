@@ -219,9 +219,15 @@ def test_editor_chunk_recovery_saves_latest_content_before_reloading(
         basic_toggle.click()
         expect(phone).to_have_value(latest_phone)
         section_toggle.click()
-        expect(
-            section.get_by_role("textbox", name=messages["renameSection"], exact=True)
-        ).to_have_value("Recovery experience")
+        section.get_by_role(
+            "button", name=f"Recovery experience: {messages['moreActions']}", exact=True
+        ).click()
+        page.get_by_role(
+            "menuitem", name=messages["renameSectionAction"], exact=True
+        ).click()
+        name = page.get_by_role("textbox", name=messages["renameSection"], exact=True)
+        expect(name).to_have_value("Recovery experience")
+        name.press("Escape")
         expect(recovery).to_have_count(0)
         assert len(chunk_requests) >= 2
         assert dialogs == []

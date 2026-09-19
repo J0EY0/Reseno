@@ -25,6 +25,7 @@ from playwright.sync_api import (
 from app.config import get_settings
 from app.document_locales import DocumentLocale
 from app.schemas.exports import ExportResumeRenderRequest
+from app.services.pdf_text import coalesce_pdf_text_runs
 from app.services.render_assets import route_render_image
 from app.services.resume_renderer import ResumeRenderer
 
@@ -223,8 +224,7 @@ def write_resume_pdf(
             page = context.new_page()
             _wait_for_resume_render(page, render_url, timeout)
             page.emulate_media(media="print")
-            page.pdf(
-                path=str(export_path),
+            pdf_bytes = page.pdf(
                 format="A4",
                 print_background=True,
                 prefer_css_page_size=True,
@@ -235,6 +235,7 @@ def write_resume_pdf(
                     "left": "0",
                 },
             )
+            export_path.write_bytes(coalesce_pdf_text_runs(pdf_bytes))
         finally:
             context.close()
         return export_path

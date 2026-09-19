@@ -37,6 +37,10 @@ export function useEditorSortable(id: string, label: string) {
     Object.entries(listeners ?? {}).map(([eventName, listener]) => [
       eventName,
       (event: SyntheticEvent<HTMLElement>) => {
+        const control = (event.target as HTMLElement).closest(
+          'button, input, textarea, select, a, [contenteditable="true"]',
+        );
+        if (control && control !== event.currentTarget) return;
         const editor = event.currentTarget.closest(".resume-editor-panel");
         if (editor) {
           cancelEditorMoveAnimations(

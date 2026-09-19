@@ -37,8 +37,8 @@ export function AddSectionPopover({
       <PopoverTrigger asChild>
         <Button
           type="button"
-          variant="outline"
-          className="h-10 rounded-xl border-dashed bg-background/95"
+          variant="ghost"
+          className="my-3 w-full text-muted-foreground"
           onPointerEnter={preloadAddSectionMenu}
           onFocus={preloadAddSectionMenu}
         >

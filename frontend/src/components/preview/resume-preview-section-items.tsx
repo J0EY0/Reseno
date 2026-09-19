@@ -201,10 +201,25 @@ function TimelineItem({
         style={{ lineHeight: settings.bodyLineHeight }}
       >
         {title}
-        {hasMeta ? (
+        {hasPeriod ? (
           <span
             className={cn(
               "resume-tone-muted col-start-2 row-start-1 min-w-0 break-words text-right",
+              !item.period && "resume-diff-empty-slot",
+            )}
+            style={{ fontSize: `${settings.metaScale}em` }}
+          >
+            <ResumeDiffText richText value={item.period} diffs={periodDiffs} />
+          </span>
+        ) : null}
+        {hasSubtitle ? (
+          <div className="col-start-1 row-start-2 min-w-0">{subtitle}</div>
+        ) : null}
+        {hasMeta ? (
+          <span
+            className={cn(
+              "resume-tone-muted col-start-2 min-w-0 break-words text-right",
+              hasPeriod ? "row-start-2" : "row-start-1",
               !item.meta && "resume-diff-empty-slot",
             )}
             style={{ fontSize: `${settings.metaScale}em` }}
@@ -215,21 +230,6 @@ function TimelineItem({
               parts={item.metaParts}
               value={item.meta}
             />
-          </span>
-        ) : null}
-        {hasSubtitle ? (
-          <div className="col-start-1 row-start-2 min-w-0">{subtitle}</div>
-        ) : null}
-        {hasPeriod ? (
-          <span
-            className={cn(
-              "resume-tone-muted col-start-2 min-w-0 break-words text-right",
-              hasMeta ? "row-start-2" : "row-start-1",
-              !item.period && "resume-diff-empty-slot",
-            )}
-            style={{ fontSize: `${settings.metaScale}em` }}
-          >
-            <ResumeDiffText richText value={item.period} diffs={periodDiffs} />
           </span>
         ) : null}
       </div>
@@ -262,7 +262,7 @@ function TimelineItem({
           {enableContactLinks && urlHref && urlDiffs.length === 0 ? (
             <a
               href={urlHref}
-              className="text-inherit no-underline hover:underline"
+              className="text-inherit no-underline [font-kerning:none] hover:underline"
               target="_blank"
               rel="noreferrer noopener"
             >

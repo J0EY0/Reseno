@@ -1,3 +1,5 @@
+import { FieldGroup } from "@/components/ui/field";
+import { getRichTextPlainText } from "@/lib/rich-text";
 import type { ExperienceItem } from "@/types/resume";
 
 import { FormField } from "./form-field";
@@ -35,8 +37,23 @@ export function ExperienceSectionEditor({
       key={item.id}
       itemId={item.id}
       index={index}
-      itemLabel={t.itemCountSingular}
+      itemLabel={t.itemLabel}
       title={item.company}
+      titleEditor={
+        <InlineTextInput
+          autoFocus={item.id === initiallyOpenItemId}
+          t={t}
+          aria-label={t.fieldLabels.company}
+          value={item.company}
+          className={`${compactResumeFieldClassName} editor-item-title`}
+          placeholder={t.placeholders.company}
+          onChange={(value) => updateItem(item, { company: value })}
+        />
+      }
+      summary={[item.position, item.period]
+        .map((value) => getRichTextPlainText(value).trim())
+        .filter(Boolean)
+        .join(" · ")}
       initiallyOpen={item.id === initiallyOpenItemId}
       canMoveUp={index > 0}
       canMoveDown={index < section.items.length - 1}
@@ -48,28 +65,29 @@ export function ExperienceSectionEditor({
       onMoveUp={() => onMoveItem(item.id, "up")}
       onMoveDown={() => onMoveItem(item.id, "down")}
     >
-      <div className="grid min-w-0 gap-3 md:grid-cols-2">
-        <FormField label={t.fieldLabels.company}>
-          <InlineTextInput
-            autoFocus={item.id === initiallyOpenItemId}
-            t={t}
-            aria-label={t.fieldLabels.company}
-            value={item.company}
-            className={compactResumeFieldClassName}
-            placeholder={t.placeholders.company}
-            onChange={(value) => updateItem(item, { company: value })}
-          />
-        </FormField>
-        <FormField label={t.fieldLabels.position}>
-          <InlineTextInput
-            t={t}
-            aria-label={t.fieldLabels.position}
-            value={item.position}
-            className={compactResumeFieldClassName}
-            placeholder={t.placeholders.position}
-            onChange={(value) => updateItem(item, { position: value })}
-          />
-        </FormField>
+      <FieldGroup className="min-w-0 gap-4">
+        <FieldGroup className="grid min-w-0 gap-4 @min-[20rem]/field-group:grid-cols-2">
+          <FormField label={t.fieldLabels.position}>
+            <InlineTextInput
+              t={t}
+              aria-label={t.fieldLabels.position}
+              value={item.position}
+              className={compactResumeFieldClassName}
+              placeholder={t.placeholders.position}
+              onChange={(value) => updateItem(item, { position: value })}
+            />
+          </FormField>
+          <FormField label={t.fieldLabels.period}>
+            <InlineTextInput
+              t={t}
+              aria-label={t.fieldLabels.period}
+              value={item.period}
+              className={compactResumeFieldClassName}
+              placeholder={t.placeholders.period}
+              onChange={(value) => updateItem(item, { period: value })}
+            />
+          </FormField>
+        </FieldGroup>
         <FormField label={t.fieldLabels.location}>
           <InlineTextInput
             t={t}
@@ -80,17 +98,7 @@ export function ExperienceSectionEditor({
             onChange={(value) => updateItem(item, { location: value })}
           />
         </FormField>
-        <FormField label={t.fieldLabels.period}>
-          <InlineTextInput
-            t={t}
-            aria-label={t.fieldLabels.period}
-            value={item.period}
-            className={compactResumeFieldClassName}
-            placeholder={t.placeholders.period}
-            onChange={(value) => updateItem(item, { period: value })}
-          />
-        </FormField>
-        <FormField label={t.fieldLabels.description} className="md:col-span-2">
+        <FormField label={t.fieldLabels.description}>
           <InlineTextInput
             t={t}
             aria-label={t.fieldLabels.description}
@@ -106,7 +114,7 @@ export function ExperienceSectionEditor({
           value={item.highlights}
           onChange={(highlights) => updateItem(item, { highlights })}
         />
-      </div>
+      </FieldGroup>
     </ResumeItemEditorShell>
   ));
 }

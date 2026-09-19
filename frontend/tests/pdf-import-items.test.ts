@@ -11,6 +11,48 @@ import {
 
 const lexicon = createResumeImportLexiconContext(resumeImportLexicon);
 
+it("keeps tilde-separated education dates and scores in their own entries", () => {
+  const resume = buildResumeFromLines(
+    [
+      positionedLine("教育背景", 800, 40, 14),
+      positionedLine("示例大学 - 计算机技术 - 硕士", 760),
+      positionedLine("2024-09 ~ 2027-06", 760, 380),
+      positionedLine("GPA：3.7/4.0（专业前20%）", 740),
+      positionedLine("示例学院 - 软件工程 - 学士", 710),
+      positionedLine("2019-09 ~ 2023-06", 710, 380),
+      positionedLine("GPA：3.77/4.50（专业前10%）", 690),
+    ],
+    "导入内容",
+  );
+  const education = requiredSection(resume, "education");
+
+  assert.deepEqual(
+    education.items.map(({ school, degree, gpa, period, description }) => ({
+      school,
+      degree,
+      gpa,
+      period,
+      description,
+    })),
+    [
+      {
+        school: "示例大学 - 计算机技术 - 硕士",
+        degree: "",
+        gpa: "GPA：3.7/4.0（专业前20%）",
+        period: "2024-09 ~ 2027-06",
+        description: "",
+      },
+      {
+        school: "示例学院 - 软件工程 - 学士",
+        degree: "",
+        gpa: "GPA：3.77/4.50（专业前10%）",
+        period: "2019-09 ~ 2023-06",
+        description: "",
+      },
+    ],
+  );
+});
+
 it("splits education headers with inline dates before classifying their text", () => {
   const items = buildSectionItems(
     [

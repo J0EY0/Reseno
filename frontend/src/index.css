@@ -1008,6 +1008,7 @@ html:has(.app-shell--document)::-webkit-scrollbar {
 
   /* Keep the resume editor scrollable without visible scrollbar chrome. */
   .app-shell--document .resume-workspace .resume-editor-panel {
+    padding-top: 0;
     scrollbar-gutter: auto;
     scrollbar-width: none;
   }
@@ -1180,6 +1181,116 @@ html:has(.app-shell--document)::-webkit-scrollbar {
   color: var(--muted-foreground);
 }
 
+.editor-heading-actions svg {
+  stroke-width: 1.75;
+}
+
+.resume-editor-panel .resume-editor-field {
+  background: var(--background);
+  transition:
+    border-color 150ms ease,
+    box-shadow 150ms ease;
+}
+
+.resume-editor-panel .resume-editor-field:hover {
+  border-color: color-mix(in srgb, var(--muted-foreground) 50%, var(--border));
+}
+
+.resume-editor-panel .resume-editor-field:focus-within {
+  border-color: var(--ring);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ring) 50%, transparent);
+}
+
+.resume-editor-panel .collapsible-content {
+  margin-inline: -2px;
+  padding-inline: 2px;
+}
+
+.resume-editor-panel .editor-item-title {
+  font-weight: 500;
+  animation: editor-item-title-in 180ms ease-out;
+}
+
+.editor-item-summary {
+  display: grid;
+  grid-template-rows: 1fr;
+  margin-top: -4px;
+  opacity: 1;
+  transition:
+    grid-template-rows 260ms cubic-bezier(0.16, 1, 0.3, 1),
+    margin-top 260ms cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 180ms ease;
+}
+
+[data-resume-item-id][data-open="true"] .editor-item-summary {
+  grid-template-rows: 0fr;
+  margin-top: 0;
+  opacity: 0;
+}
+
+@keyframes editor-item-title-in {
+  from {
+    border-color: transparent;
+    box-shadow: none;
+  }
+}
+
+.resume-editor-panel [contenteditable="true"] {
+  cursor: text;
+  user-select: text;
+}
+
+.resume-editor-panel button {
+  cursor: pointer;
+}
+
+.resume-editor-panel button[data-slot="editor-sort-trigger"] {
+  cursor: grab;
+}
+
+.resume-editor-panel button[data-slot="editor-sort-trigger"]:active {
+  cursor: grabbing;
+}
+
+.resume-editor-panel button:disabled {
+  cursor: default;
+}
+
+@media (pointer: coarse) {
+  .resume-editor-panel [data-slot="editor-card-header"],
+  .resume-editor-panel
+    [data-slot="editor-item-header"]
+    > [data-slot="editor-sort-trigger"] {
+    flex-wrap: wrap;
+  }
+
+  .resume-editor-panel [data-slot="editor-card-header"] > h3,
+  .resume-editor-panel
+    [data-slot="editor-item-header"]
+    > [data-slot="editor-sort-trigger"]
+    > :first-child {
+    flex-basis: 100%;
+  }
+
+  .resume-editor-panel [data-slot="editor-card-header"] > :last-child,
+  .resume-editor-panel
+    [data-slot="editor-item-header"]
+    > [data-slot="editor-sort-trigger"]
+    > :last-child {
+    margin-left: auto;
+  }
+
+  .resume-editor-panel
+    [data-slot="editor-card-header"]
+    button[data-size="icon-sm"],
+  .resume-editor-panel
+    [data-slot="editor-item-header"]
+    button[data-size="icon-sm"] {
+    width: 44px;
+    height: 44px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .editor-sortable {
     transition: none !important;
@@ -1193,8 +1304,8 @@ html:has(.app-shell--document)::-webkit-scrollbar {
   max-height: none;
   align-self: start;
   overflow: visible;
-  padding-inline: 1px;
-  padding-bottom: 10px;
+  padding: 0 24px 16px;
+  background: var(--background);
 }
 
 .resume-template-editor-panel {

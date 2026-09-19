@@ -3,17 +3,18 @@ import {
   ArrowUp,
   Award,
   Briefcase,
+  Ellipsis,
   FolderKanban,
   GraduationCap,
   List,
   LibraryBig,
-  Trash2,
   type LucideIcon,
 } from "lucide-react";
 import {
   lazy,
   startTransition,
   Suspense,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -25,6 +26,7 @@ import type { ResumeSectionMutation } from "@/lib/resume-section-mutations";
 import type { ResumeSection, SectionKind } from "@/types/resume";
 
 import { EditorCardShell } from "./editor-card-shell";
+import type { ResumeSectionAction } from "./resume-section-actions";
 import { useEditorSortable } from "./use-editor-sortable";
 
 const sectionIcons: Record<SectionKind, LucideIcon> = {
@@ -42,11 +44,15 @@ const ResumeSectionContent = lazy(() =>
   })),
 );
 
-const ResumeSectionDeleteDialog = lazy(() =>
-  import("./resume-section-delete-dialog").then((module) => ({
-    default: module.ResumeSectionDeleteDialog,
-  })),
-);
+const loadResumeSectionActions = () =>
+  import("./resume-section-actions").then((module) => ({
+    default: module.ResumeSectionActions,
+  }));
+const ResumeSectionActions = lazy(loadResumeSectionActions);
+
+function preloadResumeSectionActions() {
+  void loadResumeSectionActions().catch(() => undefined);
+}
 
 type ResumeSectionCardProps = {
   t: AppMessages;
@@ -75,7 +81,11 @@ export function ResumeSectionCard({
   canMoveUp,
   canMoveDown,
 }: ResumeSectionCardProps) {
-  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [actionsRequested, setActionsRequested] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [action, setAction] = useState<ResumeSectionAction>(null);
+  const pendingActionRef = useRef<ResumeSectionAction>(null);
+  const focusFirstItemRef = useRef(false);
   const Icon = sectionIcons[section.kind];
   const sectionTitle =
     section.title.trim() || documentT?.sectionTitles[section.kind] || "";
@@ -87,22 +97,61 @@ export function ResumeSectionCard({
     section.items.length === 1 ? t.itemCountSingular : t.itemCount;
   const itemCountLabel = `${section.items.length} ${itemLabel}`;
 
+  function openActions(keyboard: boolean) {
+    focusFirstItemRef.current = keyboard;
+    startTransition(() => {
+      setActionsRequested(true);
+      setMenuOpen(true);
+    });
+  }
+
+  function cancelActions() {
+    setActionsRequested(false);
+    setMenuOpen(false);
+  }
+
+  const actionsTrigger = (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon-sm"
+      aria-label={`${sectionTitle}: ${t.moreActions}`}
+      aria-haspopup="menu"
+      aria-expanded={menuOpen}
+      title={t.moreActions}
+      onPointerEnter={preloadResumeSectionActions}
+      onFocus={preloadResumeSectionActions}
+      onBlur={cancelActions}
+      onClick={(event) => openActions(event.detail === 0)}
+      onKeyDown={(event) => {
+        if (["Enter", " ", "ArrowDown"].includes(event.key)) {
+          event.preventDefault();
+          openActions(true);
+        } else if (event.key === "Escape") {
+          cancelActions();
+        }
+      }}
+    >
+      <Ellipsis aria-hidden="true" />
+    </Button>
+  );
+
   function renderCard(children: ReactNode) {
     return (
       <EditorCardShell
         sort={activator}
         icon={Icon}
         title={sectionTitle}
-        titleMeta={itemCountLabel}
+        titleMeta={section.kind === "simple_list" ? undefined : itemCountLabel}
         toggleLabel={`${sectionTitle}: ${t.toggleSection}`}
         collapsed={collapsed}
         onToggle={() => startTransition(onToggle)}
         headerAction={
-          <div className="flex items-center gap-1">
+          <div className="flex items-center">
             <Button
               type="button"
               variant="ghost"
-              size="icon"
+              size="icon-sm"
               disabled={!canMoveUp}
               aria-label={`${sectionTitle}: ${t.moveSectionUp}`}
               onClick={(event) =>
@@ -114,7 +163,7 @@ export function ResumeSectionCard({
             <Button
               type="button"
               variant="ghost"
-              size="icon"
+              size="icon-sm"
               disabled={!canMoveDown}
               aria-label={`${sectionTitle}: ${t.moveSectionDown}`}
               onClick={(event) =>
@@ -123,26 +172,24 @@ export function ResumeSectionCard({
             >
               <ArrowDown aria-hidden="true" />
             </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              aria-label={`${sectionTitle}: ${t.deleteSection}`}
-              onClick={(event) => {
-                event.stopPropagation();
-                setDeleteDialogOpen(true);
-              }}
-            >
-              <Trash2 aria-hidden="true" />
-            </Button>
-            <Suspense fallback={null}>
-              <ResumeSectionDeleteDialog
-                open={deleteDialogOpen}
-                sectionId={section.id}
-                t={t}
-                onOpenChange={setDeleteDialogOpen}
-                onRemoveSection={onRemoveSection}
-              />
+            <Suspense fallback={actionsTrigger}>
+              {actionsRequested ? (
+                <ResumeSectionActions
+                  t={t}
+                  section={section}
+                  sectionTitle={sectionTitle}
+                  onMutation={onMutation}
+                  onRemoveSection={onRemoveSection}
+                  menuOpen={menuOpen}
+                  onMenuOpenChange={setMenuOpen}
+                  action={action}
+                  onActionChange={setAction}
+                  pendingActionRef={pendingActionRef}
+                  focusFirstItemRef={focusFirstItemRef}
+                />
+              ) : (
+                actionsTrigger
+              )}
             </Suspense>
           </div>
         }

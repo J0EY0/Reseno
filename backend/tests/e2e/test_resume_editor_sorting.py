@@ -229,7 +229,7 @@ def test_item_titles_show_primary_fields_without_clipping_controls_or_losing_foc
     sorting_workspace: tuple[Page, str, str, dict[str, Any]],
 ) -> None:
     page, base, resume_id, messages = sorting_workspace
-    chinese = messages["itemCountSingular"] == "条目"
+    chinese = messages["moreActions"] == "更多操作"
     long_name = (
         "星河科技与人工智能研究中心企业级数据分析平台及基础设施研发团队"
         if chinese
@@ -293,12 +293,12 @@ def test_item_titles_show_primary_fields_without_clipping_controls_or_losing_foc
         expect(title).to_have_accessible_name(name)
         expect(title.locator("strong, p")).to_have_count(0)
         expect(_item_title(_item(page, f"{kind}-2"))).to_have_text(
-            f"{messages['itemCountSingular']} 2"
+            f"{messages['itemLabel']} 2"
         )
         if kind == "experience":
             geometry = title.evaluate(
                 """title => {
-                  const label = title.querySelector('span');
+                  const label = title.querySelector('h4 span');
                   const range = document.createRange();
                   range.selectNodeContents(label);
                   const text = range.getBoundingClientRect();
@@ -365,12 +365,19 @@ def test_item_titles_show_primary_fields_without_clipping_controls_or_losing_foc
         field = item.get_by_role(
             "textbox", name=messages["fieldLabels"][field_label], exact=True
         )
+        expect(field).to_have_count(1)
+        expect(
+            item.locator('[data-slot="editor-item-header"]').get_by_role(
+                "textbox", name=messages["fieldLabels"][field_label], exact=True
+            )
+        ).to_have_count(1)
         field_node = field.element_handle()
         assert field_node is not None
         field.click()
         page.keyboard.press("ControlOrMeta+a")
         page.keyboard.type(f"Updated {kind}")
-        expect(title).to_have_text(f"Updated {kind}")
+        expect(field).to_have_text(f"Updated {kind}")
+        expect(title).to_have_accessible_name(f"Updated {kind}")
         expect(field).to_be_focused()
         assert field_node.evaluate("element => element.isConnected")
         page.keyboard.type(" continued")
@@ -391,8 +398,8 @@ def test_only_collapse_arrows_toggle_sections_and_items(
     experience = _section(page, "experience")
     title = _section_title(experience)
     toggle = _section_toggle(experience)
-    delete = experience.get_by_role(
-        "button", name=f"Experience: {messages['deleteSection']}", exact=True
+    more = experience.get_by_role(
+        "button", name=f"Experience: {messages['moreActions']}", exact=True
     )
     basic_toggle = page.locator(PANE).get_by_role(
         "button",
@@ -402,16 +409,18 @@ def test_only_collapse_arrows_toggle_sections_and_items(
     page.mouse.move(1438, 10)
     basic_toggle.focus()
     _settle(page)
-    assert _effective_opacity(delete) == pytest.approx(1)
+    assert _effective_opacity(more) == pytest.approx(1)
     expect(title).to_have_accessible_name("Experience")
 
     def assert_title_is_inert(title: Locator, toggle: Locator) -> None:
         expanded = toggle.get_attribute("aria-expanded")
         assert title.get_attribute("aria-expanded") is None
         assert title.get_attribute("aria-controls") is None
-        title.click()
+        title.click(position={"x": 4, "y": 4})
         expect(toggle).to_have_attribute("aria-expanded", expanded)
-        if title.locator("svg").count():
+        if title.evaluate("element => element.tagName") == "BUTTON" and (
+            title.locator("svg").count()
+        ):
             title.locator("svg").click()
             expect(toggle).to_have_attribute("aria-expanded", expanded)
         box = title.bounding_box()
@@ -426,7 +435,7 @@ def test_only_collapse_arrows_toggle_sections_and_items(
         assert header_box is not None
         header.click(position={"x": 4, "y": header_box["height"] / 2})
         expect(toggle).to_have_attribute("aria-expanded", expanded)
-        if title.evaluate("element => element.tagName") == "BUTTON":
+        if title.evaluate("element => element.tabIndex") == 0:
             title.press("Enter")
             expect(toggle).to_have_attribute("aria-expanded", expanded)
         else:
@@ -439,7 +448,7 @@ def test_only_collapse_arrows_toggle_sections_and_items(
             "pointer"
         )
         assert_title_is_inert(title, toggle)
-        if title.evaluate("element => element.tagName") == "BUTTON":
+        if title.evaluate("element => element.tabIndex") == 0:
             title.focus()
             for _ in range(5):
                 page.keyboard.press("Tab")
@@ -702,11 +711,14 @@ def test_keyboard_sorting_and_row_actions_keep_delete_undo_working(
     ).to_have_text("Atlas Lab")
     education = _section(page, "education")
     _section_title(education).focus()
-    delete_section = education.get_by_role(
-        "button", name=f"Education: {messages['deleteSection']}", exact=True
+    more = education.get_by_role(
+        "button", name=f"Education: {messages['moreActions']}", exact=True
     )
-    delete_section.focus()
-    delete_section.press("Enter")
+    more.focus()
+    more.press("Enter")
+    page.get_by_role("menuitem", name=messages["deleteSection"], exact=True).press(
+        "Enter"
+    )
     dialog = page.get_by_role("alertdialog")
     expect(dialog).to_be_visible()
     dialog.get_by_role("button", name=messages["deleteSection"], exact=True).press(

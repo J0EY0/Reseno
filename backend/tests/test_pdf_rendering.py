@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from zipfile import ZipFile
@@ -10,6 +11,7 @@ import pytest
 from fastapi import HTTPException
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+from pypdf import PdfWriter
 
 from app.config import get_settings
 from app.schemas.exports import ExportResumePdfRequest
@@ -127,9 +129,13 @@ class RenderProbe:
             def emulate_media(self, **kwargs):
                 probe.touch("media")
 
-            def pdf(self, *, path, **kwargs):
+            def pdf(self, **kwargs):
                 probe.touch("pdf")
-                Path(path).write_bytes(b"%PDF-1.4\n")
+                writer = PdfWriter()
+                writer.add_blank_page(width=595, height=842)
+                output = BytesIO()
+                writer.write(output)
+                return output.getvalue()
 
             def locator(self, selector):
                 assert selector == "[data-export-root='resume-page']"

@@ -2,7 +2,7 @@ Font licenses for Reseno
 
 ========================================================================
 Inter
-Source package: @fontsource-variable/inter@5.2.8
+Source packages: @fontsource-variable/inter@5.2.8, @fontsource/inter@5.2.8
 ========================================================================
 
 Copyright 2016 The Inter Project Authors (https://github.com/rsms/inter) Inter-Italic[opsz,wght].ttf: Copyright 2016 The Inter Project Authors (https://github.com/rsms/inter)
@@ -101,7 +101,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 ========================================================================
 IBM Plex Sans
-Source package: @fontsource-variable/ibm-plex-sans@5.2.8
+Source package: @fontsource/ibm-plex-sans@5.2.8
 ========================================================================
 
 Copyright 2019 IBM Corp. All rights reserved. IBMPlexSans-Italic[wdth,wght].ttf: Copyright 2019 IBM Corp. All rights reserved.
@@ -299,7 +299,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 ========================================================================
 Noto Sans SC
-Source package: @fontsource-variable/noto-sans-sc@5.3.0
+Source package: @fontsource/noto-sans-sc@5.3.0
 ========================================================================
 
 Google Inc.
@@ -398,7 +398,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 ========================================================================
 Noto Serif SC
-Source package: @fontsource-variable/noto-serif-sc@5.2.10
+Source package: @fontsource/noto-serif-sc@5.2.9
 ========================================================================
 
 Google Inc.

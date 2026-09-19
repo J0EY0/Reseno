@@ -14,7 +14,6 @@ import { SortableEditorList } from "@/components/editor/sortable-editor-list";
 import { Card, CardContent } from "@/components/ui/card";
 import { WorkspacePanelSkeleton } from "@/components/workspace-skeletons";
 import type { AppMessages } from "@/i18n";
-import { readAvatarFileAsDataUrl } from "@/lib/avatar";
 import { createId } from "@/lib/resume";
 import {
   applySectionMutation,
@@ -129,6 +128,7 @@ export const ResumeEditorPane = memo(function ResumeEditorPane({
     }
 
     try {
+      const { readAvatarFileAsDataUrl } = await import("@/lib/avatar");
       setAvatarCropSource(await readAvatarFileAsDataUrl(file));
     } finally {
       event.target.value = "";
@@ -208,9 +208,12 @@ export const ResumeEditorPane = memo(function ResumeEditorPane({
 
       <section
         aria-busy={disabled || undefined}
-        className="resume-editor-panel flex flex-col gap-2.5 print:hidden"
+        className="resume-editor-panel flex flex-col print:hidden"
         inert={disabled || undefined}
       >
+        <h2 className="mb-2 pt-4 text-xs font-medium text-muted-foreground">
+          {t.resumeContent}
+        </h2>
         {hasLoadError ? (
           <Card className="border-border/80">
             <CardContent className="p-5 text-sm text-muted-foreground">
