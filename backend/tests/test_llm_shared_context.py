@@ -258,10 +258,39 @@ def test_existing_discovery_facts_keep_thinking_and_load_missing_total_offline(
 
 
 def test_anthropic_current_shared_window_wins_over_larger_public_reference(monkeypatch):
+    snapshot = model_metadata.build_model_metadata_snapshot(
+        {
+            "anthropic/claude-test": {
+                "litellm_provider": "anthropic",
+                "max_input_tokens": 200_000,
+                "max_output_tokens": 64_000,
+            }
+        },
+        {
+            "models": {
+                "anthropic/claude-test": {
+                    "id": "anthropic/claude-test",
+                    "limit": {"context": 1_000_000},
+                }
+            },
+            "providers": {
+                "anthropic": {
+                    "models": {
+                        "claude-test": {
+                            "id": "claude-test",
+                            "limit": {"context": 1_000_000, "output": 64_000},
+                        }
+                    }
+                }
+            },
+        },
+        fetched_at="2026-01-01T00:00:00+00:00",
+    )
+    model_metadata._set_memory_cache(snapshot)
     config = _config_from_bundle(
         monkeypatch,
         provider="anthropic",
-        model="claude-sonnet-4-5",
+        model="claude-test",
         max_tokens=64_000,
     )
     assert config.context_window_tokens == 200_000

@@ -170,10 +170,12 @@ it("preserves an open delete confirmation when the section content finishes load
   expect(await screen.findByRole("alertdialog")).toBeTruthy();
 
   await act(async () => ready.resolve());
-  const dialog = await screen.findByRole("alertdialog");
+  await screen.findByText(en.addItem.education, { selector: "button" });
+  const dialog = screen.getByRole("alertdialog");
   await waitFor(() =>
     expect(dialog.contains(document.activeElement)).toBe(true),
   );
+  expect(dialog.isConnected).toBe(true);
   fireEvent.click(
     within(dialog).getByRole("button", { name: en.deleteSection }),
   );
