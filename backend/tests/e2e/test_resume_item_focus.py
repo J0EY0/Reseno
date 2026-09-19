@@ -187,9 +187,13 @@ def test_loading_new_item_editor_does_not_reclaim_user_moved_focus(
     )
     page = context.new_page()
     blocked: list[Route] = []
+    released = False
 
     def defer_editor(route: Route) -> None:
-        blocked.append(route)
+        if released:
+            route.continue_()
+        else:
+            blocked.append(route)
 
     page.route("**/inline-text-editor.tsx*", defer_editor)
     try:
@@ -205,9 +209,9 @@ def test_loading_new_item_editor_does_not_reclaim_user_moved_focus(
             "button", name="Experience: 展开或收起模块", exact=True
         )
         toggle.focus()
+        released = True
         for route in blocked:
             route.continue_()
-        page.unroute("**/inline-text-editor.tsx*", defer_editor)
         page.wait_for_function(
             "element => element.editor?.isInitialized === true",
             arg=field.element_handle(),

@@ -264,18 +264,29 @@ and files under `docs/` skip backend, frontend and browser checks and do not
 publish images. Other Markdown files, including Agent prompts, still trigger
 checks. Release tags always run the full quality pipeline.
 
+Changes limited to the bundled model metadata snapshot (optionally with the
+documentation paths above) run only metadata, thinking-mode and context tests.
+They skip full backend, frontend, browser and container checks and do not publish
+images. Mixed application changes and release tags retain their normal checks.
+
 Release tags must use `vMAJOR.MINOR.PATCH` and point to a commit already merged
 into `main`. Prerelease tags are not published. `latest` tracks the most recently
 published release; `main` tracks the latest successful main-branch build.
 Use a version tag or image digest for deployments that should stay on a release.
 
-After merging the release changes into `main`, open **Actions → Prepare release
-model metadata → Run workflow**, select `main`, and run it. This manual step
-refreshes the bundled snapshot, runs the model metadata tests, and creates or
-updates a snapshot pull request. If GitHub requests workflow approval, click
-**Approve workflows to run** on that pull request. Wait for its checks to pass,
-merge it into `main`, then confirm that **Quality** passed for the exact `main`
-commit you intend to tag.
+Model metadata maintenance is independent of releases. To refresh the bundled
+snapshot, open **Actions → Update model metadata → Run workflow** and select
+`main`. Only changes to model facts create or update a pull request; fetch times
+alone do not create commits. The pull request lists added and removed models and
+each changed field, including context limits and capabilities. An unchanged
+pending update keeps its existing commit. If its branch contains manual changes,
+review and merge or close that pull request before refreshing it again.
+Snapshot updates do not create tags or releases.
+If GitHub marks the bot-created pull request's checks as awaiting approval, click
+**Approve workflows to run** on that pull request to start the focused checks.
+
+After merging release changes, confirm that **Quality** passed for the exact
+`main` commit you intend to tag. Refreshing metadata is not a required release step.
 
 Create and push an unused version tag from the repository root. Replace
 `VERIFIED_COMMIT_SHA` with that commit's full SHA; for example, for the first

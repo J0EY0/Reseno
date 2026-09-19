@@ -1,5 +1,7 @@
 import asyncio
 import json
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -68,7 +70,7 @@ def _source_files(tmp_path: Path) -> tuple[Path, Path]:
     return litellm_file, models_dev_file
 
 
-def test_offline_generation_is_compact_stable_and_independent_of_runtime_data(
+def test_offline_generation_is_readable_stable_and_independent_of_runtime_data(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -108,7 +110,7 @@ def test_offline_generation_is_compact_stable_and_independent_of_runtime_data(
     assert "other" not in snapshot["catalogs"]["litellm"]["providers"]
     source_bytes = litellm_file.stat().st_size + models_dev_file.stat().st_size
     assert len(first) < source_bytes / 10
-    assert first.count(b"\n") == 1
+    assert b'\n            "contextWindowTokens": 128000,' in first
 
     for source in (litellm_file, models_dev_file):
         catalog = json.loads(source.read_text(encoding="utf-8"))
@@ -122,6 +124,130 @@ def test_offline_generation_is_compact_stable_and_independent_of_runtime_data(
         ),
     )
     assert output.read_bytes() == first
+
+
+def test_unchanged_facts_preserve_file_and_timestamp(tmp_path: Path) -> None:
+    litellm_file, models_dev_file = _source_files(tmp_path)
+    output = tmp_path / "snapshot.json"
+    args = {"litellm_file": litellm_file, "models_dev_file": models_dev_file}
+    asyncio.run(
+        update_model_metadata.update_snapshot(output, **args, fetched_at=FETCHED_AT)
+    )
+    original = output.read_bytes()
+    modified_at = output.stat().st_mtime_ns
+    litellm = json.loads(litellm_file.read_bytes())
+    litellm["gpt-test"]["input_cost_per_token"] = 99
+    litellm_file.write_text(json.dumps(litellm), encoding="utf-8")
+
+    changed = asyncio.run(
+        update_model_metadata.update_snapshot(
+            output, **args, fetched_at="2026-09-19T00:00:00+00:00"
+        )
+    )
+
+    assert changed is False
+    assert output.read_bytes() == original
+    assert output.stat().st_mtime_ns == modified_at
+
+
+def test_changed_facts_only_refresh_the_changed_source(tmp_path: Path) -> None:
+    litellm_file, models_dev_file = _source_files(tmp_path)
+    output = tmp_path / "snapshot.json"
+    args = {"litellm_file": litellm_file, "models_dev_file": models_dev_file}
+    asyncio.run(
+        update_model_metadata.update_snapshot(output, **args, fetched_at=FETCHED_AT)
+    )
+    original = json.loads(output.read_bytes())
+    litellm = json.loads(litellm_file.read_bytes())
+    litellm["gpt-test"]["max_input_tokens"] = 256_000
+    litellm_file.write_text(json.dumps(litellm), encoding="utf-8")
+
+    changed = asyncio.run(
+        update_model_metadata.update_snapshot(
+            output, **args, fetched_at="2026-09-19T00:00:00+00:00"
+        )
+    )
+
+    snapshot = json.loads(output.read_bytes())
+    assert changed is True
+    assert snapshot["catalogs"]["modelsDev"] == original["catalogs"]["modelsDev"]
+    catalog = snapshot["catalogs"]["litellm"]
+    assert catalog["fetchedAt"] == "2026-09-19T00:00:00+00:00"
+    assert catalog["providers"]["openai"]["gpt-test"]["contextWindowTokens"] == 256_000
+
+
+def test_existing_pr_retains_timestamps_for_identical_facts(tmp_path: Path) -> None:
+    litellm_file, models_dev_file = _source_files(tmp_path)
+    output = tmp_path / "snapshot.json"
+    previous = tmp_path / "previous.json"
+    args = {"litellm_file": litellm_file, "models_dev_file": models_dev_file}
+    asyncio.run(
+        update_model_metadata.update_snapshot(output, **args, fetched_at=FETCHED_AT)
+    )
+    main_bytes = output.read_bytes()
+    litellm = json.loads(litellm_file.read_bytes())
+    litellm["gpt-test"]["max_input_tokens"] = 256_000
+    litellm_file.write_text(json.dumps(litellm), encoding="utf-8")
+    asyncio.run(
+        update_model_metadata.update_snapshot(
+            output, **args, fetched_at="2026-09-18T00:00:00+00:00"
+        )
+    )
+    previous.write_bytes(output.read_bytes())
+    output.write_bytes(main_bytes)
+
+    asyncio.run(
+        update_model_metadata.update_snapshot(
+            output,
+            **args,
+            fetched_at="2026-09-19T00:00:00+00:00",
+            previous_snapshot=previous,
+        )
+    )
+
+    assert output.read_bytes() == previous.read_bytes()
+
+
+def test_cli_reports_changes_and_no_op_to_workflow(tmp_path: Path) -> None:
+    litellm_file, models_dev_file = _source_files(tmp_path)
+    output = tmp_path / "snapshot.json"
+    report = tmp_path / "report.md"
+    github_output = tmp_path / "github-output"
+    command = [
+        sys.executable,
+        "-m",
+        "scripts.update_model_metadata",
+        "--output",
+        str(output),
+        "--litellm-file",
+        str(litellm_file),
+        "--models-dev-file",
+        str(models_dev_file),
+        "--report",
+        str(report),
+        "--github-output",
+        str(github_output),
+    ]
+    generated = subprocess.run(
+        [*command, "--fetched-at", FETCHED_AT],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "Generated" in generated.stdout
+    assert "gpt-test" in report.read_text(encoding="utf-8")
+    assert "changed=true\n" == github_output.read_text(encoding="utf-8")
+    unchanged = subprocess.run(
+        [*command, "--fetched-at", "2026-09-19T00:00:00+00:00"],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "Unchanged" in unchanged.stdout
+    assert "No semantic changes." in report.read_text(encoding="utf-8")
+    assert github_output.read_text(encoding="utf-8").endswith("changed=false\n")
 
 
 def test_remote_generation_fetches_both_sources_concurrently(
@@ -214,7 +340,18 @@ def test_failed_atomic_publish_preserves_existing_snapshot(
 ) -> None:
     litellm_file, models_dev_file = _source_files(tmp_path)
     output = tmp_path / "snapshot.json"
-    output.write_bytes(b"last valid bundled catalog")
+    asyncio.run(
+        update_model_metadata.update_snapshot(
+            output,
+            litellm_file=litellm_file,
+            models_dev_file=models_dev_file,
+            fetched_at=FETCHED_AT,
+        )
+    )
+    original = output.read_bytes()
+    litellm = json.loads(litellm_file.read_bytes())
+    litellm["gpt-test"]["max_input_tokens"] = 256_000
+    litellm_file.write_text(json.dumps(litellm), encoding="utf-8")
 
     def fail_replace(_source: Path, _target: Path) -> Path:
         raise OSError("Read-only artifact directory")
@@ -228,7 +365,7 @@ def test_failed_atomic_publish_preserves_existing_snapshot(
                 models_dev_file=models_dev_file,
             ),
         )
-    assert output.read_bytes() == b"last valid bundled catalog"
+    assert output.read_bytes() == original
     assert set(tmp_path.iterdir()) == {litellm_file, models_dev_file, output}
 
 

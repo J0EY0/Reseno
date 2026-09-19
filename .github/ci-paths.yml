@@ -3,6 +3,9 @@ code:
   - '!README.md'
   - '!README_ZH.md'
   - '!docs/**'
+  - '!backend/app/services/model_metadata_snapshot.json'
+model_metadata:
+  - 'backend/app/services/model_metadata_snapshot.json'
 image_inputs: &image_inputs
   - 'Dockerfile'
   - '.dockerignore'
@@ -19,6 +22,7 @@ image_inputs: &image_inputs
   - 'frontend/public/**'
 container_validation:
   - *image_inputs
+  - '!backend/app/services/model_metadata_snapshot.json'
   - '.github/workflows/frontend-quality.yml'
   - '.github/ci-paths.yml'
   - '.github/scripts/quality-gate.py'
