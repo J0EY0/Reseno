@@ -207,13 +207,20 @@ DOCKER_BUILDKIT=1 docker build --pull -t reseno:local .
 仅修改根目录 `README.md`、`README_ZH.md` 和 `docs/` 下文件的 push 或 Pull request 会跳过后端、前端及浏览器检查，也不发布镜像。
 其他 Markdown 文件（包括 Agent 提示词）的变更仍触发检查。发布 tag 始终执行完整质量检查。
 
+仅修改内置模型资料快照（可同时修改上述文档路径）时，只运行模型资料、思考模式和上下文专项测试。
+这类更新跳过完整后端、前端、浏览器和容器检查，不发布镜像；混合应用代码变更和发布 tag 仍执行相应的完整检查。
+
 发布 tag 必须采用 `vMAJOR.MINOR.PATCH` 格式，且指向已合入 `main` 的提交。预发布 tag 不会发布镜像。
 `latest` 指向最近一次发布的正式版本，`main` 指向最近一次构建成功的主线版本。需要固定版本的部署应使用版本标签或镜像 digest。
 
-将发布内容合入 `main` 后，打开 **Actions → Prepare release model metadata → Run workflow**，选择 `main` 并运行。
-这个手动步骤会刷新内置快照、运行模型资料测试，并创建或更新快照 Pull request。
-若 GitHub 提示审批工作流，先在该 Pull request 中点击 **Approve workflows to run**。
-等待检查通过后，将该 Pull request 合入 `main`，然后确认准备打 tag 的具体 `main` 提交已通过 **Quality** 检查。
+模型资料维护独立于发版。需要刷新内置快照时，打开 **Actions → Update model metadata → Run workflow**，选择 `main` 并运行。
+只有模型资料发生实质变化才会创建或更新 Pull request，抓取时间变化不会产生提交。
+Pull request 会列出新增、删除的模型，以及上下文限制、能力等字段的具体变化。
+待合并的更新没有新变化时保留原提交；若更新分支包含人工修改，先审查并合并或关闭该 Pull request，再重新刷新。
+快照更新不会创建 tag 或 Release。
+若 GitHub 提示机器人 Pull request 的工作流需要审批，在该 Pull request 点击 **Approve workflows to run** 即可启动专项检查。
+
+将发布内容合入 `main` 后，确认准备打 tag 的具体提交已通过 **Quality** 检查。刷新模型资料不再是发版的必经步骤。
 
 在仓库根目录创建并推送一个尚未使用的版本 tag。将 `VERIFIED_COMMIT_SHA` 替换为该提交的完整 SHA；例如首次发布 `v0.1.0`：
 
