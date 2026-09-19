@@ -15,6 +15,7 @@ from pypdf import PdfReader
 
 from app.services.pdf import _wait_for_resume_render
 from tests.e2e.browser_support import authenticated_context
+from tests.e2e.test_resume_editor_sorting import _settle
 
 pytestmark = [
     pytest.mark.browser_smoke,
@@ -94,10 +95,14 @@ def _open_section(page: Page, title: str) -> Locator:
     toggle = page.get_by_role("button", name=f"{title}: 展开或收起模块", exact=True)
     if toggle.get_attribute("aria-expanded") != "true":
         toggle.click()
+    expect(toggle).to_have_attribute("aria-expanded", "true")
+    _settle(page)
     card = toggle.locator("xpath=ancestor::*[@data-resume-section-id][1]")
     item_toggle = card.get_by_role("button", name="展开或收起条目 1", exact=True)
     if item_toggle.get_attribute("aria-expanded") != "true":
         item_toggle.click()
+    expect(item_toggle).to_have_attribute("aria-expanded", "true")
+    _settle(page)
     return card
 
 

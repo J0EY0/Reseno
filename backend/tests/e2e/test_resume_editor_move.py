@@ -271,6 +271,22 @@ def test_repeated_arrow_clicks_can_be_followed_immediately_by_dragging(
     moving = _item(page, "experience-2")
     down = _item_action(moving, messages["moveItemDown"])
     for _ in range(2):
+        moving.evaluate(
+            """row => {
+              const parent = row.parentElement;
+              const observer = new MutationObserver(() => {
+                const animations = [...parent.children].flatMap(item =>
+                  item.getAnimations().filter(animation =>
+                    animation.id === 'editor-reorder'
+                  )
+                );
+                if (!animations.length) return;
+                for (const animation of animations) animation.playbackRate = 0;
+                observer.disconnect();
+              });
+              observer.observe(parent, {childList: true});
+            }"""
+        )
         box = down.bounding_box()
         assert box is not None
         page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
