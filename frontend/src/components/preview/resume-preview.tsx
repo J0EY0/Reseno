@@ -1,3 +1,4 @@
+import type { TemplateImageGeometry } from "@/lib/template-image-geometry";
 import { forwardRef, memo, useEffect } from "react";
 
 import { useResumeFontReadyToken } from "@/components/preview/resume-font-loader";
@@ -10,7 +11,6 @@ import type {
   ResumeDraftDiff,
   ResumeFontFamily,
   ResumeTemplateDefinition,
-  ResumeTemplateImageElement,
 } from "@/types/resume";
 
 interface ResumePreviewProps {
@@ -18,9 +18,9 @@ interface ResumePreviewProps {
   editableTemplateImages?: boolean;
   fontFamily: ResumeFontFamily;
   fontSize: number;
-  onMoveTemplateImage?: (
+  onChangeTemplateImage?: (
     imageId: string,
-    patch: Pick<ResumeTemplateImageElement, "x" | "y">,
+    patch: TemplateImageGeometry,
   ) => void;
   onPaginationReadyChange?: (ready: boolean, pageCount: number) => void;
   resume: ResumeData;
@@ -36,7 +36,7 @@ export const ResumePreview = memo(
       editableTemplateImages = false,
       fontFamily,
       fontSize,
-      onMoveTemplateImage,
+      onChangeTemplateImage,
       onPaginationReadyChange,
       resume,
       showEmptyTemplateImagePlaceholders = false,
@@ -72,7 +72,7 @@ export const ResumePreview = memo(
         isPaginationReady={isPaginationReady}
         editableTemplateImages={editableTemplateImages}
         showEmptyTemplateImagePlaceholders={showEmptyTemplateImagePlaceholders}
-        onMoveTemplateImage={onMoveTemplateImage}
+        onChangeTemplateImage={onChangeTemplateImage}
       />
     );
   }),

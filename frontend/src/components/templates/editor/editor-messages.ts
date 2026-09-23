@@ -1,0 +1,92 @@
+import type { AppMessages, Locale } from "@/i18n";
+
+const en = {
+  templateReadonlyStatus: "Built-in · Read-only",
+  templateReadonlyLabel: "Read-only",
+  createEditableCopy: "Create Copy",
+  templateGlobalStyles: "Global styles",
+  templateContentStructure: "Content structure",
+  templatePageSpacing: "Page & spacing",
+  templateCustomValue: "Custom",
+  avatarWidth: "Avatar Width",
+  avatarHeight: "Avatar Height",
+  templatePresetCompact: "Compact",
+  templatePresetStandard: "Standard",
+  templatePresetRelaxed: "Relaxed",
+  templateTypographyScale: "Type scale",
+  templateColorPresets: "Color presets",
+  templateCustomColors: "Custom colors",
+  templatePaletteMonochrome: "Monochrome",
+  templatePaletteBlue: "Business blue",
+  templatePaletteGreen: "Forest green",
+  basicInfoLayout: "Header layout",
+  sectionTemplateStyle: "Section heading",
+  timelineItemLayout: "Entry layout",
+  timelineItemLayoutInline: "Inline heading",
+  sectionItemLayouts: "Layouts by section",
+  sectionItemLayoutInherit: "Follow global",
+  sectionTitles: { experience: "Experience", achievement: "Awards" },
+  listItemLayout: "List layout",
+  templateDividerStyle: "Divider",
+  pageMarginDetails: "Page margin details",
+  pageMarginTop: "Top",
+  pageMarginHorizontal: "Left & right",
+  pageMarginBottom: "Bottom",
+  pageMarginUnify: "Match left & right",
+  pageMarginHint: "Dragging the slider sets all margins to the same value.",
+};
+
+const editorMessages: Record<Locale, typeof en> = {
+  en,
+  zh: {
+    templateReadonlyStatus: "内置模板 · 只读",
+    templateReadonlyLabel: "只读",
+    createEditableCopy: "创建副本",
+    templateGlobalStyles: "全局样式",
+    templateContentStructure: "内容结构",
+    templatePageSpacing: "页面与间距",
+    templateCustomValue: "自定义",
+    avatarWidth: "头像宽度",
+    avatarHeight: "头像高度",
+    templatePresetCompact: "紧凑",
+    templatePresetStandard: "标准",
+    templatePresetRelaxed: "宽松",
+    templateTypographyScale: "文字层级",
+    templateColorPresets: "配色预设",
+    templateCustomColors: "自定义颜色",
+    templatePaletteMonochrome: "经典黑白",
+    templatePaletteBlue: "商务蓝",
+    templatePaletteGreen: "墨绿",
+    basicInfoLayout: "信息布局",
+    sectionTemplateStyle: "模块标题",
+    timelineItemLayout: "经历布局",
+    timelineItemLayoutInline: "同行并列",
+    sectionItemLayouts: "按模块设置",
+    sectionItemLayoutInherit: "跟随全局",
+    sectionTitles: { experience: "工作经历", achievement: "荣誉奖项" },
+    listItemLayout: "列表布局",
+    templateDividerStyle: "分隔线",
+    pageMarginDetails: "页边距详情",
+    pageMarginTop: "上",
+    pageMarginHorizontal: "左右",
+    pageMarginBottom: "下",
+    pageMarginUnify: "统一为左右边距",
+    pageMarginHint: "拖动滑块会统一调整所有页边距。",
+  },
+};
+
+export type TemplateEditorMessages = AppMessages & typeof en;
+
+export function getTemplateEditorMessages(
+  locale: Locale,
+  messages: AppMessages,
+): TemplateEditorMessages {
+  return {
+    ...messages,
+    ...editorMessages[locale],
+    sectionTitles: {
+      ...messages.sectionTitles,
+      ...editorMessages[locale].sectionTitles,
+    },
+  };
+}

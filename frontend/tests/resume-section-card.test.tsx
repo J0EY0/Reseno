@@ -26,18 +26,24 @@ async function loadDelayedSectionCard() {
   vi.resetModules();
   const loading = vi.fn();
   const ready = Promise.withResolvers<void>();
+  const loaded = Promise.withResolvers<unknown>();
   vi.doMock("@/components/editor/resume-section-content", async () => {
     loading();
     await ready.promise;
-    return vi.importActual("@/components/editor/resume-section-content");
+    const module = vi.importActual(
+      "@/components/editor/resume-section-content",
+    );
+    loaded.resolve(module);
+    return module;
   });
   const { ResumeSectionCard } =
     await import("@/components/editor/resume-section-card");
-  return { ResumeSectionCard, loading, ready };
+  return { ResumeSectionCard, loading, ready, loaded: loaded.promise };
 }
 
 it("loads only on expansion, keeps the card visible while loading and opens a new item only once", async () => {
-  const { ResumeSectionCard, loading, ready } = await loadDelayedSectionCard();
+  const { ResumeSectionCard, loading, ready, loaded } =
+    await loadDelayedSectionCard();
   const initialSection = createResumeSection("education");
   initialSection.title = "Education";
   initialSection.items = [];
@@ -80,7 +86,10 @@ it("loads only on expansion, keeps the card visible while loading and opens a ne
     screen.queryByRole("button", { name: en.addItem.education }),
   ).toBeNull();
 
-  await act(async () => ready.resolve());
+  await act(async () => {
+    ready.resolve();
+    await loaded;
+  });
   expect(
     await screen.findByRole("button", { name: en.addItem.education }),
   ).toBeTruthy();
@@ -116,7 +125,8 @@ it("loads only on expansion, keeps the card visible while loading and opens a ne
 });
 
 it("preserves an open delete confirmation when the section content finishes loading", async () => {
-  const { ResumeSectionCard, loading, ready } = await loadDelayedSectionCard();
+  const { ResumeSectionCard, loading, ready, loaded } =
+    await loadDelayedSectionCard();
   const section = createResumeSection("education");
   section.title = "Education";
   section.items = [];
@@ -169,7 +179,10 @@ it("preserves an open delete confirmation when the section content finishes load
   );
   expect(await screen.findByRole("alertdialog")).toBeTruthy();
 
-  await act(async () => ready.resolve());
+  await act(async () => {
+    ready.resolve();
+    await loaded;
+  });
   await screen.findByText(en.addItem.education, { selector: "button" });
   const dialog = screen.getByRole("alertdialog");
   await waitFor(() =>
@@ -304,7 +317,7 @@ it.each(["Escape", "blur"])(
 );
 
 it("keeps rename open and focused when the section content finishes loading", async () => {
-  const { ResumeSectionCard, ready } = await loadDelayedSectionCard();
+  const { ResumeSectionCard, ready, loaded } = await loadDelayedSectionCard();
   const section = createResumeSection("education");
   section.title = "Education";
   render(
@@ -333,7 +346,10 @@ it("keeps rename open and focused when the section content finishes loading", as
       name: `Education: ${en.renameSectionAction}`,
     }),
   ).toBeTruthy();
-  await act(async () => ready.resolve());
+  await act(async () => {
+    ready.resolve();
+    await loaded;
+  });
   const nameField = await screen.findByRole("textbox", {
     name: en.renameSection,
   });

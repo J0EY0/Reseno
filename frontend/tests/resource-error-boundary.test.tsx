@@ -1,11 +1,24 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { lazy, Suspense, useState } from "react";
 import { ErrorBoundary } from "react-error-boundary";
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 
 import { ResourceErrorBoundary } from "@/components/resource-error-boundary";
 import { ResourceRecoveryContext } from "@/components/resource-recovery-context";
+import { getTemplateEditorMessages } from "@/components/templates/editor/editor-messages";
+import { TemplateEditorTabs } from "@/components/templates/template-editor-tabs";
 import en from "@/i18n/locales/en.json";
+import { getBuiltInTemplates } from "@/lib/templates";
+
+vi.mock("@/components/templates/editor/visual-tab", () => ({
+  TemplateVisualTab: () => {
+    throw new TypeError(
+      "Failed to fetch dynamically imported module: /visual-tab.js",
+    );
+  },
+}));
+
+afterEach(() => vi.unstubAllGlobals());
 
 it("contains an import failure, preserves adjacent edits and permits recovery again after a failed save", async () => {
   vi.spyOn(console, "error").mockImplementation(() => {});
@@ -82,4 +95,47 @@ it("leaves unexpected render errors to the application error handler", () => {
   );
   expect(onError.mock.calls[0]?.[0]).toBe(failure);
   expect(screen.queryByRole("button", { name: en.saveAndReload })).toBeNull();
+});
+
+it("keeps color editor recovery inside its tab when switching away and back", async () => {
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  const t = getTemplateEditorMessages("en", en);
+  const saveAndReload = vi.fn(async () => {});
+  render(
+    <ResourceRecoveryContext value={{ messages: en, saveAndReload }}>
+      <TemplateEditorTabs
+        locale="en"
+        t={t}
+        template={{ ...getBuiltInTemplates(t)[0], isBuiltIn: false }}
+        onUpdateTemplate={vi.fn()}
+      />
+    </ResourceRecoveryContext>,
+  );
+  const layoutLabel = screen.getByRole("combobox", {
+    name: t.basicInfoLayout,
+  }).textContent;
+  fireEvent.click(screen.getByRole("tab", { name: t.templateVisualTab }));
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toContain(t.resourceLoadError);
+
+  fireEvent.click(screen.getByRole("tab", { name: t.templateLayoutTab }));
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(alert.isConnected).toBe(true);
+  expect(
+    screen.getByRole("combobox", { name: t.basicInfoLayout }).textContent,
+  ).toBe(layoutLabel);
+
+  fireEvent.click(screen.getByRole("tab", { name: t.templateVisualTab }));
+  expect(screen.getByRole("alert")).toBe(alert);
+  fireEvent.click(screen.getByRole("button", { name: t.saveAndReload }));
+  await act(async () => {});
+  expect(saveAndReload).toHaveBeenCalledOnce();
 });

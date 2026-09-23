@@ -61,7 +61,7 @@ export function BasicInfoFields({
       <div className="grid gap-4 lg:grid-cols-[112px_minmax(0,1fr)]">
         <div className="grid content-start gap-3 self-start">
           <div className="relative">
-            <div className="flex aspect-[4/5] items-center justify-center overflow-hidden rounded-2xl border border-border bg-gradient-to-br from-primary/12 to-amber-200/30 text-2xl font-semibold text-primary">
+            <div className="flex aspect-[4/5] items-center justify-center overflow-hidden border border-border bg-gradient-to-br from-primary/12 to-amber-200/30 text-2xl font-semibold text-primary">
               {hasAvatar ? (
                 <img
                   src={basic.avatar}

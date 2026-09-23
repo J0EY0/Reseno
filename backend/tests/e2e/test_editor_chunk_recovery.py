@@ -243,3 +243,187 @@ def test_editor_chunk_recovery_saves_latest_content_before_reloading(
             with suppress(Error):
                 route.abort()
         context.close()
+
+
+def test_template_image_chunk_recovery_preserves_edits_until_latest_save_succeeds(
+    browser: Browser, workspace_servers: tuple[str, str]
+) -> None:
+    frontend_url, _ = workspace_servers
+    dist = Path(os.getenv("E2E_FRONTEND_DIST_DIR", str(FRONTEND_ROOT / "dist")))
+    manifest = json.loads((dist / ".vite/manifest.json").read_text(encoding="utf-8"))
+    asset = manifest["src/components/templates/editor/images-tab.tsx"]["file"]
+    messages = json.loads(
+        (FRONTEND_ROOT / "src/i18n/locales/en.json").read_text(encoding="utf-8")
+    )
+    presets = json.loads(
+        (Path(__file__).parents[2] / "app/services/template_presets.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    context = authenticated_context(
+        browser,
+        locale="en-US",
+        viewport={"width": 1672, "height": 900},
+        reduced_motion="reduce",
+    )
+    page = context.new_page()
+    held_chunks: list[Route] = []
+    held_saves: list[Route] = []
+    chunk_requests: list[str] = []
+    save_payloads: list[dict] = []
+    dialogs: list[str] = []
+    chunk_ready = RouteReady()
+    save_ready = RouteReady()
+    save_phase = "fail"
+    template_id: str | None = None
+
+    def load_chunk(route: Route) -> None:
+        chunk_requests.append(route.request.url)
+        if len(chunk_requests) == 1:
+            held_chunks.append(route)
+            chunk_ready.set()
+        else:
+            route.continue_()
+
+    def handle_save(route: Route) -> None:
+        if route.request.method != "PUT":
+            route.continue_()
+            return
+        save_payloads.append(route.request.post_data_json)
+        if save_phase == "fail":
+            route.fulfill(
+                status=503,
+                content_type="application/json",
+                body=json.dumps(
+                    {
+                        "ok": False,
+                        "error": {
+                            "code": "INTERNAL_ERROR",
+                            "message": "Injected save failure",
+                        },
+                    }
+                ),
+            )
+        elif save_phase == "hold":
+            held_saves.append(route)
+            save_ready.set()
+        else:
+            route.continue_()
+
+    def dismiss_dialog(dialog: Dialog) -> None:
+        dialogs.append(dialog.type)
+        dialog.dismiss()
+
+    page.on("dialog", dismiss_dialog)
+    try:
+        response = page.request.post(
+            f"{frontend_url}/api/templates",
+            data={
+                "template": {
+                    "preset": "minimal",
+                    "name": "Template chunk recovery",
+                    "description": "",
+                    **{
+                        key: presets["minimal"][key]
+                        for key in ("layout", "typography", "settings")
+                    },
+                }
+            },
+        )
+        assert response.ok, response.text()
+        template = response.json()["data"]["template"]
+        template_id = template["id"]
+        endpoint = f"{frontend_url}/api/templates/{template_id}"
+        page.route(
+            re.compile(r"^https?://[^/]+/" + re.escape(asset) + r"(?:\?.*)?$"),
+            load_chunk,
+        )
+        page.route(f"**/api/templates/{template_id}", handle_save)
+        page.goto(
+            f"{frontend_url}/template/{template_id}", wait_until="domcontentloaded"
+        )
+        chunk_ready.wait(page)
+        page.evaluate("window.__templateChunkRecoveryMarker = true")
+        assert len(chunk_requests) == 1
+        editor = page.locator('[data-slot="template-editor"]')
+        expect(editor).to_be_visible()
+        editor_node = editor.element_handle()
+        assert editor_node is not None
+        page.get_by_role(
+            "button", name=messages["editTemplateInfo"], exact=True
+        ).click()
+        metadata = page.get_by_role("dialog", name=messages["editTemplateInfo"])
+        metadata.get_by_label(messages["templateName"], exact=True).fill(
+            "Unsaved template metadata"
+        )
+        metadata.get_by_role("button", name=messages["saveTemplateInfo"]).click()
+        images_tab = page.get_by_role("tab", name=messages["templateImagesTab"])
+        images_tab.click()
+        chunk_ready.wait(page)
+        held_chunks.pop().abort("failed")
+        local_error = editor.get_by_role("alert")
+        recovery = local_error.get_by_role("button", name=messages["saveAndReload"])
+        expect(recovery).to_be_visible()
+        assert editor_node.evaluate("element => element.isConnected")
+        expect(
+            page.locator('[data-slot="template-workspace-header"]').locator(
+                '[data-slot="template-editor-title"]'
+            )
+        ).to_have_text("Unsaved template metadata")
+        recovery.click()
+        expect(local_error).to_contain_text(messages["resourceRecoverySaveError"])
+        expect(recovery).to_be_enabled()
+        assert page.evaluate("window.__templateChunkRecoveryMarker") is True
+        persisted = page.request.get(endpoint).json()["data"]["template"]
+        assert persisted["name"] == template["name"]
+        assert save_payloads
+        assert dialogs == []
+
+        save_phase = "hold"
+        recovery.click()
+        save_ready.wait(page)
+        assert held_saves
+        page.get_by_role("tab", name=messages["templateTypographyTab"]).click()
+        expect(local_error).not_to_be_visible()
+        name_size = page.get_by_role(
+            "spinbutton", name=messages["nameSize"], exact=True
+        )
+        latest_scale = 2.7
+        latest_points = (
+            round(template["typography"]["fontSize"] * 0.75, 2) * latest_scale
+        )
+        name_size.fill(str(round(latest_points, 2)))
+        name_size.press("Enter")
+        expect(name_size).to_have_value(str(round(latest_points, 2)))
+        images_tab.click()
+        expect(local_error.get_by_role("button")).to_be_disabled()
+        save_phase = "pass"
+        with page.expect_navigation(wait_until="networkidle"):
+            for route in held_saves:
+                route.continue_()
+            held_saves.clear()
+        assert page.evaluate("window.__templateChunkRecoveryMarker") is None
+        assert save_payloads[-1]["saveMode"] == "checkpoint"
+        assert save_payloads[-1]["template"]["settings"]["nameScale"] == latest_scale
+        detail = page.request.get(endpoint).json()["data"]
+        assert detail["template"]["name"] == "Unsaved template metadata"
+        assert detail["template"]["settings"]["nameScale"] == latest_scale
+        assert detail["checkpoint"] is None
+        images_tab.click()
+        expect(
+            page.get_by_role("button", name=messages["addTemplateImage"], exact=True)
+        ).to_be_visible()
+        expect(local_error).to_have_count(0)
+        assert len(chunk_requests) >= 2
+        assert dialogs == []
+    finally:
+        for route in [*held_saves, *held_chunks]:
+            with suppress(Error):
+                route.abort()
+        if template_id:
+            response = page.request.post(
+                f"{frontend_url}/api/templates/{template_id}/trash"
+            )
+            if response.ok:
+                page.request.delete(f"{frontend_url}/api/templates/{template_id}")
+        context.close()

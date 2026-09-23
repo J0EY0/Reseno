@@ -1,5 +1,13 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { getTemplateEditorMessages } from "@/components/templates/editor/editor-messages";
 import { ResumeDetailWorkspaceHeader } from "@/components/workspace/resume-detail-workspace-header";
 import { TemplateDetailWorkspaceHeader } from "@/components/workspace/template-detail-workspace-header";
 import type { ResumeDetailWorkspaceModel } from "@/components/workspace/resume-detail-workspace-types";
@@ -117,6 +125,25 @@ function workspace(): ResumeDetailWorkspaceModel {
   };
 }
 
+function templateHeaderProps() {
+  return {
+    changeCount: 0,
+    headerRef: { current: null },
+    lastSavedAt: null,
+    locale: "en" as const,
+    messages: t,
+    onBack: vi.fn(),
+    onLocaleChange: vi.fn(),
+    onLogout: vi.fn(),
+    onSave: vi.fn(async () => undefined),
+    onThemeChange: vi.fn(),
+    onUpdateTemplate: vi.fn(),
+    resolvedTheme: "light" as const,
+    saveState: "saved" as const,
+    template: createResumeDetailTemplate("custom"),
+  };
+}
+
 it("keeps actual detail back buttons at the shared outline size and export menu at trigger width", async () => {
   const model = workspace();
   const view = render(
@@ -152,27 +179,89 @@ it("keeps actual detail back buttons at the shared outline size and export menu 
     expect(handler).toHaveBeenCalledOnce();
   }
   view.unmount();
-  const onBack = vi.fn();
-  render(
-    <TemplateDetailWorkspaceHeader
-      changeCount={0}
-      headerRef={{ current: null }}
-      lastSavedAt={null}
-      locale="en"
-      messages={t}
-      onBack={onBack}
-      onLocaleChange={vi.fn()}
-      onLogout={vi.fn()}
-      onSave={vi.fn(async () => undefined)}
-      onThemeChange={vi.fn()}
-      resolvedTheme="light"
-      saveState="saved"
-      template={createResumeDetailTemplate("custom")}
-    />,
-  );
+  const props = templateHeaderProps();
+  render(<TemplateDetailWorkspaceHeader {...props} />);
   const templateBack = screen.getByRole("button", { name: t.backToTemplates });
   expect(templateBack.getAttribute("data-variant")).toBe("outline");
   expect(templateBack.getAttribute("data-size")).toBe("default");
   fireEvent.click(templateBack);
-  expect(onBack).toHaveBeenCalledOnce();
+  expect(props.onBack).toHaveBeenCalledOnce();
 });
+
+it.each([false, true])(
+  "shows template metadata in the header and edits only custom templates, builtin=%s",
+  async (isBuiltIn) => {
+    const props = templateHeaderProps();
+    const templateMessages = getTemplateEditorMessages(
+      props.locale,
+      props.messages,
+    );
+    const template = createResumeDetailTemplate("template-1", {
+      name: "Minimal",
+      description: "Classic single column",
+      isBuiltIn,
+    });
+    const { rerender } = render(
+      <TemplateDetailWorkspaceHeader {...props} template={template} />,
+    );
+    const header = screen.getByRole("banner");
+    expect(
+      within(header).getByRole("heading", { level: 1, name: template.name }),
+    ).not.toBeNull();
+    expect(within(header).getByText(template.description)).not.toBeNull();
+    const edit = within(header).queryByRole("button", {
+      name: t.editTemplateInfo,
+    });
+    expect(
+      within(header).queryByRole("button", { name: t.setDefaultTemplate }),
+    ).toBeNull();
+    expect(
+      within(header).queryByRole("button", {
+        name: templateMessages.createEditableCopy,
+      }),
+    ).toBeNull();
+    if (isBuiltIn) {
+      expect(
+        within(header).getByTitle(templateMessages.templateReadonlyStatus)
+          .textContent,
+      ).toBe(templateMessages.templateReadonlyLabel);
+      expect(edit).toBeNull();
+      expect(props.onUpdateTemplate).not.toHaveBeenCalled();
+    } else {
+      expect(
+        within(header).queryByTitle(templateMessages.templateReadonlyStatus),
+      ).toBeNull();
+      expect(edit).not.toBeNull();
+      fireEvent.click(edit!);
+      const dialog = screen.getByRole("dialog", { name: t.editTemplateInfo });
+      fireEvent.change(within(dialog).getByLabelText(t.templateName), {
+        target: { value: "Renamed" },
+      });
+      fireEvent.change(within(dialog).getByLabelText(t.templateDescription), {
+        target: { value: "Updated description" },
+      });
+      fireEvent.click(
+        within(dialog).getByRole("button", { name: t.saveTemplateInfo }),
+      );
+      expect(props.onUpdateTemplate).toHaveBeenCalledExactlyOnceWith(
+        template.id,
+        { name: "Renamed", description: "Updated description" },
+      );
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      rerender(
+        <TemplateDetailWorkspaceHeader
+          {...props}
+          template={{
+            ...template,
+            name: "Renamed",
+            description: "Updated description",
+          }}
+        />,
+      );
+      expect(
+        within(header).getByRole("heading", { level: 1, name: "Renamed" }),
+      ).not.toBeNull();
+      expect(within(header).getByText("Updated description")).not.toBeNull();
+    }
+  },
+);

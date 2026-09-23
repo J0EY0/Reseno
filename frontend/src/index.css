@@ -722,10 +722,6 @@ html:has(.app-shell--document)::-webkit-scrollbar {
   pointer-events: none;
 }
 
-.resume-page-content-fragment {
-  will-change: transform;
-}
-
 .resume-diff {
   position: relative;
   border-radius: 5px;
@@ -938,8 +934,7 @@ html:has(.app-shell--document)::-webkit-scrollbar {
     min-height: auto;
   }
 
-  .resume-workspace,
-  .template-workspace {
+  .resume-workspace {
     gap: 0;
     padding: 0;
   }
@@ -1000,8 +995,7 @@ html:has(.app-shell--document)::-webkit-scrollbar {
     overscroll-behavior-y: auto;
   }
 
-  .app-shell--document .resume-workspace .resume-editor-panel,
-  .app-shell--document .template-workspace .resume-template-editor-panel {
+  .app-shell--document .resume-workspace .resume-editor-panel {
     border-right: 1px solid var(--border);
     padding: 16px;
   }
@@ -1308,11 +1302,25 @@ html:has(.app-shell--document)::-webkit-scrollbar {
   background: var(--background);
 }
 
+.template-workspace {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+}
+
 .resume-template-editor-panel {
   height: auto;
   max-height: none;
   overflow: visible;
-  padding: 4px 2px 2px;
+  border-bottom: 1px solid var(--border);
+  padding: 20px;
+}
+
+@media (min-width: 1280px) {
+  .resume-template-editor-panel {
+    border-right: 1px solid var(--border);
+    border-bottom: 0;
+  }
 }
 
 .resume-editor-panel > * {
@@ -1344,13 +1352,6 @@ html:has(.app-shell--document)::-webkit-scrollbar {
     min-height: 30rem;
     max-height: 48rem;
     overflow: hidden;
-  }
-
-  .resume-template-editor-panel {
-    height: auto;
-    max-height: none;
-    overflow: visible;
-    padding: 0;
   }
 
   .app-shell--document .agent-panel-dock {

@@ -160,9 +160,13 @@ class TemplateLayout(ArtifactModel):
         alias="basicInfo"
     )
     section: Literal["ruled", "underlined", "boxed", "accent", "plain", "band"]
-    timeline_item_layout: Literal["split", "stacked", "compact"] = Field(
+    timeline_item_layout: Literal["split", "stacked", "compact", "inline"] = Field(
         alias="timelineItemLayout"
     )
+    section_item_layouts: dict[
+        Literal["education", "experience", "project", "publication", "achievement"],
+        Literal["split", "stacked", "compact", "inline"],
+    ] = Field(default_factory=dict, alias="sectionItemLayouts")
     list_item_layout: Literal["list", "inline", "columns"] = Field(
         alias="listItemLayout"
     )

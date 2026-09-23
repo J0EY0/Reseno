@@ -164,7 +164,7 @@ export function AvatarCropCanvas({
         <div
           ref={stageRef}
           className={cn(
-            "relative overflow-hidden rounded-2xl select-none touch-none",
+            "relative overflow-hidden select-none touch-none",
             interactionMode === "draw"
               ? "cursor-crosshair"
               : interactionMode === "move"

@@ -362,7 +362,7 @@ async function verifyBundleBudgets() {
 
       if (measurement.gzipBytes > budget.maxGzipBytes) {
         failures.push(
-          `route ${budget.name}: gzip closure ${formatKiB(measurement.gzipBytes)} exceeds ${formatKiB(budget.maxGzipBytes)}`,
+          `route ${budget.name}: gzip closure ${formatKiB(measurement.gzipBytes)} (${measurement.gzipBytes} bytes) exceeds ${formatKiB(budget.maxGzipBytes)} (${budget.maxGzipBytes} bytes)`,
         );
       } else if (
         measurement.gzipBytes <=

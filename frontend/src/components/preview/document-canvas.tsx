@@ -1,3 +1,4 @@
+import type { TemplateImageGeometry } from "@/lib/template-image-geometry";
 import {
   forwardRef,
   memo,
@@ -26,7 +27,6 @@ import type {
   ResumeData,
   ResumeDraftDiff,
   ResumeTemplateDefinition,
-  ResumeTemplateImageElement,
   ResumeTypographySettings,
 } from "@/types/resume";
 
@@ -38,6 +38,7 @@ export interface DocumentCanvasHandle {
 }
 
 interface DocumentCanvasBaseProps {
+  className?: string;
   documentT: AppMessages;
   measurementKey?: object;
   onPaginationReadyChange?: (ready: boolean) => void;
@@ -63,9 +64,9 @@ type DocumentCanvasProps =
       variant: "resume";
     })
   | (DocumentCanvasBaseProps & {
-      onMoveTemplateImage?: (
+      onChangeTemplateImage?: (
         imageId: string,
-        patch: Pick<ResumeTemplateImageElement, "x" | "y">,
+        patch: TemplateImageGeometry,
       ) => void;
       variant: "template";
     });
@@ -175,7 +176,10 @@ export const DocumentCanvas = memo(
 
       return (
         <section
-          className="resume-preview-card relative flex min-h-0 min-w-0 flex-col overflow-hidden rounded-(--radius-preview) border bg-card"
+          className={
+            props.className ??
+            "resume-preview-card relative flex min-h-0 min-w-0 flex-col overflow-hidden rounded-(--radius-preview) border bg-card"
+          }
           onKeyDown={onKeyDown}
         >
           <div
@@ -217,12 +221,12 @@ export const DocumentCanvas = memo(
                   editableTemplateImages={
                     isTemplatePreview &&
                     !template.isBuiltIn &&
-                    Boolean(props.onMoveTemplateImage)
+                    Boolean(props.onChangeTemplateImage)
                   }
                   showEmptyTemplateImagePlaceholders={isTemplatePreview}
                   onPaginationReadyChange={handlePaginationReadyChange}
-                  onMoveTemplateImage={
-                    isTemplatePreview ? props.onMoveTemplateImage : undefined
+                  onChangeTemplateImage={
+                    isTemplatePreview ? props.onChangeTemplateImage : undefined
                   }
                 />
               </div>

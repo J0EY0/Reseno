@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "reseno-backend"
-version = "0.3.0"
+version = "0.4.0"
 description = "FastAPI backend for Reseno"
 requires-python = ">=3.12"
 dependencies = [
@@ -60,6 +60,7 @@ warn_unused_configs = true
 untyped_calls_exclude = ["authlib"]
 
 [tool.pytest.ini_options]
+testpaths = ["tests"]
 markers = [
     "browser_smoke: critical real-browser regressions required by the default CI gate",
 ]

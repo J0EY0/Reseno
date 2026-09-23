@@ -68,12 +68,23 @@ export function TemplateDetailLeaveDialog({
           </Button>
           <Button
             type="button"
+            className="grid"
+            aria-busy={isResolving}
             disabled={isResolving}
             onClick={() => void onSave()}
           >
-            {isResolving
-              ? messages.saving
-              : messages.unsavedChangesSaveAndLeave}
+            <span
+              className="col-start-1 row-start-1 aria-hidden:invisible"
+              aria-hidden={isResolving}
+            >
+              {messages.unsavedChangesSaveAndLeave}
+            </span>
+            <span
+              className="col-start-1 row-start-1 aria-hidden:invisible"
+              aria-hidden={!isResolving}
+            >
+              {messages.saving}
+            </span>
           </Button>
         </DialogFooter>
       </DialogContent>

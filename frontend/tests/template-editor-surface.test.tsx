@@ -7,12 +7,38 @@ import {
   within,
 } from "@testing-library/react";
 import { beforeEach, afterEach, expect, it, vi } from "vitest";
-import { defaultMessages as t } from "@/i18n";
+import { ErrorBoundary } from "react-error-boundary";
+import { ResourceRecoveryContext } from "@/components/resource-recovery-context";
+import { defaultMessages } from "@/i18n";
+import zhMessages from "@/i18n/locales/zh.json";
+import { getTemplateEditorMessages } from "@/components/templates/editor/editor-messages";
+import { TemplateActions } from "@/components/templates/template-actions";
+import { TemplatePreviewToolbar } from "@/components/templates/template-preview-toolbar";
 import { TemplateEditor } from "@/components/templates/template-editor";
 import { TemplateEditorTabs } from "@/components/templates/template-editor-tabs";
 import { TemplateLayoutTab } from "@/components/templates/editor/layout-tab";
-import { Tabs } from "@/components/ui/tabs";
-import { getBuiltInTemplates } from "@/lib/templates";
+import { TemplateStyleTabs } from "@/components/templates/template-style-tabs";
+import { TemplateDetailWorkspaceView } from "@/components/workspace/template-detail-workspace-view";
+import type { TemplateDetailWorkspaceController } from "@/components/workspace/use-template-detail-workspace";
+import { createResumeDetailItem } from "./helpers/resume-detail-fixtures";
+import {
+  createTemplateImageElement,
+  getBuiltInTemplates,
+} from "@/lib/templates";
+
+const previewResource = vi.hoisted(() => ({ failed: false }));
+vi.mock("@/components/preview/document-canvas", () => ({
+  DocumentCanvas: () => {
+    if (previewResource.failed) {
+      throw new TypeError(
+        "Failed to fetch dynamically imported module: /template-image-editor.js",
+      );
+    }
+    return <div role="img" aria-label="Resume preview" />;
+  },
+}));
+
+const t = getTemplateEditorMessages("en", defaultMessages);
 
 const template = {
   ...getBuiltInTemplates(t)[0],
@@ -22,6 +48,7 @@ const template = {
   description: "",
 };
 beforeEach(() => {
+  previewResource.failed = false;
   vi.stubGlobal(
     "ResizeObserver",
     class {
@@ -41,104 +68,199 @@ beforeEach(() => {
 });
 afterEach(() => {
   vi.unstubAllGlobals();
-  vi.useRealTimers();
 });
-function props() {
+function editorProps() {
   return {
-    t,
+    t: defaultMessages,
+    locale: "en" as const,
     template,
-    templateLocale: "en" as const,
     defaultTemplateId: "other",
-    isImporting: false,
     isCreating: false,
     settingDefaultTemplateId: null as string | null,
     onSetDefaultTemplate: vi.fn(),
-    onTemplateLocaleChange: vi.fn(),
     onCreateCustomTemplate: vi.fn(),
     onUpdateTemplate: vi.fn(),
   };
 }
+function actionProps() {
+  return {
+    messages: t,
+    template,
+    defaultTemplateId: "other",
+    isCreating: false,
+    settingDefaultTemplateId: null as string | null,
+    onSetDefaultTemplate: vi.fn(),
+    onCreateCustomTemplate: vi.fn(),
+  };
+}
+
+it("updates inspector copy when the interface language changes", () => {
+  const value = editorProps();
+  const { rerender } = render(<TemplateEditor {...value} />);
+  expect(screen.getByText(t.templateContentStructure)).not.toBeNull();
+
+  const zh = getTemplateEditorMessages("zh", zhMessages);
+  rerender(<TemplateEditor {...value} t={zhMessages} locale="zh" />);
+  expect(screen.getByText(zh.templateContentStructure)).not.toBeNull();
+  expect(screen.queryByText(t.templateContentStructure)).toBeNull();
+});
+
+it.each([t, getTemplateEditorMessages("zh", zhMessages)])(
+  "keeps the selected layout preview and label in sync in $basicInfoLayout",
+  (messages) => {
+    const onUpdateTemplate = vi.fn();
+    const view = (value: typeof template) => (
+      <TemplateStyleTabs value="layout">
+        <TemplateLayoutTab
+          t={messages}
+          template={value}
+          onUpdateTemplate={onUpdateTemplate}
+        />
+      </TemplateStyleTabs>
+    );
+    const { rerender } = render(view(template));
+    const previewSelector = 'span[aria-hidden="true"] > svg';
+    for (const label of [
+      messages.basicInfoLayout,
+      messages.sectionTemplateStyle,
+      messages.timelineItemLayout,
+      messages.listItemLayout,
+      messages.templateDividerStyle,
+    ]) {
+      const control = screen.getByRole("combobox", { name: label });
+      expect(control.querySelector(previewSelector), label).not.toBeNull();
+      expect(within(control).queryByRole("img")).toBeNull();
+    }
+    const section = screen.getByRole<HTMLButtonElement>("combobox", {
+      name: messages.sectionTemplateStyle,
+    });
+    const initialPreview = section.querySelector(previewSelector)!.outerHTML;
+    fireEvent.keyDown(section, { key: "ArrowDown" });
+    const option = screen.getByRole("option", {
+      name: messages.sectionStyleBoxed,
+    });
+    const nextPreview = option.querySelector(previewSelector)!.outerHTML;
+    expect(nextPreview).not.toBe(initialPreview);
+    fireEvent.click(option);
+    expect(onUpdateTemplate).toHaveBeenCalledExactlyOnceWith({
+      layout: { ...template.layout, section: "boxed" },
+    });
+    const next = {
+      ...template,
+      layout: { ...template.layout, section: "boxed" as const },
+    };
+    rerender(view(next));
+    expect(section.textContent).toBe(messages.sectionStyleBoxed);
+    expect(section.querySelector(previewSelector)!.outerHTML).toBe(nextPreview);
+    expect(
+      screen.getByRole("combobox", { name: messages.sectionTemplateStyle }),
+    ).toBe(section);
+    rerender(view({ ...next, isBuiltIn: true }));
+    expect(section.disabled).toBe(true);
+    expect(section.querySelector(previewSelector)!.outerHTML).toBe(nextPreview);
+  },
+);
 
 it.each([false, true])(
-  "composes metadata beside the title with a stable empty description, builtin=%s",
-  async (isBuiltIn) => {
-    const value = props();
-    const { container } = render(
-      <TemplateEditor {...value} template={{ ...template, isBuiltIn }} />,
+  "offers editable copies only for built-in templates, builtin=%s",
+  (isBuiltIn) => {
+    const value = actionProps();
+    const { rerender } = render(
+      <TemplateActions {...value} template={{ ...template, isBuiltIn }} />,
     );
-    expect(
-      container.querySelector('[data-slot="template-editor-title"]')
-        ?.textContent,
-    ).toBe(template.name);
-    expect(
-      container.querySelector('[data-slot="template-description"]')
-        ?.textContent,
-    ).toBe("");
-    expect(
-      container.querySelectorAll('[data-slot="template-description"]'),
-    ).toHaveLength(1);
-    expect(screen.queryByText(t.templateDescriptionFallback)).toBeNull();
+    const createCopy = screen.queryByRole<HTMLButtonElement>("button", {
+      name: t.createEditableCopy,
+    });
     if (isBuiltIn) {
-      expect(
-        screen.queryByRole("button", { name: t.editTemplateInfo }),
-      ).toBeNull();
-      expect(screen.getByText(t.templateReadonlyStatus)).not.toBeNull();
-      fireEvent.click(
-        screen.getByRole("button", { name: t.createEditableCopy }),
+      expect(createCopy).not.toBeNull();
+      fireEvent.click(createCopy!);
+      expect(value.onCreateCustomTemplate).toHaveBeenCalledOnce();
+      rerender(
+        <TemplateActions
+          {...value}
+          template={{ ...template, isBuiltIn }}
+          isCreating
+        />,
       );
+      expect(createCopy!.disabled).toBe(true);
+      fireEvent.click(createCopy!);
       expect(value.onCreateCustomTemplate).toHaveBeenCalledOnce();
     } else {
-      const edit = screen.getByRole("button", { name: t.editTemplateInfo });
-      expect(
-        edit.closest('[data-slot="template-editor-header"]'),
-      ).not.toBeNull();
-      fireEvent.click(edit);
-      const dialog = screen.getByRole("dialog");
-      fireEvent.change(within(dialog).getByLabelText(t.templateName), {
-        target: { value: "Renamed" },
-      });
-      fireEvent.click(
-        within(dialog).getByRole("button", { name: t.saveTemplateInfo }),
-      );
-      await waitFor(() =>
-        expect(value.onUpdateTemplate).toHaveBeenCalledExactlyOnceWith(
-          "custom",
-          { name: "Renamed", description: "" },
-        ),
-      );
+      expect(createCopy).toBeNull();
     }
   },
 );
-it("keeps the default button and language selection stable while a default change is pending", () => {
-  const value = props();
-  const { rerender } = render(<TemplateEditor {...value} />);
-  const button = screen.getByRole("button", { name: t.setDefaultTemplate });
+it("keeps the default action stable while a default change is pending", () => {
+  const value = actionProps();
+  const { rerender } = render(<TemplateActions {...value} />);
+  const button = screen.getByRole<HTMLButtonElement>("button", {
+    name: t.setDefaultTemplate,
+  });
   fireEvent.click(button);
   expect(value.onSetDefaultTemplate).toHaveBeenCalledExactlyOnceWith("custom");
-  const language = screen.getByRole("combobox", { name: t.resumeLanguage });
-  fireEvent.keyDown(language, { key: "ArrowDown" });
-  fireEvent.click(screen.getByRole("option", { name: t.chinesePreview }));
-  expect(value.onTemplateLocaleChange).toHaveBeenCalledExactlyOnceWith("zh");
-  rerender(
-    <TemplateEditor
-      {...value}
-      templateLocale="zh"
-      settingDefaultTemplateId="custom"
-    />,
-  );
+  rerender(<TemplateActions {...value} settingDefaultTemplateId="custom" />);
   expect(screen.getByRole("button", { name: t.setDefaultTemplate })).toBe(
     button,
   );
   expect(button.getAttribute("aria-busy")).toBe("true");
-  expect((button as HTMLButtonElement).disabled).toBe(true);
-  expect((language as HTMLButtonElement).disabled).toBe(true);
-  expect(button.querySelector('[data-slot="spinner"]')).toBeNull();
-  rerender(<TemplateEditor {...value} defaultTemplateId="custom" />);
+  expect(button.disabled).toBe(true);
+  expect(button.querySelector('[role="status"]')).not.toBeNull();
+  fireEvent.click(button);
+  expect(value.onSetDefaultTemplate).toHaveBeenCalledOnce();
+  rerender(<TemplateActions {...value} />);
+  expect(screen.getByRole("button", { name: t.setDefaultTemplate })).toBe(
+    button,
+  );
+  expect(button.getAttribute("aria-busy")).toBeNull();
+  expect(button.disabled).toBe(false);
+  expect(button.querySelector('[role="status"]')).toBeNull();
+  fireEvent.click(button);
+  expect(value.onSetDefaultTemplate).toHaveBeenCalledTimes(2);
+  rerender(<TemplateActions {...value} defaultTemplateId="custom" />);
   expect(screen.getByRole("button", { name: t.defaultTemplateLabel })).toBe(
     button,
   );
   expect(button.getAttribute("aria-busy")).toBeNull();
-  expect((button as HTMLButtonElement).disabled).toBe(true);
+  expect(button.disabled).toBe(true);
+  expect(button.querySelector("svg")).toBeNull();
+});
+it("keeps preview language separate from the interface language and disables changes while requested", () => {
+  const onTemplateLocaleChange = vi.fn();
+  const { container, rerender } = render(
+    <TemplatePreviewToolbar
+      messages={defaultMessages}
+      templateLocale="zh"
+      disabled={false}
+      onTemplateLocaleChange={onTemplateLocaleChange}
+    />,
+  );
+  const language = screen.getByRole<HTMLButtonElement>("combobox", {
+    name: t.resumeLanguage,
+  });
+  expect(language.textContent).toContain(t.chinesePreview);
+  expect(container.textContent).toBe(t.resumeLanguage + t.chinesePreview);
+  fireEvent.keyDown(language, { key: "ArrowDown" });
+  fireEvent.click(screen.getByRole("option", { name: t.englishPreview }));
+  expect(onTemplateLocaleChange).toHaveBeenCalledExactlyOnceWith("en");
+  rerender(
+    <TemplatePreviewToolbar
+      messages={zhMessages}
+      templateLocale="en"
+      disabled
+      onTemplateLocaleChange={onTemplateLocaleChange}
+    />,
+  );
+  expect(
+    screen.getByRole("combobox", { name: zhMessages.resumeLanguage }),
+  ).toBe(language);
+  expect(language.textContent).toContain(zhMessages.englishPreview);
+  expect(container.textContent).toBe(
+    zhMessages.resumeLanguage + zhMessages.englishPreview,
+  );
+  expect(language.disabled).toBe(true);
+  fireEvent.keyDown(language, { key: "ArrowDown" });
+  expect(screen.queryByRole("listbox")).toBeNull();
+  expect(onTemplateLocaleChange).toHaveBeenCalledOnce();
 });
 it.each(
   getBuiltInTemplates(t).map((value) => ({
@@ -148,7 +270,7 @@ it.each(
 )("scales both avatar dimensions from the $preset preset", ({ base }) => {
   const onUpdateTemplate = vi.fn();
   render(
-    <Tabs value="layout">
+    <TemplateStyleTabs value="layout">
       <TemplateLayoutTab
         t={t}
         template={{
@@ -158,7 +280,7 @@ it.each(
         }}
         onUpdateTemplate={onUpdateTemplate}
       />
-    </Tabs>,
+    </TemplateStyleTabs>,
   );
   fireEvent.keyDown(screen.getByRole("combobox", { name: t.avatarSize }), {
     key: "ArrowDown",
@@ -172,124 +294,207 @@ it.each(
     Math.round(((base.layout.avatarHeight * 115) / 100) * 2) / 2,
   );
 });
-it("measures the active tab indicator, coalesces resize frames and cancels them on unmount", () => {
-  vi.useFakeTimers();
-  const observers: {
-    callback: ResizeObserverCallback;
-    observe: ReturnType<typeof vi.fn>;
-    disconnect: ReturnType<typeof vi.fn>;
-  }[] = [];
-  vi.stubGlobal(
-    "ResizeObserver",
-    class {
-      observe = vi.fn();
-      disconnect = vi.fn();
-      unobserve = vi.fn();
-      constructor(callback: ResizeObserverCallback) {
-        observers.push({
-          callback,
-          observe: this.observe,
-          disconnect: this.disconnect,
-        });
-      }
-    },
+it("switches inspector sections with the keyboard and retains image editor state", async () => {
+  render(
+    <TemplateEditorTabs
+      locale="en"
+      t={t}
+      template={{
+        ...template,
+        layout: {
+          ...template.layout,
+          images: [
+            createTemplateImageElement(1, t.imageDefaultName, template.layout),
+          ],
+        },
+      }}
+      onUpdateTemplate={vi.fn()}
+    />,
   );
-  let width = 80;
-  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
-    function (this: HTMLElement) {
-      const list = this.getAttribute("role") === "tablist";
-      const visual = this.textContent?.includes(t.templateVisualTab) && !list;
-      const left = list ? 10 : visual ? 210 : 20;
-      return {
-        x: left,
-        y: 0,
-        top: 0,
-        left,
-        right: left + width,
-        bottom: 36,
-        width,
-        height: 36,
-        toJSON() {},
-      };
-    },
+  const layout = screen.getByRole("tab", { name: t.templateLayoutTab });
+  expect(layout.getAttribute("aria-selected")).toBe("true");
+  layout.focus();
+  for (const label of [
+    t.templateTypographyTab,
+    t.templateVisualTab,
+    t.templateImagesTab,
+  ]) {
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowRight" });
+    const next = screen.getByRole("tab", { name: label });
+    await waitFor(() => {
+      expect(document.activeElement).toBe(next);
+      expect(next.getAttribute("aria-selected")).toBe("true");
+      expect(
+        screen
+          .getByRole("tabpanel", { name: label })
+          .getAttribute("aria-labelledby"),
+      ).toBe(next.id);
+    });
+  }
+  fireEvent.click(
+    await screen.findByRole("button", { name: t.expandImageSettings }),
   );
-  const { container, unmount } = render(
-    <TemplateEditorTabs t={t} template={template} onUpdateTemplate={vi.fn()} />,
-  );
-  const list = screen.getByRole("tablist");
-  const indicator = list.querySelector<HTMLSpanElement>(
-    'span[aria-hidden="true"][data-ready]',
-  )!;
-  expect(indicator.dataset.ready).toBe("true");
-  expect(indicator.style.width).toBe("80px");
-  expect(indicator.style.transform).toBe("translate3d(10px, 0, 0)");
-  fireEvent.mouseDown(screen.getByRole("tab", { name: t.templateVisualTab }), {
-    button: 0,
-    ctrlKey: false,
+  expect(
+    screen.getByRole("button", { name: t.collapseImageSettings }),
+  ).not.toBeNull();
+  const images = screen.getByRole("tab", { name: t.templateImagesTab });
+  images.focus();
+  fireEvent.keyDown(images, { key: "Home" });
+  await waitFor(() => {
+    expect(document.activeElement).toBe(layout);
+    expect(layout.getAttribute("aria-selected")).toBe("true");
   });
-  expect(indicator.style.transform).toBe("translate3d(200px, 0, 0)");
-  const observer = observers.findLast((item) =>
-    item.observe.mock.calls.some(([element]) => element === list),
-  )!;
-  expect(observer.observe.mock.calls).toHaveLength(5);
-  const frame = vi.spyOn(window, "requestAnimationFrame");
-  width = 96;
-  act(() => {
-    observer.callback([], {} as ResizeObserver);
-    observer.callback([], {} as ResizeObserver);
+  fireEvent.keyDown(layout, { key: "End" });
+  await waitFor(() => {
+    expect(document.activeElement).toBe(images);
+    expect(images.getAttribute("aria-selected")).toBe("true");
+    expect(
+      screen.getByRole("button", { name: t.collapseImageSettings }),
+    ).not.toBeNull();
   });
-  expect(frame).toHaveBeenCalledOnce();
-  act(() => vi.advanceTimersToNextFrame());
-  expect(indicator.style.width).toBe("96px");
-  act(() => observer.callback([], {} as ResizeObserver));
-  const cancel = vi.spyOn(window, "cancelAnimationFrame");
-  unmount();
-  expect(observer.disconnect).toHaveBeenCalledOnce();
-  expect(cancel).toHaveBeenCalledWith(frame.mock.results.at(-1)?.value);
-  expect(container.childElementCount).toBe(0);
+});
+
+it("opens the preloaded color tab immediately and retains its controls across tab switches", async () => {
+  const onUpdateTemplate = vi.fn();
+  const view = (value: typeof template) => (
+    <TemplateEditorTabs
+      locale="en"
+      t={t}
+      template={value}
+      onUpdateTemplate={onUpdateTemplate}
+    />
+  );
+  const { rerender } = render(view(template));
+  await act(async () => {
+    await import("@/components/templates/editor/visual-tab");
+  });
+  const colorLabel = `${t.headingColor} HEX`;
+  expect(screen.queryByRole("textbox", { name: colorLabel })).toBeNull();
+
+  fireEvent.click(screen.getByRole("tab", { name: t.templateVisualTab }));
+  const panel = screen.getByRole("tabpanel", { name: t.templateVisualTab });
+  expect(panel.querySelector('[aria-busy="true"]')).toBeNull();
+  const input = screen.getByRole<HTMLInputElement>("textbox", {
+    name: colorLabel,
+  });
+  fireEvent.change(input, { target: { value: "336699" } });
+  expect(onUpdateTemplate).toHaveBeenCalledExactlyOnceWith({
+    settings: { ...template.settings, headingColor: "#336699" },
+  });
+  rerender(
+    view({
+      ...template,
+      settings: { ...template.settings, headingColor: "#336699" },
+    }),
+  );
+  fireEvent.blur(input);
+  fireEvent.click(screen.getByRole("tab", { name: t.templateLayoutTab }));
+  expect(input.isConnected).toBe(true);
+  expect(screen.queryByRole("textbox", { name: colorLabel })).toBeNull();
+  expect(screen.queryByRole("dialog")).toBeNull();
+
+  fireEvent.click(screen.getByRole("tab", { name: t.templateVisualTab }));
+  expect(screen.getByRole("textbox", { name: colorLabel })).toBe(input);
+  expect(input.value).toBe("#336699");
+  expect(screen.getByRole("tabpanel", { name: t.templateVisualTab })).toBe(
+    panel,
+  );
+});
+
+function workspaceController(
+  overrides: Partial<TemplateDetailWorkspaceController> = {},
+): TemplateDetailWorkspaceController {
+  return {
+    changeTheme: vi.fn(),
+    changeView: vi.fn(),
+    createCustomTemplate: vi.fn(async () => {}),
+    defaultTemplateId: "other",
+    goBack: vi.fn(),
+    hasLoadError: false,
+    hasLoaded: true,
+    isCreating: false,
+    isLoading: false,
+    leave: {
+      cancelLeave: vi.fn(),
+      discardAndLeave: vi.fn(async () => {}),
+      isOpen: false,
+      isResolving: false,
+      requestLeave: vi.fn(),
+      saveAndLeave: vi.fn(async () => {}),
+    },
+    logout: vi.fn(),
+    updateTemplateImage: vi.fn(),
+    preloadWorkspaceView: vi.fn(),
+    resolvedTheme: "light",
+    retryLoad: vi.fn(),
+    save: vi.fn(async () => true),
+    saveAndReload: vi.fn(async () => {}),
+    saveChangeCount: 0,
+    saveLastSavedAt: null,
+    saveState: "idle",
+    setDefaultTemplate: vi.fn(async () => {}),
+    settingDefaultTemplateId: null,
+    setTemplateLocale: vi.fn(),
+    template,
+    templateLocale: "en",
+    templatePreviewMessages: null,
+    templatePreviewResume: null,
+    theme: "light",
+    updateTemplate: vi.fn(),
+    ...overrides,
+  };
+}
+
+it("contains a preview resource failure while preserving edits and save recovery", async () => {
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  const controller = workspaceController({
+    templatePreviewMessages: t,
+    templatePreviewResume: createResumeDetailItem().resume,
+  });
+  function View() {
+    return (
+      <ErrorBoundary fallback={<span>Page unavailable</span>}>
+        <ResourceRecoveryContext
+          value={{ messages: t, saveAndReload: controller.saveAndReload }}
+        >
+          <TemplateDetailWorkspaceView
+            controller={controller}
+            locale="en"
+            messages={t}
+            onLocaleChange={vi.fn()}
+          />
+        </ResourceRecoveryContext>
+      </ErrorBoundary>
+    );
+  }
+  const { rerender } = render(<View />);
+  await screen.findByRole("img", { name: "Resume preview" });
+  const input = screen.getByRole<HTMLInputElement>("spinbutton", {
+    name: t.lineSpacing,
+  });
+  fireEvent.change(input, { target: { value: "20" } });
+  expect(controller.updateTemplate).toHaveBeenCalled();
+  const title = screen.getByRole("heading", { level: 1, name: template.name });
+  const language = screen.getByRole("combobox", { name: t.resumeLanguage });
+  previewResource.failed = true;
+  rerender(<View />);
+  expect(screen.queryByText("Page unavailable")).toBeNull();
+  expect(screen.getByRole("spinbutton", { name: t.lineSpacing })).toBe(input);
+  expect(input.value).toBe("20");
+  expect(screen.getByRole("heading", { level: 1, name: template.name })).toBe(
+    title,
+  );
+  expect(screen.getByRole("combobox", { name: t.resumeLanguage })).toBe(
+    language,
+  );
+  expect(screen.getByRole("alert").textContent).toContain(t.resourceLoadError);
+  fireEvent.click(screen.getByRole("button", { name: t.saveAndReload }));
+  await act(async () => {});
+  expect(controller.saveAndReload).toHaveBeenCalledOnce();
 });
 
 it("retains the editor's active tab when the workspace view receives another template", async () => {
-  const { TemplateDetailWorkspaceView } =
-    await import("@/components/workspace/template-detail-workspace-view");
-  const controller: import("@/components/workspace/use-template-detail-workspace").TemplateDetailWorkspaceController =
-    {
-      changeTheme: vi.fn(),
-      changeView: vi.fn(),
-      createCustomTemplate: vi.fn(async () => {}),
-      defaultTemplateId: "other",
-      goBack: vi.fn(),
-      hasLoadError: false,
-      hasLoaded: true,
-      isCreating: false,
-      isLoading: false,
-      leave: {
-        cancelLeave: vi.fn(),
-        discardAndLeave: vi.fn(async () => {}),
-        isOpen: false,
-        isResolving: false,
-        requestLeave: vi.fn(),
-        saveAndLeave: vi.fn(async () => {}),
-      },
-      logout: vi.fn(),
-      moveTemplateImage: vi.fn(),
-      preloadWorkspaceView: vi.fn(),
-      resolvedTheme: "light",
-      retryLoad: vi.fn(),
-      save: vi.fn(async () => true),
-      saveChangeCount: 0,
-      saveLastSavedAt: null,
-      saveState: "idle",
-      setDefaultTemplate: vi.fn(async () => {}),
-      settingDefaultTemplateId: null,
-      setTemplateLocale: vi.fn(),
-      template,
-      templateLocale: "en",
-      templatePreviewMessages: null,
-      templatePreviewResume: null,
-      theme: "light",
-      updateTemplate: vi.fn(),
-    };
+  const controller = workspaceController();
   const view = render(
     <TemplateDetailWorkspaceView
       controller={controller}
@@ -299,7 +504,7 @@ it("retains the editor's active tab when the workspace view receives another tem
     />,
   );
   const images = screen.getByRole("tab", { name: t.templateImagesTab });
-  fireEvent.mouseDown(images, { button: 0, ctrlKey: false });
+  fireEvent.click(images);
   expect(images.getAttribute("aria-selected")).toBe("true");
   view.rerender(
     <TemplateDetailWorkspaceView
@@ -314,6 +519,13 @@ it("retains the editor's active tab when the workspace view receives another tem
   );
   expect(screen.getByRole("tab", { name: t.templateImagesTab })).toBe(images);
   expect(images.getAttribute("aria-selected")).toBe("true");
+  const editor = view.container.querySelector<HTMLElement>(
+    '[data-slot="template-editor"]',
+  )!;
+  expect(within(editor).queryByText(t.templateReadonlyLabel)).toBeNull();
+  expect(
+    within(editor).getByRole("button", { name: t.setDefaultTemplate }),
+  ).not.toBeNull();
   expect(
     screen.getByRole("heading", { level: 1, name: "Second template" }),
   ).not.toBeNull();
@@ -322,4 +534,125 @@ it("retains the editor's active tab when the workspace view receives another tem
       screen.getByRole("button", { name: t.addTemplateImage }),
     ).not.toBeNull(),
   );
+});
+
+it("waits for loaded template data before exposing copy and default actions", () => {
+  const controller = workspaceController({
+    hasLoaded: false,
+    isLoading: true,
+    template: getBuiltInTemplates(t)[1],
+  });
+  const view = render(
+    <TemplateDetailWorkspaceView
+      controller={controller}
+      locale="en"
+      messages={t}
+      onLocaleChange={vi.fn()}
+    />,
+  );
+  expect(
+    screen.queryByRole("button", { name: t.createEditableCopy }),
+  ).toBeNull();
+  expect(
+    screen.queryByRole("button", { name: t.setDefaultTemplate }),
+  ).toBeNull();
+  expect(
+    screen.queryByRole("button", { name: t.defaultTemplateLabel }),
+  ).toBeNull();
+
+  view.rerender(
+    <TemplateDetailWorkspaceView
+      controller={{ ...controller, hasLoaded: true, isLoading: false }}
+      locale="en"
+      messages={t}
+      onLocaleChange={vi.fn()}
+    />,
+  );
+  const editor = view.container.querySelector<HTMLElement>(
+    '[data-slot="template-editor"]',
+  )!;
+  const header = view.container.querySelector<HTMLElement>(
+    '[data-slot="template-workspace-header"]',
+  )!;
+  expect(
+    within(header).getByText(t.templateReadonlyLabel).getAttribute("title"),
+  ).toBe(t.templateReadonlyStatus);
+  expect(within(editor).queryByTitle(t.templateReadonlyStatus)).toBeNull();
+  expect(
+    within(header).queryByRole("button", { name: t.createEditableCopy }),
+  ).toBeNull();
+  expect(
+    within(header).queryByRole("button", { name: t.setDefaultTemplate }),
+  ).toBeNull();
+  fireEvent.click(
+    within(editor).getByRole("button", { name: t.createEditableCopy }),
+  );
+  fireEvent.click(
+    within(editor).getByRole("button", { name: t.setDefaultTemplate }),
+  );
+  expect(controller.createCustomTemplate).toHaveBeenCalledOnce();
+  expect(controller.setDefaultTemplate).toHaveBeenCalledExactlyOnceWith(
+    controller.template!.id,
+  );
+});
+
+it("preserves the preview language selector and focus while messages load and permits switching back", async () => {
+  const resume = createResumeDetailItem().resume;
+  const controller = workspaceController({
+    templatePreviewMessages: t,
+    templatePreviewResume: resume,
+  });
+  const view = render(
+    <TemplateDetailWorkspaceView
+      controller={controller}
+      locale="en"
+      messages={t}
+      onLocaleChange={vi.fn()}
+    />,
+  );
+  await screen.findByRole("img", { name: "Resume preview" });
+  const language = screen.getByRole("combobox", { name: t.resumeLanguage });
+  language.focus();
+  fireEvent.keyDown(language, { key: "ArrowDown" });
+  fireEvent.click(screen.getByRole("option", { name: t.chinesePreview }));
+  await waitFor(() => expect(document.activeElement).toBe(language));
+  const pending = {
+    ...controller,
+    templateLocale: "zh" as const,
+    templatePreviewMessages: null,
+    templatePreviewResume: null,
+  };
+  view.rerender(
+    <TemplateDetailWorkspaceView
+      controller={pending}
+      locale="en"
+      messages={t}
+      onLocaleChange={vi.fn()}
+    />,
+  );
+  expect(screen.getByRole("combobox", { name: t.resumeLanguage })).toBe(
+    language,
+  );
+  expect(document.activeElement).toBe(language);
+  expect(screen.queryByRole("img", { name: "Resume preview" })).toBeNull();
+  fireEvent.keyDown(language, { key: "ArrowDown" });
+  fireEvent.click(screen.getByRole("option", { name: t.englishPreview }));
+  expect(controller.setTemplateLocale).toHaveBeenCalledTimes(2);
+  expect(controller.setTemplateLocale).toHaveBeenNthCalledWith(1, "zh");
+  expect(controller.setTemplateLocale).toHaveBeenNthCalledWith(2, "en");
+  await waitFor(() => expect(document.activeElement).toBe(language));
+
+  view.rerender(
+    <TemplateDetailWorkspaceView
+      controller={controller}
+      locale="en"
+      messages={t}
+      onLocaleChange={vi.fn()}
+    />,
+  );
+  await screen.findByRole("img", { name: "Resume preview" });
+  expect(screen.getByRole("combobox", { name: t.resumeLanguage })).toBe(
+    language,
+  );
+  expect(document.activeElement).toBe(language);
 });

@@ -1,4 +1,6 @@
 import {
+  lazy,
+  Suspense,
   useEffect,
   useRef,
   useState,
@@ -6,7 +8,7 @@ import {
   type ReactNode,
 } from "react";
 
-import { ResizableWorkspacePanel } from "@/components/workspace/resizable-workspace-panel";
+import { ResourceErrorBoundary } from "@/components/resource-error-boundary";
 import {
   AGENT_MIN_WIDTH,
   DEFAULT_AGENT_WIDTH,
@@ -22,6 +24,8 @@ import type { Locale } from "@/i18n";
 import workspaceResizeMessages from "@/i18n/workspace-resize.json";
 
 import "./resume-workspace-columns.css";
+
+const WorkspacePanelResizer = lazy(() => import("./workspace-panel-resizer"));
 
 export function ResumeWorkspaceColumns({
   editor,
@@ -91,47 +95,75 @@ export function ResumeWorkspaceColumns({
       data-agent-expanded={agentExpanded}
       className="workspace-document-enter resume-workspace relative grid min-w-0 flex-1 gap-y-4 gap-x-3 p-4 print:block print:h-auto print:overflow-visible print:p-0"
     >
-      <ResizableWorkspacePanel
+      <div
         className="workspace-editor-column min-w-0 self-start print:hidden"
-        desktop={desktop}
-        width={editorWidth}
-        min={EDITOR_MIN_WIDTH}
-        max={editorMaxWidth}
-        direction="right"
-        label={messages.workspaceResizeEditor}
-        onResizeStart={startResize}
-        onResize={(width) => updateLiveWidth("editor", width)}
-        onCommit={(width) => commit({ editorWidth: width })}
-        onReset={() =>
-          commit({
-            editorWidth: Math.min(
-              editorMaxWidth,
-              getDefaultEditorWidth(containerWidth),
-            ),
-          })
-        }
+        style={{
+          position: desktop ? "sticky" : "relative",
+          width: desktop ? "var(--editor-panel-width)" : "100%",
+        }}
       >
         {editor}
-      </ResizableWorkspacePanel>
+        {desktop ? (
+          <ResourceErrorBoundary>
+            <Suspense fallback={null}>
+              <WorkspacePanelResizer
+                width={editorWidth}
+                min={EDITOR_MIN_WIDTH}
+                max={editorMaxWidth}
+                direction="right"
+                label={messages.workspaceResizeEditor}
+                onResizeStart={startResize}
+                onResize={(width) => updateLiveWidth("editor", width)}
+                onCommit={(width) => commit({ editorWidth: width })}
+                onReset={() =>
+                  commit({
+                    editorWidth: Math.min(
+                      editorMaxWidth,
+                      getDefaultEditorWidth(containerWidth),
+                    ),
+                  })
+                }
+              />
+            </Suspense>
+          </ResourceErrorBoundary>
+        ) : null}
+      </div>
       {preview}
-      <ResizableWorkspacePanel
+      <div
         className="workspace-agent-column min-w-0 self-start print:hidden"
-        desktop={desktop}
-        expanded={agentExpanded}
-        width={agentWidth}
-        min={AGENT_MIN_WIDTH}
-        max={agentMaxWidth}
-        direction="left"
-        label={messages.workspaceResizeAgent}
-        onResizeStart={startResize}
-        onResize={(width) => updateLiveWidth("agent", width)}
-        onCommit={(width) => commit({ agentWidth: width })}
-        onReset={() =>
-          commit({ agentWidth: Math.min(agentMaxWidth, DEFAULT_AGENT_WIDTH) })
-        }
+        data-expanded={agentExpanded}
+        style={{
+          position: desktop ? "sticky" : "relative",
+          width: desktop
+            ? agentExpanded
+              ? "var(--agent-panel-width)"
+              : 0
+            : "100%",
+        }}
       >
         {agent}
-      </ResizableWorkspacePanel>
+        {desktop && agentExpanded ? (
+          <ResourceErrorBoundary>
+            <Suspense fallback={null}>
+              <WorkspacePanelResizer
+                width={agentWidth}
+                min={AGENT_MIN_WIDTH}
+                max={agentMaxWidth}
+                direction="left"
+                label={messages.workspaceResizeAgent}
+                onResizeStart={startResize}
+                onResize={(width) => updateLiveWidth("agent", width)}
+                onCommit={(width) => commit({ agentWidth: width })}
+                onReset={() =>
+                  commit({
+                    agentWidth: Math.min(agentMaxWidth, DEFAULT_AGENT_WIDTH),
+                  })
+                }
+              />
+            </Suspense>
+          </ResourceErrorBoundary>
+        ) : null}
+      </div>
     </div>
   );
 }

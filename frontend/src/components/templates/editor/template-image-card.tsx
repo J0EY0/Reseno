@@ -1,4 +1,11 @@
-import { ChevronDown, ImagePlus, PencilLine, Trash2 } from "lucide-react";
+import {
+  ChevronDown,
+  MoreHorizontal,
+  PencilLine,
+  Trash2,
+  Upload,
+} from "lucide-react";
+import { useRef } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -6,17 +13,24 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Field, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import type { AppMessages } from "@/i18n";
-import { cn } from "@/lib/utils";
 import type { ResumeTemplateImageElement } from "@/types/resume";
 
-import { readonlyDisabledControlClassName } from "./editor-values";
+import type { ImageEditorMessages } from "./image-messages";
 import { TemplateImageFieldControls } from "./template-image-field-controls";
 
 type TemplateImageCardProps = {
   t: AppMessages;
+  messages: ImageEditorMessages;
   image: ResumeTemplateImageElement;
   index: number;
   isReadonly: boolean;
@@ -32,52 +46,58 @@ type TemplateImageCardProps = {
   onUpload: (file: File | undefined) => void;
 };
 
+function TemplateImageThumbnail({
+  image,
+}: {
+  image: ResumeTemplateImageElement;
+}) {
+  return (
+    <span
+      data-slot="template-image-thumbnail"
+      className="flex size-5 shrink-0 items-center justify-center overflow-hidden rounded border bg-background"
+      style={{
+        borderColor: image.borderColor,
+        borderWidth: image.borderWidth,
+        borderRadius: image.borderRadius,
+      }}
+    >
+      <img
+        src={image.src}
+        alt={image.alt || image.name}
+        className="size-full"
+        style={{ objectFit: image.objectFit }}
+        draggable={false}
+      />
+    </span>
+  );
+}
+
 function TemplateImageCardHeader({
   t,
+  messages,
   image,
   index,
   isReadonly,
+  isExpanded,
   nameDraft,
   onCancelNameEdit,
   onCommitName,
   onNameDraftChange,
   onRemove,
   onStartNameEdit,
-}: Omit<
-  TemplateImageCardProps,
-  "isExpanded" | "onExpandedChange" | "onUpdate" | "onUpload"
->) {
+  onUpload,
+}: Omit<TemplateImageCardProps, "onExpandedChange" | "onUpdate">) {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const renamingRef = useRef(false);
   const imageNameInputId = `template-image-${image.id}-name`;
 
   return (
     <div
       data-slot="template-image-card-header"
-      className="grid grid-cols-[40px_minmax(0,1fr)_auto] items-center gap-3 p-3"
+      className="-mx-0.5 flex min-w-0 items-center gap-2 py-1"
     >
-      <div
-        data-slot="template-image-thumbnail"
-        className="flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-md border bg-background text-muted-foreground"
-        style={{
-          borderColor: image.borderColor,
-          borderWidth: image.borderWidth,
-          borderRadius: image.borderRadius,
-        }}
-      >
-        {image.src ? (
-          <img
-            src={image.src}
-            alt={image.alt || image.name}
-            className="size-full"
-            style={{ objectFit: image.objectFit }}
-            draggable={false}
-          />
-        ) : (
-          <ImagePlus className="size-4 opacity-70" />
-        )}
-      </div>
-
       {nameDraft !== null ? (
-        <Field className="min-w-0 gap-1.5">
+        <Field orientation="horizontal" className="min-w-0 flex-1 gap-2">
           <FieldLabel htmlFor={imageNameInputId} className="sr-only">
             {t.imageName}
           </FieldLabel>
@@ -87,128 +107,136 @@ function TemplateImageCardHeader({
             onChange={(event) => onNameDraftChange(event.target.value)}
             onBlur={onCommitName}
             onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.currentTarget.blur();
-              }
-
+              if (event.key === "Enter") event.currentTarget.blur();
               if (event.key === "Escape") {
                 event.preventDefault();
                 onCancelNameEdit();
               }
             }}
             placeholder={`${t.imageName} ${index + 1}`}
+            className="template-control min-w-0"
             autoFocus
-            className="font-medium"
           />
         </Field>
       ) : (
-        <div className="flex min-w-0 items-center gap-1">
-          <p
-            className="min-w-0 truncate text-sm font-semibold"
-            title={image.name}
-          >
-            {image.name || `${t.imageName} ${index + 1}`}
-          </p>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            className="shrink-0 text-muted-foreground"
-            onClick={onStartNameEdit}
-            aria-label={t.editImageName}
-            disabled={isReadonly}
-          >
-            <PencilLine data-icon="icon-only" />
-          </Button>
-        </div>
-      )}
-
-      <div className="flex items-center gap-1">
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          className={cn(
-            "shrink-0 text-muted-foreground hover:text-destructive",
-            readonlyDisabledControlClassName,
-          )}
-          onClick={onRemove}
-          aria-label={t.removeImage}
-          disabled={isReadonly}
-        >
-          <Trash2 data-icon="icon-only" />
-        </Button>
         <CollapsibleTrigger asChild>
           <Button
             type="button"
             variant="ghost"
-            size="icon-sm"
-            className="group shrink-0 text-muted-foreground"
+            className="template-image-summary h-8 min-w-0 flex-1 justify-start gap-1.5 px-0 has-[>svg]:px-0"
+            aria-label={
+              isExpanded ? t.collapseImageSettings : t.expandImageSettings
+            }
           >
-            <ChevronDown
-              data-icon="icon-only"
-              aria-hidden="true"
-              className="transition-transform group-data-[state=open]:rotate-180"
-            />
-            <span className="sr-only group-data-[state=open]:hidden">
-              {t.expandImageSettings}
+            <span
+              className="truncate text-[13px] font-semibold"
+              title={image.name}
+            >
+              {image.name || `${t.imageName} ${index + 1}`}
             </span>
-            <span className="sr-only hidden group-data-[state=open]:inline">
-              {t.collapseImageSettings}
-            </span>
+            <ChevronDown data-icon="inline-end" aria-hidden="true" />
           </Button>
         </CollapsibleTrigger>
-      </div>
+      )}
+      <Input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        disabled={isReadonly}
+        aria-label={t.imageSourceLabel}
+        onChange={(event) => {
+          onUpload(event.target.files?.[0]);
+          event.target.value = "";
+        }}
+      />
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className="template-image-action shadow-none"
+        onClick={() => fileInputRef.current?.click()}
+        disabled={isReadonly}
+        aria-label={image.src ? t.replaceImage : t.uploadImage}
+        title={image.src ? t.replaceImage : t.uploadImage}
+      >
+        {image.src ? (
+          <TemplateImageThumbnail image={image} />
+        ) : (
+          <Upload data-icon="inline-start" aria-hidden="true" />
+        )}
+        {image.src ? messages.replace : messages.upload}
+      </Button>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            aria-label={t.moreActions}
+            disabled={isReadonly}
+          >
+            <MoreHorizontal data-icon="icon-only" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          align="end"
+          onCloseAutoFocus={(event) => {
+            if (renamingRef.current) {
+              event.preventDefault();
+              renamingRef.current = false;
+              onStartNameEdit();
+            }
+          }}
+        >
+          <DropdownMenuGroup>
+            <DropdownMenuItem
+              onSelect={() => {
+                renamingRef.current = true;
+              }}
+            >
+              <PencilLine />
+              {t.editImageName}
+            </DropdownMenuItem>
+            <DropdownMenuItem variant="destructive" onSelect={onRemove}>
+              <Trash2 />
+              {t.removeImage}
+            </DropdownMenuItem>
+          </DropdownMenuGroup>
+        </DropdownMenuContent>
+      </DropdownMenu>
     </div>
   );
 }
 
-export function TemplateImageCard({
-  t,
-  image,
-  index,
-  isReadonly,
-  isExpanded,
-  nameDraft,
-  onCancelNameEdit,
-  onCommitName,
-  onExpandedChange,
-  onNameDraftChange,
-  onRemove,
-  onStartNameEdit,
-  onUpdate,
-  onUpload,
-}: TemplateImageCardProps) {
-  const fileInputId = `template-image-${image.id}`;
-
+export function TemplateImageCard(props: TemplateImageCardProps) {
+  const {
+    t,
+    messages,
+    image,
+    index,
+    isReadonly,
+    isExpanded,
+    onExpandedChange,
+    onUpdate,
+  } = props;
   return (
     <Collapsible
       open={isExpanded}
       onOpenChange={onExpandedChange}
       role="group"
       aria-label={`${t.templateImageControls} ${index + 1}`}
-      className="@container/image-card overflow-hidden rounded-lg bg-muted/35 shadow-xs"
+      className="template-image-item min-w-0 px-0.5"
     >
-      <TemplateImageCardHeader
-        t={t}
-        image={image}
-        index={index}
-        isReadonly={isReadonly}
-        nameDraft={nameDraft}
-        onCancelNameEdit={onCancelNameEdit}
-        onCommitName={onCommitName}
-        onNameDraftChange={onNameDraftChange}
-        onRemove={onRemove}
-        onStartNameEdit={onStartNameEdit}
-      />
-      <CollapsibleContent className="collapsible-content">
+      <TemplateImageCardHeader {...props} />
+      <CollapsibleContent inert={!isExpanded} className="collapsible-content">
         <TemplateImageFieldControls
           t={t}
+          messages={messages}
           image={image}
-          fileInputId={fileInputId}
+          fileInputId={`template-image-${image.id}`}
           isReadonly={isReadonly}
           onUpdate={onUpdate}
-          onUpload={onUpload}
         />
       </CollapsibleContent>
     </Collapsible>

@@ -29,8 +29,6 @@ const [
   editor,
   metadataDialog,
   editorTabs,
-  editorFields,
-  layoutTab,
   imagesTab,
 ] = await Promise.all(
   [
@@ -46,8 +44,6 @@ const [
     "components/templates/template-editor.tsx",
     "components/templates/template-metadata-dialog.tsx",
     "components/templates/template-editor-tabs.tsx",
-    "components/templates/editor/editor-fields.tsx",
-    "components/templates/editor/layout-tab.tsx",
     "components/templates/editor/images-tab.tsx",
   ].map((path) => readFile(new URL(path, srcDir), "utf8")),
 );
@@ -103,11 +99,8 @@ assert(
 assert(
   editor.includes('data-slot="template-editor"') &&
     !editor.includes("@/components/ui/card") &&
-    !editor.includes("<Card") &&
-    detailView.includes(
-      "xl:grid-cols-[clamp(372px,calc(27vw+32px),432px)_minmax(0,1fr)]",
-    ),
-  "Template editing must use the same cardless inspector width as resume editing.",
+    !editor.includes("<Card"),
+  "Template editing must remain a cardless inspector.",
 );
 
 assert(
@@ -132,21 +125,16 @@ assert(
 );
 
 assert(
-  !/\blazy\b|\bimport\s*\(/.test(editorTabs) &&
-    ["layout-tab", "typography-tab", "visual-tab", "images-tab"].every(
-      (moduleName) => editorTabs.includes(moduleName),
+  ["layout-tab", "typography-tab"].every((moduleName) =>
+    hasImport(parseSource(editorTabs), `./editor/${moduleName}`),
+  ) &&
+    ["visual-tab", "images-tab"].every(
+      (moduleName) =>
+        hasImport(parseSource(editorTabs), `./editor/${moduleName}`, {
+          dynamic: true,
+        }) && !hasImport(parseSource(editorTabs), `./editor/${moduleName}`),
     ),
-  "Editor tabs must be statically composed inside the editor route chunk.",
-);
-
-assert(
-  !/<TemplateSelectRow[^>]*\bicon=/.test(layoutTab) &&
-    !/export function TemplateSelectRow\([\s\S]{0,500}<Icon/.test(
-      editorFields,
-    ) &&
-    editorFields.includes("icon: LucideIcon") &&
-    editorFields.includes('<Icon className="max-sm:hidden" />'),
-  "Template setting rows must stay text-led while tab icons remain visible.",
+  "Layout and typography must remain in the editor route while color and image controls load on demand.",
 );
 
 assert(
@@ -154,24 +142,6 @@ assert(
     imagesTab.includes('from "./use-template-images-editor"') &&
     !imagesTab.includes("readAvatarFileAsDataUrl"),
   "The images tab must compose the narrow card and editor-state modules directly.",
-);
-
-assert(
-  editor.includes('data-slot="template-editor-header"') &&
-    editor.includes('data-slot="template-editor-actions"') &&
-    editor.includes('data-slot="template-description"') &&
-    editor.includes("mt-1 min-h-6 max-w-[460px]") &&
-    !editor.includes("<TemplateEditorPanel") &&
-    !editor.includes("t.templateInfoPanel"),
-  "Template headers must keep their compact description surface without a redundant inspector panel.",
-);
-
-assert(
-  editor.includes('className="invisible col-start-1 row-start-1"') &&
-    editor.includes("transition-colors") &&
-    editor.includes("disabled:opacity-100") &&
-    !editor.includes("min-w-36"),
-  "The default template action must reserve translated label widths without forcing a wide action row.",
 );
 
 assert(
@@ -183,17 +153,6 @@ assert(
     detailView.includes("<DocumentCanvas") &&
     !detailView.includes("resume-builder"),
   "Template detail must compose the dedicated editor and document canvas.",
-);
-
-assert(
-  editorTabs.includes('className="relative max-w-full"') &&
-    editorTabs.includes("flex-[0_1_auto]") &&
-    editorTabs.includes('aria-hidden="true"') &&
-    !editorTabs.includes("grid-cols-[") &&
-    editorTabs.includes("motion-reduce:transition-none") &&
-    editorTabs.includes("dark:border-input dark:bg-input/30") &&
-    !editorTabs.includes('variant="line"'),
-  "Editor tabs must use a content-sized shadcn control and a decorative indicator with reduced-motion styles.",
 );
 
 try {

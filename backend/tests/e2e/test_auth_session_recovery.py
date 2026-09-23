@@ -20,7 +20,7 @@ pytestmark = [
 
 def _open_custom_template(page: Page, frontend_url: str) -> str:
     page.goto(f"{frontend_url}/template/minimal", wait_until="networkidle")
-    page.get_by_role("button", name="创建可编辑副本", exact=True).click()
+    page.get_by_role("button", name="创建副本", exact=True).click()
     page.wait_for_url(f"{frontend_url}/template/template-*")
     return page.url.rsplit("/", maxsplit=1)[-1]
 

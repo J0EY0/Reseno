@@ -1,3 +1,4 @@
+import type { TemplateImageGeometry } from "@/lib/template-image-geometry";
 import type { ForwardedRef, RefObject } from "react";
 
 import {
@@ -11,7 +12,6 @@ import {
 } from "@/components/preview/resume-preview-model";
 import type { ResumePaginationState } from "@/components/preview/resume-preview-pagination";
 import { cn } from "@/lib/utils";
-import type { ResumeTemplateImageElement } from "@/types/resume";
 
 interface PaginatedResumePagesProps {
   editableTemplateImages: boolean;
@@ -19,9 +19,9 @@ interface PaginatedResumePagesProps {
   isPaginationReady: boolean;
   measureRef: RefObject<HTMLDivElement | null>;
   model: ResumePreviewModel;
-  onMoveTemplateImage?: (
+  onChangeTemplateImage?: (
     imageId: string,
-    patch: Pick<ResumeTemplateImageElement, "x" | "y">,
+    patch: TemplateImageGeometry,
   ) => void;
   pagination: ResumePaginationState;
   showEmptyTemplateImagePlaceholders: boolean;
@@ -33,7 +33,7 @@ function StandardPaginatedResume({
   isPaginationReady,
   measureRef,
   model,
-  onMoveTemplateImage,
+  onChangeTemplateImage,
   pagination,
   showEmptyTemplateImagePlaceholders,
 }: PaginatedResumePagesProps) {
@@ -71,7 +71,7 @@ function StandardPaginatedResume({
               images={model.layout.images}
               editable={editableTemplateImages}
               showEmptyPlaceholders={showEmptyTemplateImagePlaceholders}
-              onMoveImage={onMoveTemplateImage}
+              onChangeImage={onChangeTemplateImage}
             />
             <div
               className="resume-page-content-viewport"
@@ -107,7 +107,7 @@ function SidebarPaginatedResume({
   isPaginationReady,
   measureRef,
   model,
-  onMoveTemplateImage,
+  onChangeTemplateImage,
   pagination,
   showEmptyTemplateImagePlaceholders,
 }: PaginatedResumePagesProps) {
@@ -159,7 +159,7 @@ function SidebarPaginatedResume({
                   showEmptyTemplateImagePlaceholders={
                     showEmptyTemplateImagePlaceholders
                   }
-                  onMoveTemplateImage={onMoveTemplateImage}
+                  onChangeTemplateImage={onChangeTemplateImage}
                   enableContactLinks
                 />
               </div>

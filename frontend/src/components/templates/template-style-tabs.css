@@ -1,0 +1,102 @@
+.template-style-tabs-list {
+  position: relative;
+  display: flex;
+  width: 100%;
+  height: 2.375rem;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 8px;
+  background: var(--muted);
+}
+
+.template-style-tabs-list[data-size="sm"] {
+  height: 2rem;
+  padding: 2px;
+  border-radius: 6px;
+}
+
+.template-style-tabs-list[data-size="sm"] .template-style-tabs-indicator {
+  border-radius: 4px;
+  box-shadow: none;
+}
+
+.template-style-tabs-indicator {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: var(--active-tab-width);
+  height: var(--active-tab-height);
+  transform: translate(var(--active-tab-left), var(--active-tab-top));
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: var(--background);
+  box-shadow: var(--shadow-sm);
+  pointer-events: none;
+  transition:
+    transform 200ms var(--ease-move),
+    width 200ms var(--ease-move);
+}
+
+.dark .template-style-tabs-indicator {
+  border-color: var(--input);
+  background: color-mix(in oklab, var(--input) 30%, var(--muted));
+}
+
+.template-style-tabs-trigger {
+  position: relative;
+  display: inline-flex;
+  height: 100%;
+  flex: 1 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  padding: 0.25rem 0.375rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: color 150ms ease;
+}
+
+.template-style-tabs-trigger[data-active],
+.template-style-tabs-trigger:hover:not([data-disabled]) {
+  color: var(--foreground);
+}
+
+.template-style-tabs-trigger:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
+.template-style-tabs-trigger[data-disabled] {
+  cursor: not-allowed;
+}
+
+.template-style-tabs-trigger svg {
+  width: 1rem;
+  height: 1rem;
+  flex-shrink: 0;
+  pointer-events: none;
+}
+
+.template-style-tabs-content[hidden] {
+  display: none;
+}
+
+.template-style-tabs-content[data-animate]:not(
+    [data-activation-direction="none"]
+  ):not([hidden]) {
+  animation: template-style-panel-enter 160ms ease-out;
+}
+
+@keyframes template-style-panel-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}

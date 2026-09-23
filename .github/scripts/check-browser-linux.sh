@@ -13,5 +13,16 @@ DOCKER_BUILDKIT=1 docker build \
 
 mkdir -p "$repo_root/backend/test-results"
 docker run --rm --init --ipc=host \
+  --env "ARTIFACTS_OWNER=$(id -u):$(id -g)" \
   --mount "type=bind,source=$repo_root/backend/test-results,target=/workspace/backend/test-results" \
-  "$(cat "$image_file")"
+  "$(cat "$image_file")" bash -eu -c '
+    finalize_artifacts() {
+      status=$?
+      chown -R --no-dereference "$ARTIFACTS_OWNER" /workspace/backend/test-results || {
+        if [ "$status" -eq 0 ]; then status=1; fi
+      }
+      exit "$status"
+    }
+    trap finalize_artifacts EXIT
+    pnpm test:browser:ci
+  '

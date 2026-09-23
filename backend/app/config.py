@@ -96,7 +96,7 @@ def get_settings() -> Settings:
 
     return Settings(
         app_name="Reseno Backend",
-        app_version="0.2.0",
+        app_version="0.4.0",
         data_dir=data_dir,
         db_path=db_path,
         storage_dir=storage_dir,

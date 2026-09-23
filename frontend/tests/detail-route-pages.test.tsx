@@ -40,7 +40,7 @@ beforeEach(() => {
     model: { commands: { saveAndReload: vi.fn() } },
     previewRef: { current: null },
   });
-  hooks.template.mockReturnValue({});
+  hooks.template.mockReturnValue({ saveAndReload: vi.fn() });
 });
 afterEach(() => vi.unstubAllGlobals());
 

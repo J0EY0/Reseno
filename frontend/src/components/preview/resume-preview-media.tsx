@@ -1,5 +1,7 @@
 import { ImageIcon } from "lucide-react";
-import { useRef, type PointerEvent } from "react";
+import { lazy, Suspense } from "react";
+
+import type { TemplateImageGeometry } from "@/lib/template-image-geometry";
 
 import type { AppMessages } from "@/i18n";
 import { getInitials } from "@/lib/resume";
@@ -10,18 +12,6 @@ import type {
   ResumeTemplateImageElement,
   ResumeTemplateLayout,
 } from "@/types/resume";
-
-function getAvatarBorderRadius(layout: ResumeTemplateLayout) {
-  if (layout.avatarShape === "circle") {
-    return "9999px";
-  }
-
-  if (layout.avatarShape === "square") {
-    return "4px";
-  }
-
-  return "14px";
-}
 
 function getAvatarPlaceholderLabel(src: string, fallbackLabel: string) {
   if (!src.startsWith("data:image/svg+xml")) {
@@ -93,7 +83,7 @@ export function AvatarPreview({
           layout.avatarOffsetX || layout.avatarOffsetY
             ? `translate(${layout.avatarOffsetX}mm, ${layout.avatarOffsetY}mm)`
             : undefined,
-        borderRadius: getAvatarBorderRadius(layout),
+        borderRadius: 0,
         border:
           !isPlaceholder && layout.avatarBorderWidth > 0
             ? `${layout.avatarBorderWidth}px solid ${layout.avatarBorderColor}`
@@ -103,7 +93,7 @@ export function AvatarPreview({
       {isPlaceholder ? (
         <div
           data-avatar-placeholder="true"
-          className="flex size-full items-center justify-center rounded-[inherit] bg-transparent text-center font-medium tracking-[0.08em]"
+          className="flex size-full items-center justify-center bg-transparent text-center font-medium tracking-[0.08em]"
           style={{
             border: `${Math.max(1, layout.avatarBorderWidth || 1)}px solid ${placeholderBorderColor}`,
             color: placeholderTextColor,
@@ -131,121 +121,79 @@ export function AvatarPreview({
   );
 }
 
-function clampNumber(value: number, min: number, max: number) {
-  return Math.min(Math.max(value, min), max);
+function TemplateImageContent({
+  image,
+}: {
+  image: ResumeTemplateImageElement;
+}) {
+  return (
+    <div
+      className="flex size-full items-center justify-center overflow-hidden text-center text-[9px] font-medium text-neutral-400"
+      style={{
+        opacity: image.opacity,
+        borderWidth: image.borderWidth,
+        borderColor: image.borderColor,
+        borderStyle: image.borderWidth > 0 ? "solid" : "none",
+        borderRadius: image.borderRadius,
+        backgroundColor: image.src ? undefined : "rgb(255 255 255 / 0.1)",
+      }}
+    >
+      {image.src ? (
+        <img
+          src={image.src}
+          alt={image.alt || image.name}
+          className="size-full"
+          style={{ objectFit: image.objectFit }}
+          crossOrigin="anonymous"
+          draggable={false}
+        />
+      ) : (
+        <div className="flex size-full flex-col items-center justify-center gap-1 px-1">
+          <ImageIcon className="size-3 opacity-60" strokeWidth={1.75} />
+          <span className="max-w-full truncate leading-none text-neutral-500/80">
+            {image.name}
+          </span>
+        </div>
+      )}
+    </div>
+  );
 }
 
-function roundToHalf(value: number) {
-  return Math.round(value * 2) / 2;
+function TemplateImageFrame({ image }: { image: ResumeTemplateImageElement }) {
+  return (
+    <div
+      data-template-image-frame="true"
+      className="absolute"
+      style={{
+        left: `${image.x}mm`,
+        top: `${image.y}mm`,
+        width: `${image.width}mm`,
+        height: `${image.height}mm`,
+      }}
+    >
+      <TemplateImageContent image={image} />
+    </div>
+  );
 }
+
+const TemplateImageEditor = lazy(() => import("./template-image-editor"));
 
 export function TemplateImages({
   editable = false,
   images,
-  onMoveImage,
+  onChangeImage,
   showEmptyPlaceholders = false,
 }: {
   editable?: boolean;
   images: ResumeTemplateImageElement[];
-  onMoveImage?: (
-    imageId: string,
-    patch: Pick<ResumeTemplateImageElement, "x" | "y">,
-  ) => void;
+  onChangeImage?: (imageId: string, geometry: TemplateImageGeometry) => void;
   showEmptyPlaceholders?: boolean;
 }) {
-  const dragStateRef = useRef<{
-    imageId: string;
-    pointerId: number;
-    startClientX: number;
-    startClientY: number;
-    startX: number;
-    startY: number;
-    width: number;
-    height: number;
-    pxPerMm: number;
-  } | null>(null);
   const visibleImages = images.filter(
     (image) =>
       image.visible && (showEmptyPlaceholders || image.src.trim().length > 0),
   );
-
-  if (visibleImages.length === 0) {
-    return null;
-  }
-
-  function handlePointerDown(
-    event: PointerEvent<HTMLDivElement>,
-    frame: ResumeTemplateImageElement,
-  ) {
-    if (!editable || !onMoveImage || event.button !== 0) {
-      return;
-    }
-
-    const pageElement = event.currentTarget.closest(
-      '[data-export-root="resume-page"]',
-    ) as HTMLElement | null;
-    const pageRect = pageElement?.getBoundingClientRect();
-    const pxPerMm =
-      pageRect && pageRect.width > 0
-        ? pageRect.width / 210
-        : event.currentTarget.getBoundingClientRect().width / frame.width;
-
-    event.preventDefault();
-    event.stopPropagation();
-    event.currentTarget.setPointerCapture(event.pointerId);
-
-    dragStateRef.current = {
-      imageId: frame.id,
-      pointerId: event.pointerId,
-      startClientX: event.clientX,
-      startClientY: event.clientY,
-      startX: frame.x,
-      startY: frame.y,
-      width: frame.width,
-      height: frame.height,
-      pxPerMm,
-    };
-  }
-
-  function handlePointerMove(event: PointerEvent<HTMLDivElement>) {
-    const dragState = dragStateRef.current;
-
-    if (!dragState || !onMoveImage || dragState.pointerId !== event.pointerId) {
-      return;
-    }
-
-    event.preventDefault();
-
-    const nextX = clampNumber(
-      roundToHalf(
-        dragState.startX +
-          (event.clientX - dragState.startClientX) / dragState.pxPerMm,
-      ),
-      0,
-      Math.max(0, 210 - dragState.width),
-    );
-    const nextY = clampNumber(
-      roundToHalf(
-        dragState.startY +
-          (event.clientY - dragState.startClientY) / dragState.pxPerMm,
-      ),
-      0,
-      Math.max(0, 297 - dragState.height),
-    );
-
-    onMoveImage(dragState.imageId, { x: nextX, y: nextY });
-  }
-
-  function handlePointerUp(event: PointerEvent<HTMLDivElement>) {
-    const dragState = dragStateRef.current;
-
-    if (!dragState || dragState.pointerId !== event.pointerId) {
-      return;
-    }
-
-    event.currentTarget.releasePointerCapture(event.pointerId);
-    dragStateRef.current = null;
-  }
+  if (visibleImages.length === 0) return null;
 
   return (
     <div
@@ -254,51 +202,18 @@ export function TemplateImages({
         editable ? "z-20" : "z-0",
       )}
     >
-      {visibleImages.map((frame) => (
-        <div
-          key={frame.id}
-          data-template-image-frame="true"
-          className={cn(
-            "absolute flex min-h-6 min-w-6 items-center justify-center overflow-hidden text-center text-[9px] font-medium text-neutral-400",
-            !frame.src && "bg-white/10",
-            editable &&
-              "pointer-events-auto cursor-grab touch-none transition-[box-shadow,outline-color] active:cursor-grabbing hover:shadow-sm",
-          )}
-          style={{
-            left: `${frame.x}mm`,
-            top: `${frame.y}mm`,
-            width: `${frame.width}mm`,
-            height: `${frame.height}mm`,
-            opacity: frame.opacity,
-            borderWidth: `${frame.borderWidth}px`,
-            borderColor: frame.borderColor,
-            borderStyle: frame.borderWidth > 0 ? "solid" : "none",
-            borderRadius: `${frame.borderRadius}px`,
-          }}
-          onPointerDown={(event) => handlePointerDown(event, frame)}
-          onPointerMove={handlePointerMove}
-          onPointerUp={handlePointerUp}
-          onPointerCancel={handlePointerUp}
-        >
-          {frame.src ? (
-            <img
-              src={frame.src}
-              alt={frame.alt || frame.name}
-              className="size-full"
-              style={{ objectFit: frame.objectFit }}
-              crossOrigin="anonymous"
-              draggable={false}
-            />
-          ) : (
-            <div className="flex size-full flex-col items-center justify-center gap-1 rounded-[inherit] bg-transparent px-1">
-              <ImageIcon className="size-3 opacity-60" strokeWidth={1.75} />
-              <span className="max-w-full truncate leading-none text-neutral-500/80">
-                {frame.name}
-              </span>
-            </div>
-          )}
-        </div>
-      ))}
+      {visibleImages.map((image) => {
+        const frame = <TemplateImageFrame key={image.id} image={image} />;
+        return editable && onChangeImage ? (
+          <Suspense key={image.id} fallback={frame}>
+            <TemplateImageEditor image={image} onChange={onChangeImage}>
+              <TemplateImageContent image={image} />
+            </TemplateImageEditor>
+          </Suspense>
+        ) : (
+          frame
+        );
+      })}
     </div>
   );
 }

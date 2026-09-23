@@ -10,8 +10,6 @@ import {
 import { Slider } from "@/components/ui/slider";
 import { cn } from "@/lib/utils";
 
-import { readonlyDisabledControlClassName } from "./editor-values";
-
 function clampTemplateImageValue(
   value: number,
   min: number,
@@ -20,7 +18,6 @@ function clampTemplateImageValue(
 ) {
   const clamped = Math.min(Math.max(value, min), max);
   const stepped = min + Math.round((clamped - min) / step) * step;
-
   return Number(Math.min(Math.max(stepped, min), max).toFixed(4));
 }
 
@@ -28,31 +25,32 @@ function formatTemplateImageValue(value: number) {
   return String(Number(value.toFixed(4)));
 }
 
-export function TemplateImageNumberField({
-  id,
-  label,
-  orientation = "vertical",
-  min,
-  max,
-  step,
-  value,
-  unit,
-  onChange,
-  disabled = false,
-}: {
+type ImageNumberInputProps = {
   id: string;
   label: string;
-  orientation?: "vertical" | "horizontal";
   min: number;
   max: number;
   step: number;
   value: number;
   unit: string;
+  prefix?: string;
   onChange: (value: number) => void;
   disabled?: boolean;
-}) {
+};
+
+function ImageNumberInput({
+  id,
+  label,
+  min,
+  max,
+  step,
+  value,
+  unit,
+  prefix,
+  onChange,
+  disabled,
+}: ImageNumberInputProps) {
   const [draft, setDraft] = useState<string | null>(null);
-  const unitId = `${id}-unit`;
   const inputValue = draft ?? formatTemplateImageValue(value);
   const parsedDraft = Number(inputValue);
   const isDraftValid =
@@ -60,208 +58,118 @@ export function TemplateImageNumberField({
     Number.isFinite(parsedDraft) &&
     parsedDraft >= min &&
     parsedDraft <= max;
-
-  function updateDraft(nextDraft: string) {
-    setDraft(nextDraft);
-    const parsed = Number(nextDraft);
-
-    // Keep the preview and autosave state current while preserving the
-    // user's temporary input string until the field is committed.
-    if (nextDraft.trim() !== "" && Number.isFinite(parsed)) {
-      onChange(clampTemplateImageValue(parsed, min, max, step));
-    }
-  }
+  const unitId = `${id}-unit`;
 
   function commitDraft() {
-    const currentDraft = draft ?? formatTemplateImageValue(value);
-    const parsed = Number(currentDraft);
     const nextValue =
-      currentDraft.trim() !== "" && Number.isFinite(parsed)
-        ? clampTemplateImageValue(parsed, min, max, step)
+      inputValue.trim() !== "" && Number.isFinite(parsedDraft)
+        ? clampTemplateImageValue(parsedDraft, min, max, step)
         : value;
-
-    onChange(nextValue);
+    if (nextValue !== value) onChange(nextValue);
     setDraft(null);
   }
 
   return (
-    <Field
-      orientation={orientation}
-      className={cn("gap-1.5", orientation === "horizontal" && "min-w-0 gap-2")}
+    <InputGroup
+      className="template-control"
+      data-template-image-slider-value={prefix ? undefined : "true"}
       data-disabled={disabled || undefined}
     >
-      <FieldLabel
-        htmlFor={id}
-        className={cn(
-          "text-xs",
-          orientation === "horizontal"
-            ? "min-w-0 leading-tight"
-            : "whitespace-nowrap",
-        )}
-      >
-        {label}
-      </FieldLabel>
-      <InputGroup
-        className={orientation === "horizontal" ? "w-28 shrink-0" : undefined}
-        data-disabled={disabled || undefined}
-      >
-        <InputGroupInput
-          id={id}
-          type="number"
-          inputMode="decimal"
-          min={min}
-          max={max}
-          step={step}
-          value={inputValue}
-          onFocus={() => setDraft(formatTemplateImageValue(value))}
-          onChange={(event) => updateDraft(event.target.value)}
-          onBlur={commitDraft}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.currentTarget.blur();
-            }
-
-            if (event.key === "Escape") {
-              event.preventDefault();
-              setDraft(null);
-            }
-          }}
-          aria-describedby={unitId}
-          aria-invalid={!isDraftValid || undefined}
-          disabled={disabled}
-          className="text-right tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:m-0 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:m-0 [&::-webkit-outer-spin-button]:appearance-none"
-        />
-        <InputGroupAddon align="inline-end">
-          <InputGroupText id={unitId} translate="no">
-            {unit}
-          </InputGroupText>
+      {prefix ? (
+        <InputGroupAddon className="pl-2">
+          <FieldLabel htmlFor={id} className="text-xs font-normal">
+            <span className="sr-only">{label}</span>
+            <span aria-hidden="true">{prefix}</span>
+          </FieldLabel>
         </InputGroupAddon>
-      </InputGroup>
+      ) : null}
+      <InputGroupInput
+        id={id}
+        aria-label={label}
+        type="number"
+        inputMode="decimal"
+        min={min}
+        max={max}
+        step={step}
+        value={inputValue}
+        onFocus={() => setDraft(formatTemplateImageValue(value))}
+        onChange={(event) => {
+          const nextDraft = event.target.value;
+          setDraft(nextDraft);
+          const parsed = Number(nextDraft);
+          if (nextDraft.trim() !== "" && Number.isFinite(parsed)) {
+            const nextValue = clampTemplateImageValue(parsed, min, max, step);
+            if (nextValue !== value) onChange(nextValue);
+          }
+        }}
+        onBlur={commitDraft}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") event.currentTarget.blur();
+          if (event.key === "Escape") {
+            event.preventDefault();
+            setDraft(null);
+          }
+        }}
+        aria-describedby={unitId}
+        aria-invalid={!isDraftValid || undefined}
+        disabled={disabled}
+        className="min-w-0 text-right tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:m-0 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:m-0 [&::-webkit-outer-spin-button]:appearance-none"
+      />
+      <InputGroupAddon align="inline-end" className="pl-0 pr-2">
+        <InputGroupText id={unitId} translate="no" className="text-xs">
+          {unit}
+        </InputGroupText>
+      </InputGroupAddon>
+    </InputGroup>
+  );
+}
+
+export function TemplateImageNumberField(props: ImageNumberInputProps) {
+  return (
+    <Field className="min-w-0" data-disabled={props.disabled || undefined}>
+      <ImageNumberInput {...props} prefix={props.prefix ?? props.label} />
     </Field>
   );
 }
 
 export function TemplateImageSliderField({
-  id,
-  label,
-  min,
-  max,
-  step,
-  value,
-  onChange,
-  disabled = false,
-}: {
-  id: string;
-  label: string;
-  min: number;
-  max: number;
-  step: number;
-  value: number;
-  onChange: (value: number) => void;
-  disabled?: boolean;
-}) {
-  const [draft, setDraft] = useState<string | null>(null);
-  const unitId = `${id}-unit`;
-  const minPercent = min * 100;
-  const maxPercent = max * 100;
-  const stepPercent = step * 100;
-  const percentValue = Math.round(value * 100);
-  const inputValue = draft ?? String(percentValue);
-  const parsedDraft = Number(inputValue);
-  const isDraftValid =
-    inputValue.trim() !== "" &&
-    Number.isFinite(parsedDraft) &&
-    parsedDraft >= minPercent &&
-    parsedDraft <= maxPercent;
-  const displayValue = `${percentValue}%`;
-
-  function updateDraft(nextDraft: string) {
-    setDraft(nextDraft);
-    const parsed = Number(nextDraft);
-
-    if (nextDraft.trim() !== "" && Number.isFinite(parsed)) {
-      onChange(
-        clampTemplateImageValue(parsed, minPercent, maxPercent, stepPercent) /
-          100,
-      );
-    }
-  }
-
-  function commitDraft() {
-    const currentDraft = draft ?? String(percentValue);
-    const parsed = Number(currentDraft);
-    const nextPercent =
-      currentDraft.trim() !== "" && Number.isFinite(parsed)
-        ? clampTemplateImageValue(parsed, minPercent, maxPercent, stepPercent)
-        : percentValue;
-
-    onChange(nextPercent / 100);
-    setDraft(null);
-  }
-
+  valueScale = 1,
+  displayLabel,
+  ...props
+}: ImageNumberInputProps & { valueScale?: number; displayLabel?: string }) {
+  const { id, label, min, max, step, value, unit, onChange, disabled } = props;
+  const displayValue = formatTemplateImageValue(value * valueScale);
   return (
     <Field
       orientation="horizontal"
       data-slot="template-image-slider-field"
-      className="grid grid-cols-[5.5rem_minmax(0,1fr)_7rem] items-center gap-3"
+      className="template-image-slider-row"
       data-disabled={disabled || undefined}
     >
-      <FieldLabel htmlFor={id} className="w-auto text-xs">
-        {label}
+      <FieldLabel htmlFor={id} className="template-control-label">
+        {displayLabel ?? label}
       </FieldLabel>
       <Slider
         min={min}
         max={max}
         step={step}
         value={[value]}
-        onValueChange={(next) => {
-          setDraft(null);
-          onChange(next[0] ?? value);
-        }}
+        onValueChange={(next) => onChange(next[0] ?? value)}
         disabled={disabled}
         thumbProps={{
           "aria-label": label,
-          "aria-valuetext": displayValue,
+          "aria-valuetext": `${displayValue}${unit}`,
         }}
         className={cn("min-w-0", disabled && "cursor-not-allowed")}
       />
-      <InputGroup
-        data-template-image-slider-value="true"
-        className="w-28 shrink-0"
-        data-disabled={disabled || undefined}
-      >
-        <InputGroupInput
-          id={id}
-          type="number"
-          inputMode="decimal"
-          min={minPercent}
-          max={maxPercent}
-          step={stepPercent}
-          value={inputValue}
-          onFocus={() => setDraft(String(percentValue))}
-          onChange={(event) => updateDraft(event.target.value)}
-          onBlur={commitDraft}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.currentTarget.blur();
-            }
-
-            if (event.key === "Escape") {
-              event.preventDefault();
-              setDraft(null);
-            }
-          }}
-          aria-describedby={unitId}
-          aria-invalid={!isDraftValid || undefined}
-          disabled={disabled}
-          className="text-right tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:m-0 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:m-0 [&::-webkit-outer-spin-button]:appearance-none"
-        />
-        <InputGroupAddon align="inline-end">
-          <InputGroupText id={unitId} translate="no">
-            %
-          </InputGroupText>
-        </InputGroupAddon>
-      </InputGroup>
+      <ImageNumberInput
+        {...props}
+        min={min * valueScale}
+        max={max * valueScale}
+        step={step * valueScale}
+        value={value * valueScale}
+        onChange={(next) => onChange(next / valueScale)}
+      />
     </Field>
   );
 }
@@ -279,35 +187,55 @@ export function TemplateImageColorField({
   onChange: (value: string) => void;
   disabled?: boolean;
 }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const inputValue = draft ?? value.toUpperCase();
+  const isValid = /^#[\da-f]{6}$/i.test(inputValue);
+
   return (
-    <Field
-      orientation="horizontal"
-      className="min-w-0 gap-2"
-      data-disabled={disabled || undefined}
-    >
-      <FieldLabel htmlFor={id} className="min-w-0 text-xs leading-tight">
+    <Field className="min-w-0" data-disabled={disabled || undefined}>
+      <FieldLabel htmlFor={id} className="sr-only">
         {label}
       </FieldLabel>
       <InputGroup
-        className="w-28 shrink-0"
+        className="template-control"
         data-disabled={disabled || undefined}
       >
+        <InputGroupAddon className="pl-2 pr-0">
+          <InputGroupInput
+            type="color"
+            value={value}
+            aria-label={`${label} ${value.toUpperCase()}`}
+            onChange={(event) => {
+              setDraft(null);
+              onChange(event.target.value);
+            }}
+            disabled={disabled}
+            className="size-5 flex-none cursor-pointer overflow-hidden rounded-sm p-0 [&::-webkit-color-swatch-wrapper]:p-0 [&::-webkit-color-swatch]:border-0"
+          />
+        </InputGroupAddon>
         <InputGroupInput
           id={id}
-          type="color"
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
+          value={inputValue}
+          spellCheck={false}
+          autoComplete="off"
+          maxLength={7}
+          onChange={(event) => {
+            const next = event.target.value;
+            setDraft(next);
+            if (/^#[\da-f]{6}$/i.test(next)) onChange(next.toLowerCase());
+          }}
+          onBlur={() => setDraft(null)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") event.currentTarget.blur();
+            if (event.key === "Escape") {
+              event.preventDefault();
+              setDraft(null);
+            }
+          }}
+          aria-invalid={!isValid || undefined}
           disabled={disabled}
-          className={cn(
-            "m-1 size-7 flex-none cursor-pointer rounded-sm p-0",
-            disabled && readonlyDisabledControlClassName,
-          )}
+          className="min-w-0 px-2 font-mono uppercase"
         />
-        <InputGroupAddon align="inline-end" className="min-w-0 pl-1 pr-2">
-          <InputGroupText className="truncate font-mono text-[10px] uppercase tracking-[0.04em]">
-            {value}
-          </InputGroupText>
-        </InputGroupAddon>
       </InputGroup>
     </Field>
   );
