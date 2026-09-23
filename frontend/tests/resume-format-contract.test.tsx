@@ -1,6 +1,8 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { ResumeFormatPopover } from "@/components/editor/resume-format-popover";
+import { getTemplateEditorMessages } from "@/components/templates/editor/editor-messages";
+import { TemplateStyleTabs } from "@/components/templates/template-style-tabs";
 import { TemplateTypographyTab } from "@/components/templates/editor/typography-tab";
 import { AgentSettingsTab } from "@/components/agent-settings-tab";
 import { Tabs } from "@/components/ui/tabs";
@@ -91,17 +93,17 @@ it.each(["en", "zh"] as const)(
 it.each(["en", "zh"] as const)(
   "preserves canonical font values in the template typography selector: %s",
   (locale) => {
-    const t = getMessagesSync(locale);
+    const t = getTemplateEditorMessages(locale, getMessagesSync(locale));
     const template = createResumeDetailTemplate("custom");
     const update = vi.fn();
     render(
-      <Tabs defaultValue="typography">
+      <TemplateStyleTabs defaultValue="typography">
         <TemplateTypographyTab
           t={t}
           template={template}
           onUpdateTemplate={update}
         />
-      </Tabs>,
+      </TemplateStyleTabs>,
     );
     fireEvent.keyDown(screen.getByRole("combobox", { name: t.fontFamily }), {
       key: "ArrowDown",

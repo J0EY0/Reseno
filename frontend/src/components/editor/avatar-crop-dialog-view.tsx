@@ -65,11 +65,11 @@ export function AvatarCropDialogView({
               <div className="flex items-center justify-center rounded-xl border border-border bg-muted/35 p-5">
                 {controller.previewStyle ? (
                   <div
-                    className="overflow-hidden rounded-lg border border-border bg-background"
+                    className="overflow-hidden border border-border bg-background"
                     style={controller.previewStyle}
                   />
                 ) : (
-                  <div className="flex h-[135px] w-[108px] items-center justify-center rounded-lg border border-dashed border-border bg-background px-3 text-center text-xs text-muted-foreground">
+                  <div className="flex h-[135px] w-[108px] items-center justify-center border border-dashed border-border bg-background px-3 text-center text-xs text-muted-foreground">
                     {t.cropPreview}
                   </div>
                 )}

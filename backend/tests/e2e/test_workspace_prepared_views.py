@@ -432,7 +432,7 @@ def test_template_preparation_finishes_before_detail_becomes_editable(
         page.goto(f"{frontend_url}/template/minimal", wait_until="networkidle")
         page.get_by_role(
             "button",
-            name="创建可编辑副本",
+            name="创建副本",
             exact=True,
         ).click()
         page.wait_for_url(f"{frontend_url}/template/template-*")

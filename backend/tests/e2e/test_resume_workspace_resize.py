@@ -364,12 +364,18 @@ def test_cold_section_menu_receives_keyboard_focus_and_returns_it_on_escape(
     resize_workspace: tuple[Page, dict[str, Any]],
 ) -> None:
     page, messages = resize_workspace
-    deferred_menu = DeferredRoute(page, "**/add-section-menu.tsx*")
+    asset = "src/components/editor/add-section-menu.tsx"
+    if os.getenv("E2E_FRONTEND_MODE") == "preview":
+        frontend = Path(__file__).resolve().parents[3] / "frontend"
+        dist = Path(os.getenv("E2E_FRONTEND_DIST_DIR", str(frontend / "dist")))
+        manifest = json.loads((dist / ".vite/manifest.json").read_text())
+        asset = manifest[asset]["file"]
+    deferred_menu = DeferredRoute(page, f"**/{asset}*")
     trigger = page.get_by_role("button", name=messages["addSection"], exact=True)
     popover = page.locator('[data-slot="popover-content"]')
     try:
         trigger.focus()
-        trigger.press("Enter")
+        page.keyboard.press("Enter")
         deferred_menu.wait()
         expect(popover.locator('[aria-busy="true"]')).to_be_visible()
         assert deferred_menu.pending, (
@@ -377,23 +383,31 @@ def test_cold_section_menu_receives_keyboard_focus_and_returns_it_on_escape(
         )
         deferred_menu.release()
         menu = popover.locator('[data-slot="command"]')
-        expect(menu).to_be_focused()
-        menu.press("Escape")
+        page.wait_for_function(
+            "element => element.contains(document.activeElement)",
+            arg=menu.element_handle(),
+            timeout=5_000,
+        )
+        page.keyboard.press("Escape")
         expect(popover).to_have_count(0)
         expect(trigger).to_be_focused()
 
-        trigger.press("Enter")
-        expect(menu).to_be_focused()
+        page.keyboard.press("Enter")
+        page.wait_for_function(
+            "element => element.contains(document.activeElement)",
+            arg=menu.element_handle(),
+            timeout=5_000,
+        )
         options = menu.get_by_role("option")
         expect(options.first).to_have_attribute("aria-selected", "true")
-        menu.press("ArrowDown")
+        page.keyboard.press("ArrowDown")
         expect(options.nth(1)).to_have_attribute("aria-selected", "true")
         title = options.nth(1).locator("span.font-medium").inner_text()
         section = page.get_by_role(
             "button", name=f"{title}: {messages['toggleSection']}", exact=True
         )
         before = section.count()
-        menu.press("Enter")
+        page.keyboard.press("Enter")
         expect(popover).to_have_count(0)
         expect(section).to_have_count(before + 1)
         expect(section.last).to_have_attribute("aria-expanded", "true")

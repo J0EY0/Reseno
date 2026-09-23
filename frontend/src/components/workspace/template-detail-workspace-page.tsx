@@ -1,6 +1,7 @@
 import { useLayoutEffect, useState } from "react";
 import { useLocation, useNavigationType, useParams } from "react-router-dom";
 
+import { ResourceRecoveryContext } from "@/components/resource-recovery-context";
 import { TemplateDetailWorkspaceView } from "@/components/workspace/template-detail-workspace-view";
 import { useTemplateDetailWorkspace } from "@/components/workspace/use-template-detail-workspace";
 import { useWorkspacePreferences } from "@/components/workspace/workspace-preferences-context";
@@ -56,12 +57,16 @@ function TemplateDetailRouteOwner({
   });
 
   return (
-    <TemplateDetailWorkspaceView
-      controller={controller}
-      locale={locale}
-      messages={messages}
-      onLocaleChange={onLocaleChange}
-    />
+    <ResourceRecoveryContext
+      value={{ messages, saveAndReload: controller.saveAndReload }}
+    >
+      <TemplateDetailWorkspaceView
+        controller={controller}
+        locale={locale}
+        messages={messages}
+        onLocaleChange={onLocaleChange}
+      />
+    </ResourceRecoveryContext>
   );
 }
 

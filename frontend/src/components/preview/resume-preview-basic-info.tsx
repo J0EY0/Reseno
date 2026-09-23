@@ -150,13 +150,6 @@ export function StandardBasicInfo({
           (avatarPosition === "left"
             ? "absolute left-0 top-0 z-10"
             : "absolute right-0 top-0 z-10"),
-        isProfile && avatarPosition === "center"
-          ? "size-[112px]"
-          : layout.avatarShape === "circle"
-            ? "size-[108px]"
-            : isProfile
-              ? "size-[108px]"
-              : "h-[120px] w-[96px]",
       )}
     />
   ) : null;
@@ -319,12 +312,7 @@ export function SidebarBasicInfo({
         basic={basic}
         layout={layout}
         t={t}
-        className={cn(
-          "mx-auto bg-white/10",
-          layout.avatarShape === "circle"
-            ? "size-[108px]"
-            : "h-[118px] w-[96px]",
-        )}
+        className="mx-auto bg-white/10"
       />
     );
 

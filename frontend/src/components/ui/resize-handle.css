@@ -1,0 +1,16 @@
+.workspace-resize-separator::after {
+  position: absolute;
+  inset-block: 0;
+  left: 50%;
+  width: 1px;
+  content: "";
+  background: var(--border);
+  transform: translateX(-50%);
+}
+
+.workspace-resize-separator:hover::after,
+.workspace-resize-separator:focus-visible::after,
+[data-resizing] .workspace-resize-separator::after {
+  width: 2px;
+  background: var(--ring);
+}

@@ -61,12 +61,23 @@ export function ResumeDetailLeaveDialog({
           </Button>
           <Button
             type="button"
+            className="grid"
+            aria-busy={state.leave.isResolving}
             disabled={state.leave.isResolving}
             onClick={() => void commands.saveAndLeave()}
           >
-            {state.leave.isResolving
-              ? messages.saving
-              : messages.unsavedChangesSaveAndLeave}
+            <span
+              className="col-start-1 row-start-1 aria-hidden:invisible"
+              aria-hidden={state.leave.isResolving}
+            >
+              {messages.unsavedChangesSaveAndLeave}
+            </span>
+            <span
+              className="col-start-1 row-start-1 aria-hidden:invisible"
+              aria-hidden={!state.leave.isResolving}
+            >
+              {messages.saving}
+            </span>
           </Button>
         </DialogFooter>
       </DialogContent>

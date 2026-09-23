@@ -8,10 +8,14 @@ import {
 } from "react";
 
 import { AppToaster } from "@/components/app-toaster";
+import { ResourceErrorBoundary } from "@/components/resource-error-boundary";
 import { loadDocumentCanvas } from "@/components/preview/document-canvas-loader";
 import { TemplateEditor } from "@/components/templates/template-editor";
+import { TemplatePreviewToolbar } from "@/components/templates/template-preview-toolbar";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
+import { Spinner } from "@/components/ui/spinner";
 import { TemplateDetailWorkspaceHeader } from "@/components/workspace/template-detail-workspace-header";
+import { TemplateWorkspaceColumns } from "@/components/workspace/template-workspace-columns";
 import { WorkspaceRouteError } from "@/components/workspace/workspace-route-error";
 import {
   WorkspacePanelSkeleton,
@@ -31,60 +35,80 @@ const TemplateDetailLeaveDialog = lazy(() =>
 
 function TemplateDetailContent({
   controller,
+  locale,
   messages,
 }: {
   controller: TemplateDetailWorkspaceController;
+  locale: Locale;
   messages: AppMessages;
 }) {
   const { template, templatePreviewMessages, templatePreviewResume } =
     controller;
+  const previewLoading = (
+    <div className="grid min-h-0 flex-1 place-items-center">
+      <Spinner aria-label={messages.loading} />
+    </div>
+  );
 
   return (
-    <div className="workspace-document-enter template-workspace grid min-w-0 flex-1 gap-4 p-4 xl:grid-cols-[clamp(372px,calc(27vw+32px),432px)_minmax(0,1fr)]">
-      <section className="resume-editor-panel resume-template-editor-panel flex flex-col gap-4 print:hidden">
-        {controller.hasLoaded && template ? (
-          <TemplateEditor
-            t={messages}
-            template={template}
-            defaultTemplateId={controller.defaultTemplateId}
+    <TemplateWorkspaceColumns
+      locale={locale}
+      editor={
+        <section className="resume-editor-panel resume-template-editor-panel flex flex-col gap-4 print:hidden">
+          {controller.hasLoaded && template ? (
+            <TemplateEditor
+              t={messages}
+              locale={locale}
+              template={template}
+              defaultTemplateId={controller.defaultTemplateId}
+              isCreating={controller.isCreating}
+              settingDefaultTemplateId={controller.settingDefaultTemplateId}
+              onCreateCustomTemplate={() =>
+                void controller.createCustomTemplate()
+              }
+              onSetDefaultTemplate={(templateId) =>
+                void controller.setDefaultTemplate(templateId)
+              }
+              onUpdateTemplate={controller.updateTemplate}
+            />
+          ) : (
+            <div data-slot="template-editor-skeleton" className="min-h-[520px]">
+              <WorkspacePanelSkeleton />
+            </div>
+          )}
+        </section>
+      }
+    >
+      {controller.hasLoaded && template ? (
+        <section className="resume-preview-card relative flex min-h-0 min-w-0 flex-col overflow-hidden rounded-(--radius-preview) border bg-card">
+          <TemplatePreviewToolbar
+            messages={messages}
             templateLocale={controller.templateLocale}
-            isImporting={false}
-            isCreating={controller.isCreating}
-            settingDefaultTemplateId={controller.settingDefaultTemplateId}
-            onSetDefaultTemplate={(templateId) =>
-              void controller.setDefaultTemplate(templateId)
-            }
+            disabled={controller.settingDefaultTemplateId !== null}
             onTemplateLocaleChange={controller.setTemplateLocale}
-            onCreateCustomTemplate={() =>
-              void controller.createCustomTemplate()
-            }
-            onUpdateTemplate={controller.updateTemplate}
           />
-        ) : (
-          <div data-slot="template-editor-skeleton" className="min-h-[520px]">
-            <WorkspacePanelSkeleton />
-          </div>
-        )}
-      </section>
-
-      {controller.hasLoaded &&
-      template &&
-      templatePreviewMessages &&
-      templatePreviewResume ? (
-        <Suspense fallback={<WorkspacePreviewSkeleton />}>
-          <DocumentCanvas
-            variant="template"
-            t={messages}
-            documentT={templatePreviewMessages}
-            resume={templatePreviewResume}
-            template={template}
-            onMoveTemplateImage={controller.moveTemplateImage}
-          />
-        </Suspense>
+          {templatePreviewMessages && templatePreviewResume ? (
+            <ResourceErrorBoundary className="m-4 mt-14">
+              <Suspense fallback={previewLoading}>
+                <DocumentCanvas
+                  variant="template"
+                  className="relative isolate flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
+                  t={messages}
+                  documentT={templatePreviewMessages}
+                  resume={templatePreviewResume}
+                  template={template}
+                  onChangeTemplateImage={controller.updateTemplateImage}
+                />
+              </Suspense>
+            </ResourceErrorBoundary>
+          ) : (
+            previewLoading
+          )}
+        </section>
       ) : (
         <WorkspacePreviewSkeleton />
       )}
-    </div>
+    </TemplateWorkspaceColumns>
   );
 }
 
@@ -170,9 +194,10 @@ export function TemplateDetailWorkspaceView({
           onLogout={controller.logout}
           onSave={controller.save}
           onThemeChange={controller.changeTheme}
+          onUpdateTemplate={controller.updateTemplate}
           resolvedTheme={controller.resolvedTheme}
           saveState={controller.saveState}
-          template={controller.template}
+          template={controller.hasLoaded ? controller.template : null}
         />
 
         {controller.hasLoadError ? (
@@ -181,7 +206,11 @@ export function TemplateDetailWorkspaceView({
             onRetry={controller.retryLoad}
           />
         ) : (
-          <TemplateDetailContent controller={controller} messages={messages} />
+          <TemplateDetailContent
+            controller={controller}
+            locale={locale}
+            messages={messages}
+          />
         )}
       </SidebarInset>
     </SidebarProvider>

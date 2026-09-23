@@ -1,138 +1,111 @@
-import { LayoutTemplate, Palette, Sparkles, Type } from "lucide-react";
-import { useLayoutEffect, useRef, useState } from "react";
+import { ImagePlus, Palette, PanelsTopLeft, Type } from "lucide-react";
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useState,
+  type ComponentProps,
+  type ComponentType,
+} from "react";
 
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import type { AppMessages } from "@/i18n";
+import { ResourceErrorBoundary } from "@/components/resource-error-boundary";
+import { Skeleton } from "@/components/ui/skeleton";
+import type { Locale } from "@/i18n";
 import type {
   ResumeTemplateDefinition,
   ResumeTemplateUpdate,
 } from "@/types/resume";
 
-import { TemplateTabLabel } from "./editor/editor-fields";
-import { TemplateImagesTab } from "./editor/images-tab";
+import type { TemplateEditorMessages } from "./editor/editor-messages";
+
 import { TemplateLayoutTab } from "./editor/layout-tab";
 import { TemplateTypographyTab } from "./editor/typography-tab";
-import { TemplateVisualTab } from "./editor/visual-tab";
+import {
+  TemplateStyleTabs,
+  TemplateStyleTabsContent,
+  TemplateStyleTabsList,
+  TemplateStyleTabsTrigger,
+} from "./template-style-tabs";
 
-type TemplateEditorTab = "layout" | "typography" | "visual" | "images";
+function createTabLoader<Props>(
+  loader: () => Promise<{ default: ComponentType<Props> }>,
+) {
+  let loaded: ComponentType<Props> | undefined;
+  let request: ReturnType<typeof loader>;
+  const preload = () =>
+    (request ||= loader().then((module) => {
+      loaded = module.default;
+      return module;
+    }));
+  const LazyTab = lazy(preload);
+  return { preload, getComponent: () => loaded ?? LazyTab };
+}
+
+const imagesTab = createTabLoader<
+  ComponentProps<typeof import("./editor/images-tab").TemplateImagesTab>
+>(() =>
+  import("./editor/images-tab").then((module) => ({
+    default: module.TemplateImagesTab,
+  })),
+);
+const visualTab = createTabLoader<
+  ComponentProps<typeof import("./editor/visual-tab").TemplateVisualTab>
+>(() =>
+  import("./editor/visual-tab").then((module) => ({
+    default: module.TemplateVisualTab,
+  })),
+);
 
 export function TemplateEditorTabs({
   t,
+  locale,
   template,
   onUpdateTemplate,
 }: {
-  t: AppMessages;
+  t: TemplateEditorMessages;
+  locale: Locale;
   template: ResumeTemplateDefinition;
   onUpdateTemplate: (patch: ResumeTemplateUpdate) => void;
 }) {
-  const [editorTab, setEditorTab] = useState<TemplateEditorTab>("layout");
-  const tabsListRef = useRef<HTMLDivElement>(null);
-  const indicatorRef = useRef<HTMLSpanElement>(null);
+  const [ImagesTab, setImagesTab] =
+    useState<ReturnType<typeof imagesTab.getComponent>>();
+  const [VisualTab, setVisualTab] =
+    useState<ReturnType<typeof visualTab.getComponent>>();
 
-  useLayoutEffect(() => {
-    const list = tabsListRef.current;
-    const indicator = indicatorRef.current;
-
-    if (!list || !indicator) return;
-
-    let animationFrame: number | null = null;
-
-    const syncIndicator = () => {
-      animationFrame = null;
-
-      const activeTrigger = list.querySelector<HTMLElement>(
-        '[data-slot="tabs-trigger"][data-state="active"]',
-      );
-
-      if (!activeTrigger) return;
-
-      const listRect = list.getBoundingClientRect();
-      const activeRect = activeTrigger.getBoundingClientRect();
-      const offset = activeRect.left - listRect.left;
-      const width = activeRect.width;
-      const nextWidth = `${width}px`;
-      const nextTransform = `translate3d(${offset}px, 0, 0)`;
-
-      if (indicator.style.width !== nextWidth) {
-        indicator.style.width = `${width}px`;
-      }
-      if (indicator.style.transform !== nextTransform) {
-        indicator.style.transform = `translate3d(${offset}px, 0, 0)`;
-      }
-      indicator.dataset.ready = "true";
-    };
-
-    const scheduleIndicatorSync = () => {
-      if (animationFrame !== null) return;
-      animationFrame = requestAnimationFrame(syncIndicator);
-    };
-
-    syncIndicator();
-
-    const resizeObserver = new ResizeObserver(scheduleIndicatorSync);
-    resizeObserver.observe(list);
-    list
-      .querySelectorAll<HTMLElement>('[data-slot="tabs-trigger"]')
-      .forEach((trigger) => resizeObserver.observe(trigger));
-
-    return () => {
-      resizeObserver.disconnect();
-      if (animationFrame !== null) cancelAnimationFrame(animationFrame);
-    };
-  }, [
-    editorTab,
-    t.templateImagesTab,
-    t.templateLayoutTab,
-    t.templateTypographyTab,
-    t.templateVisualTab,
-  ]);
+  useEffect(() => {
+    void visualTab.preload().catch(() => undefined);
+    void imagesTab.preload().catch(() => undefined);
+  }, []);
 
   return (
-    <Tabs
-      value={editorTab}
-      onValueChange={(value) => setEditorTab(value as TemplateEditorTab)}
-      className="grid gap-0"
+    <TemplateStyleTabs
+      className="min-w-0"
+      defaultValue="layout"
+      onValueChange={(value) => {
+        if (value === "images" && !ImagesTab)
+          setImagesTab(imagesTab.getComponent);
+        if (value === "visual" && !VisualTab)
+          setVisualTab(visualTab.getComponent);
+      }}
     >
-      <TabsList ref={tabsListRef} className="relative max-w-full">
-        <span
-          ref={indicatorRef}
-          aria-hidden="true"
-          data-ready="false"
-          className="pointer-events-none absolute inset-y-[3.5px] left-0 rounded-md border border-transparent bg-background opacity-0 shadow-sm transition-[transform,width] duration-200 ease-out data-[ready=true]:opacity-100 motion-reduce:transition-none dark:border-input dark:bg-input/30"
-        />
-        <TabsTrigger
-          value="layout"
-          className="min-w-0 flex-[0_1_auto] data-[state=active]:border-transparent! data-[state=active]:bg-transparent! data-[state=active]:shadow-none!"
-        >
-          <TemplateTabLabel icon={LayoutTemplate}>
-            {t.templateLayoutTab}
-          </TemplateTabLabel>
-        </TabsTrigger>
-        <TabsTrigger
-          value="typography"
-          className="min-w-0 flex-[0_1_auto] data-[state=active]:border-transparent! data-[state=active]:bg-transparent! data-[state=active]:shadow-none!"
-        >
-          <TemplateTabLabel icon={Type}>
-            {t.templateTypographyTab}
-          </TemplateTabLabel>
-        </TabsTrigger>
-        <TabsTrigger
-          value="visual"
-          className="min-w-0 flex-[0_1_auto] data-[state=active]:border-transparent! data-[state=active]:bg-transparent! data-[state=active]:shadow-none!"
-        >
-          <TemplateTabLabel icon={Palette}>
-            {t.templateVisualTab}
-          </TemplateTabLabel>
-        </TabsTrigger>
-        <TabsTrigger
-          value="images"
-          className="min-w-0 flex-[0_1_auto] data-[state=active]:border-transparent! data-[state=active]:bg-transparent! data-[state=active]:shadow-none!"
-        >
-          <TemplateTabLabel icon={Sparkles}>
-            {t.templateImagesTab}
-          </TemplateTabLabel>
-        </TabsTrigger>
-      </TabsList>
+      <TemplateStyleTabsList aria-label={t.resumeTemplates}>
+        <TemplateStyleTabsTrigger value="layout">
+          <PanelsTopLeft aria-hidden="true" />
+          {t.templateLayoutTab}
+        </TemplateStyleTabsTrigger>
+        <TemplateStyleTabsTrigger value="typography">
+          <Type aria-hidden="true" />
+          {t.templateTypographyTab}
+        </TemplateStyleTabsTrigger>
+        <TemplateStyleTabsTrigger value="visual">
+          <Palette aria-hidden="true" />
+          {t.templateVisualTab}
+        </TemplateStyleTabsTrigger>
+        <TemplateStyleTabsTrigger value="images">
+          <ImagePlus aria-hidden="true" />
+          {t.templateImagesTab}
+        </TemplateStyleTabsTrigger>
+      </TemplateStyleTabsList>
 
       <TemplateLayoutTab
         t={t}
@@ -144,16 +117,57 @@ export function TemplateEditorTabs({
         template={template}
         onUpdateTemplate={onUpdateTemplate}
       />
-      <TemplateVisualTab
-        t={t}
-        template={template}
-        onUpdateTemplate={onUpdateTemplate}
-      />
-      <TemplateImagesTab
-        t={t}
-        template={template}
-        onUpdateTemplate={onUpdateTemplate}
-      />
-    </Tabs>
+      {VisualTab ? (
+        <TemplateStyleTabsContent
+          value="visual"
+          animate
+          keepMounted
+          className="template-control-stack py-5"
+        >
+          <ResourceErrorBoundary>
+            <Suspense
+              fallback={
+                <div aria-busy="true" className="grid gap-3">
+                  <Skeleton className="h-20 w-full" />
+                  <Skeleton className="h-9 w-full" />
+                </div>
+              }
+            >
+              <VisualTab
+                t={t}
+                template={template}
+                onUpdateTemplate={onUpdateTemplate}
+              />
+            </Suspense>
+          </ResourceErrorBoundary>
+        </TemplateStyleTabsContent>
+      ) : null}
+      {ImagesTab ? (
+        <TemplateStyleTabsContent
+          value="images"
+          animate
+          keepMounted
+          className="py-5"
+        >
+          <ResourceErrorBoundary>
+            <Suspense
+              fallback={
+                <div aria-busy="true" className="grid gap-3">
+                  <Skeleton className="h-9 w-full" />
+                  <Skeleton className="h-20 w-full" />
+                </div>
+              }
+            >
+              <ImagesTab
+                t={t}
+                locale={locale}
+                template={template}
+                onUpdateTemplate={onUpdateTemplate}
+              />
+            </Suspense>
+          </ResourceErrorBoundary>
+        </TemplateStyleTabsContent>
+      ) : null}
+    </TemplateStyleTabs>
   );
 }

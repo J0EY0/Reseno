@@ -1,3 +1,4 @@
+import type { TemplateImageGeometry } from "@/lib/template-image-geometry";
 import {
   startTransition,
   useCallback,
@@ -41,13 +42,13 @@ import type {
   DocumentLocale,
   ResumeTemplateDefinition,
   ResumeTemplateUpdate,
-  ResumeTemplateImageElement,
   WorkspaceView,
 } from "@/types/resume";
 import { useTemplateDetailLeave } from "@/components/workspace/use-template-detail-leave";
 import { useTemplateDetailSave } from "@/components/workspace/use-template-detail-save";
 import { usePreparedWorkspaceNavigation } from "@/components/workspace/use-prepared-workspace-navigation";
 import { useWorkspaceNavigationTransaction } from "@/components/workspace/use-workspace-navigation-transaction";
+import { useWorkspaceResourceRecovery } from "@/components/workspace/use-workspace-resource-recovery";
 
 interface TemplateDetailWorkspaceOptions {
   locale: Locale;
@@ -168,6 +169,12 @@ export function useTemplateDetailWorkspace({
     onAdoptSavedTemplate: adoptSavedTemplate,
     onRestoreTemplate: restoreTemplate,
     template,
+  });
+
+  const saveAndReload = useWorkspaceResourceRecovery({
+    saveCheckpoint: () => save({ notifyOnError: false }),
+    hasUnsavedChanges,
+    beginNavigation,
   });
 
   const loadRouteData = useCallback(
@@ -346,8 +353,8 @@ export function useTemplateDetailWorkspace({
     [],
   );
 
-  const moveTemplateImage = useCallback(
-    (imageId: string, patch: Pick<ResumeTemplateImageElement, "x" | "y">) => {
+  const updateTemplateImage = useCallback(
+    (imageId: string, patch: TemplateImageGeometry) => {
       if (!template || template.isBuiltIn) {
         return;
       }
@@ -437,11 +444,12 @@ export function useTemplateDetailWorkspace({
     isLoading,
     leave,
     logout,
-    moveTemplateImage,
+    updateTemplateImage,
     preloadWorkspaceView,
     resolvedTheme,
     retryLoad: () => setRetryKey((current) => current + 1),
     save: saveManually,
+    saveAndReload,
     saveChangeCount,
     saveLastSavedAt,
     saveState,

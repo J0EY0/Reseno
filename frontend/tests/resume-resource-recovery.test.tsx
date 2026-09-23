@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useResumeDetailSave } from "@/components/workspace/use-resume-detail-save";
 import { useResumeDetailSession } from "@/components/workspace/use-resume-detail-session";
-import { useResumeResourceRecovery } from "@/components/workspace/use-resume-resource-recovery";
+import { useWorkspaceResourceRecovery } from "@/components/workspace/use-workspace-resource-recovery";
 import { useWorkspaceNavigationTransaction } from "@/components/workspace/use-workspace-navigation-transaction";
 import { defaultMessages } from "@/i18n";
 import { fetchResumeVersionsApi, saveResumeApi } from "@/lib/workspace-api";
@@ -89,7 +89,12 @@ function renderRecovery() {
         save,
         beginNavigation,
         navigate: useNavigate(),
-        recover: useResumeResourceRecovery({ save, beginNavigation }),
+        recover: useWorkspaceResourceRecovery({
+          saveCheckpoint: () =>
+            save.save("checkpoint", { notifyOnError: false }),
+          hasUnsavedChanges: save.hasUnsavedChanges,
+          beginNavigation,
+        }),
       };
     },
     {

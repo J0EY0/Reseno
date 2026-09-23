@@ -8,10 +8,13 @@ from playwright.sync_api import Browser, expect
 
 from tests.e2e.browser_support import authenticated_context as _authenticated_context
 
-pytestmark = pytest.mark.skipif(
-    os.getenv("RUN_BROWSER_E2E") != "1",
-    reason="set RUN_BROWSER_E2E=1 to run browser integration tests",
-)
+pytestmark = [
+    pytest.mark.browser_smoke,
+    pytest.mark.skipif(
+        os.getenv("RUN_BROWSER_E2E") != "1",
+        reason="set RUN_BROWSER_E2E=1 to run browser integration tests",
+    ),
+]
 
 
 def test_builtin_templates_render_optional_avatars_without_layout_regressions(
@@ -107,9 +110,7 @@ def test_builtin_templates_render_optional_avatars_without_layout_regressions(
                     "text-align", "center"
                 )
                 page.goto(f"{frontend_url}/template/academic", wait_until="networkidle")
-                page.get_by_role(
-                    "button", name="Create Editable Copy", exact=True
-                ).click()
+                page.get_by_role("button", name="Create Copy", exact=True).click()
                 page.wait_for_url(f"{frontend_url}/template/template-*")
                 custom_template_id = urlparse(page.url).path.rsplit("/", maxsplit=1)[-1]
                 template_ids.append(custom_template_id)
@@ -288,7 +289,7 @@ def test_empty_optional_avatar_does_not_reserve_resume_or_export_layout_space(
                 and urlparse(response.url).path == "/api/templates"
             )
         ) as create_template_response:
-            page.get_by_role("button", name="创建可编辑副本", exact=True).click()
+            page.get_by_role("button", name="创建副本", exact=True).click()
         assert create_template_response.value.ok
         saved_template_payload = create_template_response.value.request.post_data_json
         page.wait_for_url(f"{frontend_url}/template/template-*")

@@ -39,6 +39,7 @@ const domainModules = new Map([
       "getTemplateById",
       "getTemplateCatalog",
       "resumeFontSizeOptions",
+      "timelineSectionKinds",
     ],
   ],
   [
@@ -214,8 +215,8 @@ for (const [modulePath, expectedExports] of domainModules) {
 assertAcyclic(graph);
 assert.deepEqual(
   [...graph.get("lib/templates.ts")],
-  ["lib/template-presets.ts"],
-  "Template normalization/factories must depend one-way on the preset registry.",
+  ["lib/template-presets.ts", "lib/resume-sections.ts"],
+  "Template normalization must consume the preset registry and canonical section families one-way.",
 );
 assert.deepEqual(
   [...graph.get("lib/template-presets.ts")],

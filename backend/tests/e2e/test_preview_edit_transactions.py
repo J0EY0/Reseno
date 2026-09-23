@@ -91,10 +91,12 @@ def test_image_upload_preserves_edits_made_while_reading(
             x.press("Tab")
             expect(x).to_have_value("88")
         elif edit == "remove":
-            card.get_by_role("button", name="删除图片", exact=True).click()
+            card.get_by_role("button", name="更多操作", exact=True).click()
+            page.get_by_role("menuitem", name="删除图片", exact=True).click()
             expect(card).to_have_count(0)
         elif edit == "rename":
-            card.get_by_role("button", name="编辑图片名称", exact=True).click()
+            card.get_by_role("button", name="更多操作", exact=True).click()
+            page.get_by_role("menuitem", name="编辑图片名称", exact=True).click()
             name = card.get_by_role("textbox", name="图片名称", exact=True)
             name.fill("Keep this name")
             name.press("Enter")
@@ -558,8 +560,9 @@ def test_template_image_validation_keeps_small_vector_and_animated_files(
         context.close()
 
 
-def test_template_margin_custom_values_change_only_when_a_preset_is_selected(
-    browser: Browser, workspace_servers: tuple[str, str]
+@pytest.mark.parametrize("adjustment", ["slider", "unify", "individual"])
+def test_template_margin_preserves_asymmetric_values_until_explicit_adjustment(
+    browser: Browser, workspace_servers: tuple[str, str], adjustment: str
 ) -> None:
     frontend_url, _ = workspace_servers
     context = authenticated_context(browser, locale="en-US")
@@ -575,11 +578,26 @@ def test_template_margin_custom_values_change_only_when_a_preset_is_selected(
         page.get_by_role("tab", name="Layout", exact=True).click()
         canvas = page.locator('[data-slot="document-canvas-viewport"]').element_handle()
         assert canvas is not None
-        margin = page.get_by_role("combobox", name="Page Margin", exact=True)
-        expect(margin).to_have_text("Custom")
-        margin.click()
-        expect(page.get_by_role("option", name="Custom", exact=True)).to_be_disabled()
+        margin_slider = page.get_by_role("slider", name="Page Margin", exact=True)
+        margin_details = page.get_by_role(
+            "button", name="Page margin details", exact=True
+        )
+        expect(margin_slider).to_have_attribute("aria-valuenow", "10")
+        expect(margin_slider).to_have_attribute("aria-valuetext", "Custom")
+        expect(margin_details).to_have_text("Custom")
+        margin_details.click()
+        dialog = page.get_by_role("dialog", name="Page Margin", exact=True)
+        inputs = [
+            dialog.get_by_role("spinbutton", name=label, exact=True)
+            for label in ("Top", "Left & right", "Bottom")
+        ]
+        for control, value in zip(inputs, (16, 10, 10), strict=True):
+            expect(control).to_have_value(str(value))
         page.keyboard.press("Escape")
+        expect(dialog).to_have_count(0)
+        expect(margin_details).to_be_focused()
+        expect(margin_details).to_have_text("Custom")
+        expect(margin_slider).to_have_attribute("aria-valuetext", "Custom")
         unchanged = next(
             item
             for item in page.request.get(f"{frontend_url}/api/templates").json()[
@@ -591,15 +609,44 @@ def test_template_margin_custom_values_change_only_when_a_preset_is_selected(
             unchanged["settings"][key]
             for key in ("pagePaddingTop", "pagePaddingX", "pagePaddingBottom")
         ] == [16, 10, 10]
-        margin.click()
-        page.get_by_role("option", name="Standard", exact=True).click()
-        expect(margin).to_have_text("Standard")
+        if adjustment == "slider":
+            margin_slider.focus()
+            margin_slider.press("ArrowRight")
+            expected_margins = [11, 11, 11]
+        else:
+            margin_details.click()
+            if adjustment == "unify":
+                dialog.get_by_role(
+                    "button", name="Match left & right", exact=True
+                ).click()
+                expected_margins = [10, 10, 10]
+            else:
+                expected_margins = [16, 10, 10]
+                for index, value in enumerate((14, 12, 13)):
+                    inputs[index].fill(str(value))
+                    expect(inputs[index]).to_be_focused()
+                    expected_margins[index] = value
+                    for control, expected in zip(inputs, expected_margins, strict=True):
+                        expect(control).to_have_value(str(expected))
+                expect(inputs[-1]).to_be_focused()
+            for control, expected in zip(inputs, expected_margins, strict=True):
+                expect(control).to_have_value(str(expected))
+        expect(margin_details).to_have_text(
+            "Custom" if adjustment == "individual" else f"{expected_margins[1]} mm"
+        )
+        expect(margin_slider).to_have_attribute(
+            "aria-valuenow", str(expected_margins[1])
+        )
         with page.expect_response(
             lambda response: (
-                response.request.method == "PUT" and "/api/templates/" in response.url
+                response.request.method == "PUT"
+                and urlparse(response.url).path == f"/api/templates/{template['id']}"
+                and response.request.post_data_json["saveMode"] == "checkpoint"
             )
-        ):
+        ) as saved:
             page.keyboard.press("ControlOrMeta+s")
+        assert saved.value.ok
+        assert saved.value.json()["data"]["checkpoint"] is None
         stored = next(
             item
             for item in page.request.get(f"{frontend_url}/api/templates").json()[
@@ -610,7 +657,7 @@ def test_template_margin_custom_values_change_only_when_a_preset_is_selected(
         assert [
             stored["settings"][key]
             for key in ("pagePaddingTop", "pagePaddingX", "pagePaddingBottom")
-        ] == [14, 12, 12]
+        ] == expected_margins
         assert canvas.evaluate("""element => element.isConnected && element ===
           document.querySelector('[data-slot="document-canvas-viewport"]')
         """)

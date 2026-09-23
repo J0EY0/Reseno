@@ -4,6 +4,7 @@ import {
   getBuiltinTemplatePreset,
 } from "@/lib/template-presets";
 import { createId } from "@/lib/resume";
+import { SECTION_RENDER_FAMILY } from "@/lib/resume-sections";
 import type {
   BuiltinResumeTemplateId,
   ResumeAvatarPosition,
@@ -16,9 +17,16 @@ import type {
   ResumeTemplateImageFit,
   ResumeTemplateSettings,
   ResumeTimelineItemLayout,
+  ResumeTimelineSectionKind,
+  SectionKind,
 } from "@/types/resume";
 
 export const resumeFontSizeOptions = [12, 14, 16, 18, 20] as const;
+
+export const timelineSectionKinds = Object.keys(SECTION_RENDER_FAMILY).filter(
+  (kind): kind is ResumeTimelineSectionKind =>
+    SECTION_RENDER_FAMILY[kind as SectionKind] === "timeline",
+);
 
 const CSS_POINTS_PER_PIXEL = 72 / 96;
 
@@ -102,13 +110,30 @@ function normalizeTemplateImageSource(value: unknown) {
   return source.startsWith("data:image/") ? source : "";
 }
 
-function normalizeTimelineItemLayout(
+function isTimelineItemLayout(
   value: unknown,
-  fallback: ResumeTimelineItemLayout,
-): ResumeTimelineItemLayout {
-  return value === "split" || value === "stacked" || value === "compact"
-    ? value
-    : fallback;
+): value is ResumeTimelineItemLayout {
+  return (
+    value === "split" ||
+    value === "stacked" ||
+    value === "compact" ||
+    value === "inline"
+  );
+}
+
+function normalizeSectionItemLayouts(
+  value: unknown,
+): ResumeTemplateLayout["sectionItemLayouts"] {
+  const layouts: ResumeTemplateLayout["sectionItemLayouts"] = {};
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    for (const kind of timelineSectionKinds) {
+      const layout = Object.hasOwn(value, kind)
+        ? (value as Record<string, unknown>)[kind]
+        : undefined;
+      if (isTimelineItemLayout(layout)) layouts[kind] = layout;
+    }
+  }
+  return layouts;
 }
 
 function normalizeListItemLayout(
@@ -220,9 +245,11 @@ export function createTemplateLayout(
   return {
     basicInfo,
     section,
-    timelineItemLayout: normalizeTimelineItemLayout(
-      overrides.timelineItemLayout,
-      defaults.timelineItemLayout,
+    timelineItemLayout: isTimelineItemLayout(overrides.timelineItemLayout)
+      ? overrides.timelineItemLayout
+      : defaults.timelineItemLayout,
+    sectionItemLayouts: normalizeSectionItemLayouts(
+      overrides.sectionItemLayouts,
     ),
     listItemLayout: normalizeListItemLayout(
       overrides.listItemLayout,

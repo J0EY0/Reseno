@@ -10,6 +10,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 import { DocumentCanvas } from "@/components/preview/document-canvas";
 import { ResumePreview } from "@/components/preview/resume-preview";
+import { TemplateImages } from "@/components/preview/resume-preview-media";
 import { ResumeThumbnail } from "@/components/preview/resume-thumbnail";
 import { defaultMessages as t } from "@/i18n";
 import { createResumeSection } from "@/lib/resume-sections";
@@ -23,10 +24,30 @@ import {
   createResumeDetailItem,
   createResumeDetailTemplate,
 } from "./helpers/resume-detail-fixtures";
+import { createTemplateImageElement } from "@/lib/templates";
 
 let restoreFonts: () => void;
 const capture = vi.fn();
 const release = vi.fn();
+
+it.each([false, true])(
+  "keeps hidden template images absent (editable=%s)",
+  (editable) => {
+    const { container } = render(
+      <TemplateImages
+        editable={editable}
+        onChangeImage={vi.fn()}
+        showEmptyPlaceholders
+        images={[{ ...createTemplateImageElement(1, "Image"), visible: false }]}
+      />,
+    );
+    expect(container.querySelector("[data-template-image-frame]")).toBeNull();
+    expect(
+      container.querySelector("[data-template-image-resize-handle]"),
+    ).toBeNull();
+  },
+);
+
 beforeEach(() => {
   window.localStorage.clear();
   window.localStorage.setItem("reseno-document-canvas-scale-v1", "1");
@@ -437,8 +458,8 @@ it.each([
   [true, true],
   [false, true],
 ] as const)(
-  "enables template image movement only with a command on a custom template (builtin=%s, command=%s)",
-  (isBuiltIn, hasCommand) => {
+  "enables template image editing only with a command on a custom template (builtin=%s, command=%s)",
+  async (isBuiltIn, hasCommand) => {
     const item = createResumeDetailItem();
     const template = createResumeDetailTemplate("custom", { isBuiltIn });
     template.layout.images = [
@@ -467,18 +488,27 @@ it.each([
         documentT={t}
         resume={item.resume}
         template={template}
-        onMoveTemplateImage={hasCommand ? move : undefined}
+        onChangeTemplateImage={hasCommand ? move : undefined}
       />,
     );
+    await act(() => vi.dynamicImportSettled());
     const frame = container.querySelector<HTMLElement>(
       '[data-template-image-frame="true"]',
     )!;
+    expect(
+      frame.querySelectorAll("[data-template-image-resize-handle]").length,
+    ).toBe(hasCommand && !isBuiltIn ? 8 : 0);
     pointer(frame, "pointerdown");
     pointer(frame, "pointermove", { clientX: 110, clientY: 115 });
     pointer(frame, "pointerup");
     expect(move).toHaveBeenCalledTimes(hasCommand && !isBuiltIn ? 1 : 0);
     if (hasCommand && !isBuiltIn) {
-      expect(move).toHaveBeenCalledWith("image", { x: 20, y: 35 });
+      expect(move).toHaveBeenCalledWith("image", {
+        x: 20,
+        y: 35,
+        width: 30,
+        height: 30,
+      });
       expect(release).toHaveBeenCalledWith(7);
     }
     unmount();

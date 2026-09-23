@@ -55,7 +55,7 @@ def test_template_autosave_preserves_explicit_save_for_discard(
     page.on("pageerror", lambda error: errors.append(str(error)))
     try:
         page.goto(f"{frontend_url}/template/minimal", wait_until="networkidle")
-        page.get_by_role("button", name="创建可编辑副本", exact=True).click()
+        page.get_by_role("button", name="创建副本", exact=True).click()
         page.wait_for_url(f"{frontend_url}/template/template-*")
         template_id = page.url.rsplit("/", maxsplit=1)[-1]
         template_path = f"/api/templates/{template_id}"
@@ -139,7 +139,7 @@ def test_template_leave_resolves_an_active_save_without_losing_its_checkpoint(
     page.on("pageerror", lambda error: errors.append(str(error)))
     try:
         page.goto(f"{frontend_url}/template/minimal", wait_until="networkidle")
-        page.get_by_role("button", name="创建可编辑副本", exact=True).click()
+        page.get_by_role("button", name="创建副本", exact=True).click()
         page.wait_for_url(f"{frontend_url}/template/template-*")
         template_id = page.url.rsplit("/", maxsplit=1)[-1]
         baseline = _template(page, frontend_url, template_id)
@@ -217,7 +217,7 @@ def test_manual_save_confirms_already_autosaved_template(
     template_id: str | None = None
     try:
         page.goto(f"{frontend_url}/template/minimal", wait_until="networkidle")
-        page.get_by_role("button", name="创建可编辑副本", exact=True).click()
+        page.get_by_role("button", name="创建副本", exact=True).click()
         page.wait_for_url(f"{frontend_url}/template/template-*")
         template_id = page.url.rsplit("/", maxsplit=1)[-1]
         path = f"/api/templates/{template_id}"
@@ -268,7 +268,7 @@ def test_template_discard_restores_autosave_when_its_response_is_lost(
     committed = []
     try:
         page.goto(f"{frontend_url}/template/minimal", wait_until="networkidle")
-        page.get_by_role("button", name="创建可编辑副本", exact=True).click()
+        page.get_by_role("button", name="创建副本", exact=True).click()
         page.wait_for_url(f"{frontend_url}/template/template-*")
         template_id = page.url.rsplit("/", maxsplit=1)[-1]
         baseline = _template(page, frontend_url, template_id)

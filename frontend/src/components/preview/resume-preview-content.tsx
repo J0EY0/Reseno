@@ -1,3 +1,4 @@
+import type { TemplateImageGeometry } from "@/lib/template-image-geometry";
 import { memo } from "react";
 
 import {
@@ -10,15 +11,14 @@ import type {
   ResumePreviewModel,
 } from "@/components/preview/resume-preview-model";
 import { SectionsList } from "@/components/preview/resume-preview-sections";
-import type { ResumeTemplateImageElement } from "@/types/resume";
 
 interface ResumePageContentProps {
   editableTemplateImages?: boolean;
   enableContactLinks: boolean;
   model: ResumePreviewModel;
-  onMoveTemplateImage?: (
+  onChangeTemplateImage?: (
     imageId: string,
-    patch: Pick<ResumeTemplateImageElement, "x" | "y">,
+    patch: TemplateImageGeometry,
   ) => void;
   pageSections: PaginatedResumeSection[];
   showEmptyTemplateImagePlaceholders?: boolean;
@@ -65,7 +65,7 @@ export const ResumePageContent = memo(function ResumePageContent({
   editableTemplateImages = false,
   enableContactLinks,
   model,
-  onMoveTemplateImage,
+  onChangeTemplateImage,
   pageSections,
   showEmptyTemplateImagePlaceholders = false,
 }: ResumePageContentProps) {
@@ -76,7 +76,7 @@ export const ResumePageContent = memo(function ResumePageContent({
           images={model.layout.images}
           editable={editableTemplateImages}
           showEmptyPlaceholders={showEmptyTemplateImagePlaceholders}
-          onMoveImage={onMoveTemplateImage}
+          onChangeImage={onChangeTemplateImage}
         />
         <div
           className="relative z-10 grid min-h-[297mm] grid-cols-[64mm_minmax(0,1fr)]"
@@ -123,7 +123,7 @@ export const ResumePageContent = memo(function ResumePageContent({
         images={model.layout.images}
         editable={editableTemplateImages}
         showEmptyPlaceholders={showEmptyTemplateImagePlaceholders}
-        onMoveImage={onMoveTemplateImage}
+        onChangeImage={onChangeTemplateImage}
       />
       <StandardResumeContent
         model={model}

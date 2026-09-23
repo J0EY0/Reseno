@@ -10,7 +10,9 @@ export const SECTION_KINDS = [
 ] as const;
 export type SectionKind = (typeof SECTION_KINDS)[number];
 export type SectionLayout = "timeline" | "list";
-export type ResumeTimelineItemLayout = "split" | "stacked" | "compact";
+export type ResumeTimelineItemLayout =
+  "split" | "stacked" | "compact" | "inline";
+export type ResumeTimelineSectionKind = Exclude<SectionKind, "simple_list">;
 export type ResumeListItemLayout = "list" | "inline" | "columns";
 export type ResumeFontFamily =
   "inter" | "noto_sans_sc" | "serif" | "times" | "plex";
@@ -206,9 +208,10 @@ export interface ResumeTemplateImageElement {
 export interface ResumeTemplateLayout {
   basicInfo: ResumeBasicInfoLayout;
   section: ResumeSectionTemplateStyle;
-  // Item layouts follow the section's semantic layout family. New section
-  // kinds therefore inherit template behavior without a kind-specific map.
   timelineItemLayout: ResumeTimelineItemLayout;
+  sectionItemLayouts: Partial<
+    Record<ResumeTimelineSectionKind, ResumeTimelineItemLayout>
+  >;
   listItemLayout: ResumeListItemLayout;
   avatarPosition: ResumeAvatarPosition;
   avatarShape: ResumeAvatarShape;

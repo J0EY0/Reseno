@@ -288,8 +288,6 @@
   "setDefaultTemplate": "Set as Default",
   "defaultTemplateLabel": "Default Template",
   "defaultTemplateUpdated": "Default template updated",
-  "templateReadonlyStatus": "Built-in · Read-only",
-  "createEditableCopy": "Create Editable Copy",
   "templatePreviewListSeparator": ": ",
   "templatePreviewSamples": {
     "earlyCareer": {
@@ -402,7 +400,7 @@
           "period": "2022.07 - 2024.02",
           "description": "",
           "highlights": [
-            "Set performance and release budgets: initial load time down 38%, quarterly defects down 42%."
+            "Performance and release budgets cut load time 38% and quarterly defects 42%."
           ]
         }
       ],
@@ -413,7 +411,7 @@
         "period": "2024.08 - 2025.04",
         "description": "",
         "highlights": [
-          "Coordinated design and six product teams to upgrade more than 40 pages with zero downtime."
+          "Led design and six product teams through 40+ page upgrades with zero downtime."
         ]
       },
       "achievement": {
@@ -637,15 +635,7 @@
   "avatarSizeSmall": "Small",
   "avatarSizeStandard": "Standard",
   "avatarSizeLarge": "Large",
-  "avatarSizeCustom": "Custom",
-  "pageMarginCompact": "Compact",
-  "pageMarginStandard": "Standard",
-  "pageMarginRelaxed": "Relaxed",
   "templateContentDensity": "Content Density",
-  "templateDensityCompact": "Compact",
-  "templateDensityStandard": "Standard",
-  "templateDensityRelaxed": "Relaxed",
-  "templateDensityCustom": "Custom",
   "templateDividerStyle": "Divider Style",
   "templateDividerThin": "Thin",
   "templateDividerMedium": "Standard",
@@ -682,8 +672,8 @@
   "imageBorderWidth": "Border Width",
   "imageBorderRadius": "Corner Radius",
   "imageBorderColor": "Border Color",
-  "imageFitContain": "Fit (Show All)",
-  "imageFitCover": "Fill (May Crop)",
+  "imageFitContain": "Fit",
+  "imageFitCover": "Fill",
   "pageBackground": "Page Background",
   "surfaceColor": "Surface Background",
   "headingColor": "Heading Color",
@@ -1129,7 +1119,6 @@
   "templateImageTooManyPixels": "Choose an image with no more than 40 million pixels and 16,384 pixels on either side.",
   "templateImageOriginalTooLarge": "Vector and animated images must be smaller than 1 MiB.",
   "templateImageProcessingFailed": "Could not process this image. Try another file.",
-  "templatePageMarginCustom": "Custom",
   "pdfImportNoText": "No readable text was found. Choose a PDF with selectable text instead of a scan.",
   "pdfImportPasswordProtected": "This PDF is password protected. Remove its password before importing.",
   "pdfImportInvalidPdf": "This PDF is damaged or invalid. Export it again and retry.",

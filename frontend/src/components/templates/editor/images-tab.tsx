@@ -1,50 +1,61 @@
 import { ImagePlus } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { TabsContent } from "@/components/ui/tabs";
-import type { AppMessages } from "@/i18n";
-import { cn } from "@/lib/utils";
+import { Empty, EmptyDescription } from "@/components/ui/empty";
+import type { Locale } from "@/i18n";
 import type {
   ResumeTemplateDefinition,
   ResumeTemplateUpdate,
 } from "@/types/resume";
 
-import { readonlyDisabledControlClassName } from "./editor-values";
+import type { TemplateEditorMessages } from "./editor-messages";
+import { imageEditorMessages } from "./image-messages";
 import { TemplateImageCard } from "./template-image-card";
 import { useTemplateImagesEditor } from "./use-template-images-editor";
 
 export function TemplateImagesTab({
   t,
+  locale,
   template,
   onUpdateTemplate,
 }: {
-  t: AppMessages;
+  t: TemplateEditorMessages;
+  locale: Locale;
   template: ResumeTemplateDefinition;
   onUpdateTemplate: (patch: ResumeTemplateUpdate) => void;
 }) {
   const editor = useTemplateImagesEditor({ t, template, onUpdateTemplate });
+  const messages = imageEditorMessages[locale];
 
   return (
-    <TabsContent
-      value="images"
-      className={cn(
-        "m-0 grid gap-3 px-1 py-4",
-        editor.isReadonly && "opacity-70",
-      )}
-    >
-      <Button
-        type="button"
-        variant="outline"
-        className={cn(
-          "h-11 justify-center rounded-xl border-dashed bg-background",
-          readonlyDisabledControlClassName,
-        )}
-        onClick={editor.addImage}
-        disabled={editor.isReadonly}
-      >
-        <ImagePlus data-icon="inline-start" />
-        {t.addTemplateImage}
-      </Button>
+    <div className="template-control-stack">
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="flex items-center gap-2 text-xs font-semibold">
+          {t.templateImageControls}
+          <span className="font-normal tabular-nums text-muted-foreground">
+            {template.layout.images.length}
+          </span>
+        </h3>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="template-image-action shadow-none disabled:pointer-events-auto disabled:cursor-not-allowed"
+          aria-label={t.addTemplateImage}
+          title={t.addTemplateImage}
+          onClick={editor.addImage}
+          disabled={editor.isReadonly}
+        >
+          <ImagePlus data-icon="inline-start" />
+          {messages.add}
+        </Button>
+      </div>
+
+      {template.layout.images.length === 0 ? (
+        <Empty className="py-8 md:p-8">
+          <EmptyDescription>{messages.empty}</EmptyDescription>
+        </Empty>
+      ) : null}
 
       {template.layout.images.map((image, index) => {
         const imageKey = `${template.id}:${image.id}`;
@@ -57,6 +68,7 @@ export function TemplateImagesTab({
           <TemplateImageCard
             key={imageKey}
             t={t}
+            messages={messages}
             image={image}
             index={index}
             isReadonly={editor.isReadonly}
@@ -79,6 +91,6 @@ export function TemplateImagesTab({
           />
         );
       })}
-    </TabsContent>
+    </div>
   );
 }

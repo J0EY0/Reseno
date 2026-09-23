@@ -95,9 +95,7 @@ def test_localized_workspace_text_is_complete_and_unclipped(
     url, _ = workspace_servers
     messages = json.loads(
         (
-            Path(__file__).parents[3]
-            / "frontend/src/i18n/locales"
-            / f"{locale}.json"
+            Path(__file__).parents[3] / "frontend/src/i18n/locales" / f"{locale}.json"
         ).read_text(encoding="utf-8")
     )
     context = authenticated_context(
@@ -144,14 +142,17 @@ def test_localized_workspace_text_is_complete_and_unclipped(
 
         page.goto(f"{url}/template/compact", wait_until="networkidle")
         editor = page.locator('[data-slot="template-editor"]')
-        for key in ("basicInfoLayout", "sectionTemplateStyle", "timelineItemLayout"):
-            control = editor.get_by_role("combobox", name=messages[key], exact=True)
-            expect(control).to_be_visible()
-            label = control.locator("xpath=ancestor::label[1]")
-            _expect_readable(label.get_by_text(messages[key], exact=True))
-        control = editor.get_by_role(
-            "combobox", name=messages["timelineItemLayout"], exact=True
+        editor_labels = (
+            ("Header layout", "Section heading", "Entry layout")
+            if locale == "en"
+            else ("信息布局", "模块标题", "经历布局")
         )
+        for label_text in editor_labels:
+            control = editor.get_by_role("combobox", name=label_text, exact=True)
+            expect(control).to_be_visible()
+            label = editor.locator(f'label[for="{control.get_attribute("id")}"]')
+            _expect_readable(label.get_by_text(label_text, exact=True))
+        control = editor.get_by_role("combobox", name=editor_labels[-1], exact=True)
         expect(control).to_have_text(messages["timelineItemLayoutCompact"])
         _expect_readable(control.locator('[data-slot="select-value"]'))
 

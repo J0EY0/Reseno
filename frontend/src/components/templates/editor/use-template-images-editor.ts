@@ -25,8 +25,6 @@ export function useTemplateImagesEditor({
     const uploads = uploadsRef.current;
     return () => uploads.clear();
   }, []);
-  // This hook is called above Radix TabsContent so editor-only expansion and
-  // name drafts survive tab switches without leaking into saved template data.
   const [expandedImageIdByTemplate, setExpandedImageIdByTemplate] = useState<
     Partial<Record<string, string>>
   >({});

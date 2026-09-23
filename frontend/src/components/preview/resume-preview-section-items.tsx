@@ -1,4 +1,4 @@
-import { Fragment, type ReactNode } from "react";
+import { Fragment } from "react";
 
 import { ResumeDiffBadge } from "@/components/preview/resume-preview-diff-badge";
 import { ResumeDeletedDiffAnchor } from "@/components/preview/resume-preview-deleted-anchor";
@@ -9,7 +9,7 @@ import {
   type ItemDiffLookup,
   type RenderableItemField,
 } from "@/components/preview/resume-preview-diffs";
-import { ResumeItemText } from "@/components/preview/resume-preview-item-text";
+import { TimelineItemHeading } from "@/components/preview/resume-preview-timeline-heading";
 import {
   RichHighlights,
   RichListDiff,
@@ -44,16 +44,6 @@ interface SectionItemsProps {
   t: AppMessages;
 }
 
-function hasTextSlot(
-  value: string,
-  fallbackDiffs: ResumeDraftDiff[],
-  parts: RenderableSectionItem["subtitleParts"],
-) {
-  return Boolean(
-    value || fallbackDiffs.length > 0 || parts?.some((part) => part.value),
-  );
-}
-
 function TimelineItem({
   diff,
   enableContactLinks,
@@ -78,163 +68,7 @@ function TimelineItem({
   const markerDiff = structuralDiff ?? modifiedDiff;
   const urlDiffs = fieldDiffs("url");
   const descriptionDiffs = fieldDiffs("description");
-  const subtitleDiffs = fieldDiffs("subtitle");
-  const metaDiffs = fieldDiffs("meta");
-  const periodDiffs = fieldDiffs("period");
   const urlHref = createContactHref("url", item.url);
-  const hasSubtitle = hasTextSlot(
-    item.subtitle,
-    subtitleDiffs,
-    item.subtitleParts,
-  );
-  const hasMeta = hasTextSlot(item.meta, metaDiffs, item.metaParts);
-  const hasPeriod = Boolean(item.period || periodDiffs.length > 0);
-  const title = (
-    <h3
-      className="min-w-0 break-words font-extrabold"
-      style={{
-        color: settings.bodyColor,
-        fontSize: `${settings.itemTitleScale}em`,
-      }}
-    >
-      <ResumeDiffText richText value={item.title} diffs={fieldDiffs("title")} />
-    </h3>
-  );
-  const subtitle = hasSubtitle ? (
-    <p
-      className={cn(
-        "min-w-0 break-words font-medium",
-        !item.subtitle && "resume-diff-empty-slot",
-      )}
-      style={{
-        color: settings.bodyColor,
-        fontSize: `${settings.bodyScale}em`,
-      }}
-    >
-      <ResumeItemText
-        diff={diff}
-        fallbackDiffs={subtitleDiffs}
-        parts={item.subtitleParts}
-        value={item.subtitle}
-      />
-    </p>
-  ) : null;
-  const hasMetadata = hasMeta || hasPeriod;
-
-  let heading: ReactNode;
-
-  if (layout === "stacked") {
-    heading = (
-      <div className="grid gap-1" data-resume-page-block="true">
-        {title}
-        {subtitle}
-        {hasMetadata ? (
-          <div
-            className="resume-tone-muted flex flex-wrap gap-x-3 gap-y-1"
-            style={{ fontSize: `${settings.metaScale}em` }}
-          >
-            {hasMeta ? (
-              <span className={cn(!item.meta && "resume-diff-empty-slot")}>
-                <ResumeItemText
-                  diff={diff}
-                  fallbackDiffs={metaDiffs}
-                  parts={item.metaParts}
-                  value={item.meta}
-                />
-              </span>
-            ) : null}
-            {hasPeriod ? (
-              <ResumeDiffText
-                richText
-                value={item.period}
-                diffs={periodDiffs}
-              />
-            ) : null}
-          </div>
-        ) : null}
-      </div>
-    );
-  } else if (layout === "compact") {
-    heading = (
-      <div
-        className="grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-4 gap-y-1"
-        data-resume-page-block="true"
-      >
-        {title}
-        {hasPeriod ? (
-          <span
-            className={cn(
-              "resume-tone-muted col-start-2 row-start-1 whitespace-nowrap text-right",
-              !item.period && "resume-diff-empty-slot",
-            )}
-            style={{ fontSize: `${settings.metaScale}em` }}
-          >
-            <ResumeDiffText richText value={item.period} diffs={periodDiffs} />
-          </span>
-        ) : null}
-        {hasSubtitle ? (
-          <div className="col-start-1 row-start-2">{subtitle}</div>
-        ) : null}
-        {hasMeta ? (
-          <span
-            className={cn(
-              "resume-tone-muted col-start-2 row-start-2 whitespace-nowrap text-right",
-              !item.meta && "resume-diff-empty-slot",
-            )}
-            style={{ fontSize: `${settings.metaScale}em` }}
-          >
-            <ResumeItemText
-              diff={diff}
-              fallbackDiffs={metaDiffs}
-              parts={item.metaParts}
-              value={item.meta}
-            />
-          </span>
-        ) : null}
-      </div>
-    );
-  } else {
-    heading = (
-      <div
-        className="grid grid-cols-[minmax(0,1fr)_fit-content(45%)] items-baseline gap-x-4 gap-y-1"
-        data-resume-page-block="true"
-        style={{ lineHeight: settings.bodyLineHeight }}
-      >
-        {title}
-        {hasPeriod ? (
-          <span
-            className={cn(
-              "resume-tone-muted col-start-2 row-start-1 min-w-0 break-words text-right",
-              !item.period && "resume-diff-empty-slot",
-            )}
-            style={{ fontSize: `${settings.metaScale}em` }}
-          >
-            <ResumeDiffText richText value={item.period} diffs={periodDiffs} />
-          </span>
-        ) : null}
-        {hasSubtitle ? (
-          <div className="col-start-1 row-start-2 min-w-0">{subtitle}</div>
-        ) : null}
-        {hasMeta ? (
-          <span
-            className={cn(
-              "resume-tone-muted col-start-2 min-w-0 break-words text-right",
-              hasPeriod ? "row-start-2" : "row-start-1",
-              !item.meta && "resume-diff-empty-slot",
-            )}
-            style={{ fontSize: `${settings.metaScale}em` }}
-          >
-            <ResumeItemText
-              diff={diff}
-              fallbackDiffs={metaDiffs}
-              parts={item.metaParts}
-              value={item.meta}
-            />
-          </span>
-        ) : null}
-      </div>
-    );
-  }
 
   return (
     <article
@@ -249,7 +83,13 @@ function TimelineItem({
       data-resume-diff-path={structuralDiff?.path}
     >
       <ResumeDiffBadge diff={markerDiff} t={t} />
-      {heading}
+      <TimelineItemHeading
+        diff={diff}
+        item={item}
+        kind={kind}
+        layout={layout}
+        settings={settings}
+      />
 
       {item.url || urlDiffs.length > 0 ? (
         <p
@@ -451,7 +291,9 @@ export function SectionItems({
       t={t}
       settings={settings}
       itemDiffById={itemDiffById}
-      layout={layout.timelineItemLayout}
+      layout={
+        layout.sectionItemLayouts[section.kind] ?? layout.timelineItemLayout
+      }
       deletedItemDiffs={deletedItemDiffs}
     />
   );

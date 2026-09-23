@@ -1,5 +1,7 @@
 import type { Ref } from "react";
 
+import "./resize-handle.css";
+
 export function ResizeHandle({
   label,
   width,

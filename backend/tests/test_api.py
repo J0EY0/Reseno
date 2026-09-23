@@ -158,6 +158,7 @@ def template_artifact_item(name: str = "Custom Template") -> dict:
             "basicInfo": "centered",
             "section": "plain",
             "timelineItemLayout": "split",
+            "sectionItemLayouts": {},
             "listItemLayout": "list",
             "avatarPosition": "right",
             "avatarShape": "rounded",

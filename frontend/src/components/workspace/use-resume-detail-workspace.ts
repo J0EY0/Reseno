@@ -21,7 +21,7 @@ import { useResumeDetailModels } from "@/components/workspace/use-resume-detail-
 import { useWorkspacePreferences } from "@/components/workspace/workspace-preferences-context";
 import { useResumeDetailSave } from "@/components/workspace/use-resume-detail-save";
 import { useResumeDetailSession } from "@/components/workspace/use-resume-detail-session";
-import { useResumeResourceRecovery } from "@/components/workspace/use-resume-resource-recovery";
+import { useWorkspaceResourceRecovery } from "@/components/workspace/use-workspace-resource-recovery";
 import { usePreparedWorkspaceNavigation } from "@/components/workspace/use-prepared-workspace-navigation";
 import { useWorkspaceNavigationTransaction } from "@/components/workspace/use-workspace-navigation-transaction";
 import { prepareResumeDetailRoute } from "@/components/workspace/workspace-route-preparation";
@@ -161,7 +161,11 @@ export function useResumeDetailWorkspace({
     save.hydratePersistedResume(detail, versions);
   }
   const saveResume = save.save;
-  const saveAndReload = useResumeResourceRecovery({ save, beginNavigation });
+  const saveAndReload = useWorkspaceResourceRecovery({
+    saveCheckpoint: () => saveResume("checkpoint", { notifyOnError: false }),
+    hasUnsavedChanges: save.hasUnsavedChanges,
+    beginNavigation,
+  });
   const saveCheckpoint = useCallback(() => {
     void saveResume("checkpoint").catch(notifyApiError);
   }, [saveResume]);
