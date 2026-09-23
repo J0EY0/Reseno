@@ -157,13 +157,35 @@ def test_template_custom_avatar_size_updates_preview_and_survives_reload(
     preview = page.locator('[data-export-root="resume-page"]:visible').last
     avatar = preview.locator('[data-avatar-frame="true"]')
 
-    def record_size_panel() -> None:
+    def record_size_panel(*, custom: bool) -> None:
         size.evaluate(
-            """trigger => {
+            """(trigger, custom) => {
               const record = { active: true, frames: [] };
               window.__avatarSizeRecording = record;
+              const captureAnimation = () => {
+                if (record.animation) return;
+                const input = document.querySelector('input[aria-label="头像宽度"]');
+                const panel = input?.closest('[data-slot="collapsible-content"]');
+                if (panel?.dataset.state !== (custom ? 'open' : 'closed')) return;
+                const name = custom ? 'collapsible-down' : 'collapsible-up';
+                const animation = panel.getAnimations().find(
+                  animation => animation.playState === 'running' &&
+                    animation.animationName === name,
+                );
+                if (!animation) return;
+                animation.pause();
+                const duration = animation.effect.getComputedTiming().duration;
+                animation.currentTime = duration / 4;
+                record.animation = animation;
+              };
+              record.observer = new MutationObserver(captureAnimation);
+              const editor = trigger.closest('[data-slot="template-editor"]');
+              record.observer.observe(editor, {
+                attributes: true, childList: true, subtree: true,
+              });
               const sample = () => {
                 if (!record.active || window.__avatarSizeRecording !== record) return;
+                captureAnimation();
                 const input = document.querySelector('input[aria-label="头像宽度"]');
                 const panel = input?.closest('[data-slot="collapsible-content"]');
                 record.frames.push({
@@ -179,10 +201,39 @@ def test_template_custom_avatar_size_updates_preview_and_survives_reload(
                 requestAnimationFrame(sample);
               };
               sample();
-            }"""
+            }""",
+            custom,
         )
 
     def assert_size_panel_animation(*, custom: bool) -> None:
+        if reduced_motion != "reduce":
+            page.wait_for_function(
+                "() => window.__avatarSizeRecording.animation?.playState === 'paused'"
+            )
+            samples = page.evaluate(
+                """() => {
+                  const animation = window.__avatarSizeRecording.animation;
+                  const panel = animation.effect.target;
+                  const duration = animation.effect.getComputedTiming().duration;
+                  return [0.2, 0.5, 0.8].map(progress => {
+                    animation.currentTime = duration * progress;
+                    return {
+                      height: panel.getBoundingClientRect().height,
+                      contentHeight: panel.firstElementChild
+                        .getBoundingClientRect().height,
+                    };
+                  });
+                }"""
+            )
+            heights = [sample["height"] for sample in samples]
+            assert all(
+                0 < sample["height"] < sample["contentHeight"] for sample in samples
+            ), samples
+            assert all(
+                left < right if custom else left > right
+                for left, right in zip(heights, heights[1:], strict=False)
+            ), samples
+            page.evaluate("() => window.__avatarSizeRecording.animation.play()")
         page.wait_for_function(
             """custom => {
               const frame = window.__avatarSizeRecording.frames.at(-1);
@@ -196,6 +247,7 @@ def test_template_custom_avatar_size_updates_preview_and_survives_reload(
             """() => {
               const record = window.__avatarSizeRecording;
               record.active = false;
+              record.observer.disconnect();
               return record.frames;
             }"""
         )
@@ -208,23 +260,24 @@ def test_template_custom_avatar_size_updates_preview_and_survives_reload(
         if reduced_motion == "reduce":
             assert not any(frame["moving"] for frame in frames), frames
             assert intermediate == [], frames
-        else:
-            assert any(frame["moving"] for frame in intermediate), frames
 
     def assert_preview_dimensions(
         expected_width: float, expected_height: float
     ) -> None:
         expect(avatar).to_be_visible()
         page.wait_for_function(
-            """({ avatar, width, height }) => {
-              const paper = avatar.closest('[data-export-root="resume-page"]');
+            """({ width, height }) => {
+              const paper = [...document.querySelectorAll(
+                '[data-export-root="resume-page"]',
+              )].filter(page => page.getBoundingClientRect().width > 0).at(-1);
+              const avatar = paper?.querySelector('[data-avatar-frame="true"]');
+              if (!avatar) return false;
               const pxPerMm = paper.getBoundingClientRect().width / 210;
               const rect = avatar.getBoundingClientRect();
               return Math.abs(rect.width / pxPerMm - width) < 0.15 &&
                 Math.abs(rect.height / pxPerMm - height) < 0.15;
             }""",
             arg={
-                "avatar": avatar.element_handle(),
                 "width": expected_width,
                 "height": expected_height,
             },
@@ -264,7 +317,7 @@ def test_template_custom_avatar_size_updates_preview_and_survives_reload(
         page.wait_for_url(f"{frontend_url}/template/template-*")
         template_id = urlparse(page.url).path.rsplit("/", maxsplit=1)[-1]
         expect(size).to_be_enabled()
-        record_size_panel()
+        record_size_panel(custom=True)
         size.click()
         custom = page.get_by_role("option", name="自定义", exact=True)
         expect(custom).to_be_enabled()
@@ -291,7 +344,7 @@ def test_template_custom_avatar_size_updates_preview_and_survives_reload(
         expect(height).to_have_value("37.5")
         assert_preview_dimensions(29.5, 37.5)
 
-        record_size_panel()
+        record_size_panel(custom=False)
         size.click()
         page.get_by_role("option", name="标准", exact=True).click()
         expect(size).to_have_text("标准")
