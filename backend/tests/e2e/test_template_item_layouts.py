@@ -63,24 +63,48 @@ def test_section_layout_disclosure_animates_and_keeps_keyboard_focus(
         for expanded in (True, False, True):
             trigger.focus()
             page.evaluate(
-                """id => {
-                  window.__sectionMotion = { frames: [], done: false };
-                  const started = performance.now();
-                  function sample() {
+                """({ id, expanded, reduce }) => {
+                  const record = { active: true, frames: [] };
+                  window.__sectionMotion = record;
+                  const captureAnimation = () => {
+                    if (reduce || record.animation) return;
                     const panel = document.getElementById(id);
-                    window.__sectionMotion.frames.push({
+                    if (panel?.dataset.state !== (expanded ? 'open' : 'closed')) return;
+                    const name = expanded ? 'collapsible-down' : 'collapsible-up';
+                    const animation = panel.getAnimations().find(animation =>
+                      animation instanceof CSSAnimation &&
+                      animation.animationName === name &&
+                      animation.playState === 'running'
+                    );
+                    if (!animation) return;
+                    animation.pause();
+                    const duration = animation.effect.getComputedTiming().duration;
+                    animation.currentTime = duration / 4;
+                    record.animation = animation;
+                  };
+                  record.observer = new MutationObserver(captureAnimation);
+                  record.observer.observe(document.querySelector(
+                    '[data-slot="template-editor"]'
+                  ), { attributes: true, childList: true, subtree: true });
+                  function sample() {
+                    if (!record.active || window.__sectionMotion !== record) return;
+                    captureAnimation();
+                    const panel = document.getElementById(id);
+                    record.frames.push({
                       height: panel?.getBoundingClientRect().height ?? 0,
                       running: panel?.getAnimations({ subtree: true }).some(
                         animation => animation.playState === 'running'
                       ) ?? false,
                     });
-                    if (performance.now() - started < 650) {
-                      requestAnimationFrame(sample);
-                    } else window.__sectionMotion.done = true;
+                    requestAnimationFrame(sample);
                   }
                   sample();
                 }""",
-                panel_id,
+                {
+                    "id": panel_id,
+                    "expanded": expanded,
+                    "reduce": reduced_motion == "reduce",
+                },
             )
             page.keyboard.press("Enter")
             if not expanded:
@@ -94,14 +118,60 @@ def test_section_layout_disclosure_animates_and_keeps_keyboard_focus(
             else:
                 expect(trigger).to_be_focused()
             expect(trigger).to_have_attribute("aria-expanded", str(expanded).lower())
-            page.wait_for_function("window.__sectionMotion.done")
-            frames = page.evaluate("window.__sectionMotion.frames")
-            heights = [frame["height"] for frame in frames]
+            if reduced_motion != "reduce":
+                page.wait_for_function(
+                    "window.__sectionMotion.animation?.playState === 'paused'"
+                )
+                samples = page.evaluate(
+                    """() => {
+                      const animation = window.__sectionMotion.animation;
+                      const panel = animation.effect.target;
+                      const duration = animation.effect.getComputedTiming().duration;
+                      return [0.2, 0.5, 0.8].map(progress => {
+                        animation.currentTime = duration * progress;
+                        return {
+                          height: panel.getBoundingClientRect().height,
+                          contentHeight: panel.firstElementChild
+                            .getBoundingClientRect().height,
+                        };
+                      });
+                    }"""
+                )
+                assert all(
+                    0 < sample["height"] < sample["contentHeight"] for sample in samples
+                ), samples
+                heights = [sample["height"] for sample in samples]
+                assert all(
+                    left < right if expanded else left > right
+                    for left, right in zip(heights, heights[1:], strict=False)
+                ), samples
+                page.evaluate("window.__sectionMotion.animation.play()")
+            page.wait_for_function(
+                """({ id, expanded }) => {
+                  const panel = document.getElementById(id);
+                  if (panel?.getAnimations({ subtree: true }).some(
+                    animation => animation.playState === 'running'
+                  )) return false;
+                  const height = panel?.getBoundingClientRect().height ?? 0;
+                  const contentHeight = panel?.firstElementChild
+                    ?.getBoundingClientRect().height ?? 0;
+                  return expanded
+                    ? panel?.dataset.state === 'open' && height > 0 &&
+                      Math.abs(height - contentHeight) < 1
+                    : height === 0;
+                }""",
+                arg={"id": panel_id, "expanded": expanded},
+            )
+            frames = page.evaluate(
+                """() => {
+                  const record = window.__sectionMotion;
+                  record.active = false;
+                  record.observer.disconnect();
+                  return record.frames;
+                }"""
+            )
             if reduced_motion == "reduce":
                 assert not any(frame["running"] for frame in frames), frames
-            else:
-                assert any(frame["running"] for frame in frames), frames
-                assert any(1 < height < max(heights) - 1 for height in heights), frames
             if expanded:
                 expect(control).to_be_visible()
             else:

@@ -53,73 +53,167 @@ def test_template_tabs_animate_and_preserve_image_controls_when_switching_quickl
 
     def record_switch(tablist: Locator, start: str, target: str) -> None:
         wait_for_indicator(tablist)
+        destination = tablist.get_by_role("tab", name=target, exact=True)
         tablist.evaluate(
-            """list => {
+            """(list, options) => {
               const indicator = list.querySelector(
                 '[data-slot="template-tabs-indicator"]',
               );
-              window.__templateTabFrames = [];
-              window.__templateTabRecording = true;
+              const record = { active: true, frames: [], animations: [] };
+              window.__templateTabRecording = record;
+              const captureAnimations = () => {
+                const active = list.querySelector('[role="tab"][aria-selected="true"]');
+                if (options.reduce || active?.id !== options.targetId) return;
+                const panel = document.getElementById(
+                  active.getAttribute('aria-controls'),
+                );
+                const candidates = [
+                  ...indicator.getAnimations().filter(animation =>
+                    animation instanceof CSSTransition &&
+                    ['transform', 'width'].includes(animation.transitionProperty)),
+                  ...(options.panel ? panel.getAnimations().filter(animation =>
+                    animation instanceof CSSAnimation &&
+                    animation.animationName === 'template-style-panel-enter') : []),
+                ];
+                for (const animation of candidates) {
+                  if (record.animations.includes(animation)
+                      || animation.playState !== 'running') continue;
+                  animation.pause();
+                  const duration = animation.effect.getComputedTiming().duration;
+                  animation.currentTime = duration / 4;
+                  record.animations.push(animation);
+                }
+              };
               const sample = () => {
+                captureAnimations();
                 const active = list.querySelector('[role="tab"][aria-selected="true"]');
                 const panel = document.getElementById(
                   active.getAttribute('aria-controls'),
                 );
                 const rect = indicator.getBoundingClientRect();
                 const target = active.getBoundingClientRect();
-                window.__templateTabFrames.push({
+                const frame = {
                   x: rect.x,
                   targetX: target.x,
                   moving: indicator.getAnimations().some(
                     item => item.playState === 'running',
                   ),
+                  panelMoving: panel?.getAnimations().some(
+                    item => item.playState === 'running',
+                  ) ?? false,
                   panelOpacity: panel ? Number(getComputedStyle(panel).opacity) : null,
-                });
-                if (window.__templateTabRecording) requestAnimationFrame(sample);
+                };
+                record.frames.push(frame);
+                return frame;
               };
-              sample();
-            }"""
+              record.sample = sample;
+              record.observer = new MutationObserver(sample);
+              record.observer.observe(list.closest('[data-slot="template-editor"]'), {
+                attributes: true, childList: true, subtree: true,
+              });
+              const tick = () => {
+                if (!record.active || window.__templateTabRecording !== record) return;
+                sample();
+                requestAnimationFrame(tick);
+              };
+              tick();
+            }""",
+            {
+                "targetId": destination.get_attribute("id"),
+                "panel": target == "字体",
+                "reduce": reduced_motion == "reduce",
+            },
         )
         source = tablist.get_by_role("tab", name=start, exact=True)
         source.focus()
         source.press("ArrowRight")
-        destination = tablist.get_by_role("tab", name=target, exact=True)
         expect(destination).to_be_focused()
         expect(destination).to_have_attribute("aria-selected", "true")
+        if reduced_motion != "reduce":
+            page.wait_for_function(
+                """panel => {
+                  const animations = window.__templateTabRecording.animations;
+                  return animations.some(animation =>
+                    animation.transitionProperty === 'transform'
+                    && animation.playState === 'paused') && (!panel || animations.some(
+                    animation =>
+                      animation.animationName === 'template-style-panel-enter'
+                      && animation.playState === 'paused'));
+                }""",
+                arg=target == "字体",
+            )
+            samples = page.evaluate(
+                """() => {
+                  const record = window.__templateTabRecording;
+                  return [0.2, 0.5, 0.8].map(progress => {
+                    for (const animation of record.animations) {
+                      const duration = animation.effect.getComputedTiming().duration;
+                      animation.currentTime = duration * progress;
+                    }
+                    return record.sample();
+                  });
+                }"""
+            )
+            initial_x = page.evaluate("() => window.__templateTabRecording.frames[0].x")
+            assert all(
+                min(initial_x, sample["targetX"])
+                < sample["x"]
+                < max(initial_x, sample["targetX"])
+                for sample in samples
+            ), samples
+            assert samples[0]["x"] < samples[1]["x"] < samples[2]["x"], samples
+            if target == "字体":
+                opacities = [sample["panelOpacity"] for sample in samples]
+                assert all(0 < opacity < 1 for opacity in opacities), samples
+                assert opacities[0] < opacities[1] < opacities[2], samples
+            page.evaluate(
+                """() => window.__templateTabRecording.animations.forEach(
+                  animation => animation.play(),
+                )"""
+            )
         wait_for_indicator(tablist)
+        if target == "字体":
+            expect(page.get_by_role("tabpanel", name=target, exact=True)).to_have_css(
+                "opacity", "1"
+            )
         frames = page.evaluate(
             """() => {
-              window.__templateTabRecording = false;
-              return window.__templateTabFrames;
+              const record = window.__templateTabRecording;
+              record.sample();
+              record.active = false;
+              record.observer.disconnect();
+              return record.frames;
             }"""
         )
         if reduced_motion == "reduce":
-            assert not any(frame["moving"] for frame in frames), frames
-            assert all(frame["panelOpacity"] in (None, 1) for frame in frames), frames
-        else:
-            assert any(frame["moving"] for frame in frames), frames
-            initial_x = frames[0]["x"]
-            assert any(
-                min(initial_x, frame["targetX"])
-                < frame["x"]
-                < max(initial_x, frame["targetX"])
-                for frame in frames
+            assert not any(
+                frame["moving"] or frame["panelMoving"] for frame in frames
             ), frames
-            if target == "字体":
-                assert any(
-                    frame["panelOpacity"] is not None and 0 < frame["panelOpacity"] < 1
-                    for frame in frames
-                ), frames
+            assert all(frame["panelOpacity"] in (None, 1) for frame in frames), frames
 
-    def record_border(image_editor: Locator, *, reverse: bool = False) -> None:
+    def record_border(image_editor: Locator, *, checked: bool) -> None:
         image_editor.evaluate(
             """(editor, options) => {
               const record = { active: true, frames: [], reversed: false };
               window.__templateBorderRecording = record;
+              const captureAnimation = () => {
+                if (record.animation || options.reduce) return;
+                const panel = editor.querySelector('.template-image-border-presence');
+                const state = options.checked ? 'open' : 'closed';
+                if (panel?.dataset.state !== state) return;
+                const name = options.checked
+                  ? 'template-image-border-in' : 'template-image-border-out';
+                const animation = panel.getAnimations().find(animation =>
+                  animation instanceof CSSAnimation && animation.playState === 'running'
+                    && animation.animationName === name);
+                if (!animation) return;
+                animation.pause();
+                const duration = animation.effect.getComputedTiming().duration;
+                animation.currentTime = duration / 4;
+                record.animation = animation;
+              };
               const sample = () => {
-                if (!record.active || window.__templateBorderRecording !== record) {
-                  return;
-                }
+                captureAnimation();
                 const toggle = editor.querySelector('[role="switch"]');
                 const panel = editor.querySelector('.template-image-border-presence');
                 const width = panel?.querySelector('input[type="number"]');
@@ -134,7 +228,7 @@ def test_template_tabs_animate_and_preserve_image_controls_when_switching_quickl
                   width.focus();
                   acceptedFocus = document.activeElement === width;
                 }
-                record.frames.push({
+                const frame = {
                   checked, opacity, moving,
                   rendered: Boolean(panel?.getBoundingClientRect().width),
                   inputs: inputs.length,
@@ -146,25 +240,73 @@ def test_template_tabs_animate_and_preserve_image_controls_when_switching_quickl
                   borderWidth: Number.parseFloat(editor.querySelector(
                     '[data-slot="template-image-thumbnail"]',
                   ).style.borderWidth),
-                });
-                if (options.reverse && !record.reversed && !checked
-                    && (options.reduce || (moving && opacity > 0 && opacity < 1))) {
-                  record.reversed = true;
-                  toggle.click();
-                }
-                if (record.active) requestAnimationFrame(sample);
+                };
+                record.frames.push(frame);
+                return frame;
               };
-              sample();
+              record.sample = sample;
+              record.observer = new MutationObserver(sample);
+              record.observer.observe(editor, {
+                attributes: true, childList: true, subtree: true,
+              });
+              const tick = () => {
+                if (!record.active || window.__templateBorderRecording !== record) {
+                  return;
+                }
+                sample();
+                requestAnimationFrame(tick);
+              };
+              tick();
             }""",
-            {"reverse": reverse, "reduce": reduced_motion == "reduce"},
+            {"checked": checked, "reduce": reduced_motion == "reduce"},
         )
+
+    def assert_border_animation(*, checked: bool, reverse: bool = False) -> None:
+        if reduced_motion != "reduce":
+            page.wait_for_function(
+                """() => window.__templateBorderRecording.animation
+                  ?.playState === 'paused'"""
+            )
+            samples = page.evaluate(
+                """reverse => {
+                  const record = window.__templateBorderRecording;
+                  const duration = record.animation.effect.getComputedTiming().duration;
+                  return (reverse ? [0.5] : [0.2, 0.5, 0.8]).map(progress => {
+                    record.animation.currentTime = duration * progress;
+                    return record.sample();
+                  });
+                }""",
+                reverse,
+            )
+            assert all(
+                sample["checked"] == checked and 0 < sample["opacity"] < 1
+                for sample in samples
+            ), samples
+            opacities = [sample["opacity"] for sample in samples]
+            assert all(
+                left < right if checked else left > right
+                for left, right in zip(opacities, opacities[1:], strict=False)
+            ), samples
+        if reverse:
+            image_editor.evaluate(
+                """editor => {
+                  const record = window.__templateBorderRecording;
+                  record.sample();
+                  record.reversed = true;
+                  editor.querySelector('[role="switch"]').click();
+                }"""
+            )
+        elif reduced_motion != "reduce":
+            page.evaluate("() => window.__templateBorderRecording.animation.play()")
 
     def finish_border_recording() -> list[dict]:
         return page.evaluate(
             """async () => {
               const record = window.__templateBorderRecording;
               await new Promise(requestAnimationFrame);
+              record.sample();
               record.active = false;
+              record.observer.disconnect();
               return record.frames;
             }"""
         )
@@ -235,9 +377,10 @@ def test_template_tabs_animate_and_preserve_image_controls_when_switching_quickl
         border_inputs = image_editor.locator(".template-image-border-presence input")
         border_width.fill("3")
         border_width.press("Enter")
-        record_border(image_editor)
+        record_border(image_editor, checked=False)
         border_switch.press("Space")
         expect(border_switch).to_have_attribute("aria-checked", "false")
+        assert_border_animation(checked=False)
         expect(border_inputs).to_have_count(0)
         closing_frames = finish_border_recording()
         exiting = [
@@ -249,9 +392,7 @@ def test_template_tabs_animate_and_preserve_image_controls_when_switching_quickl
             assert not exiting, closing_frames
             assert not any(frame["moving"] for frame in closing_frames), closing_frames
         else:
-            assert any(
-                frame["moving"] and 0 < frame["opacity"] < 1 for frame in exiting
-            ), closing_frames
+            assert any(0 < frame["opacity"] < 1 for frame in exiting), closing_frames
             assert all(
                 frame["inert"]
                 and frame["ariaHidden"] == "true"
@@ -262,9 +403,10 @@ def test_template_tabs_animate_and_preserve_image_controls_when_switching_quickl
                 for frame in exiting
             ), exiting
 
-        record_border(image_editor)
+        record_border(image_editor, checked=True)
         border_switch.press("Space")
         expect(border_width).to_be_enabled()
+        assert_border_animation(checked=True)
         page.wait_for_function(
             """editor => !editor.querySelector('.template-image-border-presence')
               .getAnimations().some(animation => animation.playState === 'running')""",
@@ -276,14 +418,16 @@ def test_template_tabs_animate_and_preserve_image_controls_when_switching_quickl
             assert not any(frame["moving"] for frame in opening_frames), opening_frames
         else:
             assert any(
-                frame["checked"] and frame["moving"] and 0 < frame["opacity"] < 1
+                frame["checked"] and 0 < frame["opacity"] < 1
                 for frame in opening_frames
             ), opening_frames
 
         border_width.fill("3")
         border_width.press("Enter")
-        record_border(image_editor, reverse=True)
+        record_border(image_editor, checked=False)
         border_switch.press("Space")
+        expect(border_switch).to_have_attribute("aria-checked", "false")
+        assert_border_animation(checked=False, reverse=True)
         page.wait_for_function(
             """editor => window.__templateBorderRecording.reversed
               && editor.querySelector('[role="switch"]').getAttribute('aria-checked')

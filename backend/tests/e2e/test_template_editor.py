@@ -269,7 +269,8 @@ def test_template_custom_avatar_size_updates_preview_and_survives_reload(
             """({ width, height }) => {
               const paper = [...document.querySelectorAll(
                 '[data-export-root="resume-page"]',
-              )].filter(page => page.getBoundingClientRect().width > 0).at(-1);
+              )].filter(page => page.getBoundingClientRect().width > 0 &&
+                getComputedStyle(page).visibility !== 'hidden').at(-1);
               const avatar = paper?.querySelector('[data-avatar-frame="true"]');
               if (!avatar) return false;
               const pxPerMm = paper.getBoundingClientRect().width / 210;
@@ -1468,6 +1469,7 @@ def test_default_template_action_transitions_after_success_and_allows_retry(
                 });
                 if (window.__defaultButtonRecording) requestAnimationFrame(sample);
               };
+              window.__sampleDefaultButton = sample;
               sample();
             }"""
         )
@@ -1499,11 +1501,85 @@ def test_default_template_action_transitions_after_success_and_allows_retry(
         successful_save.wait()
         expect(button).to_have_attribute("aria-busy", "true")
         expect(button.locator('[role="status"]')).to_be_visible()
+        if reduced_motion != "reduce":
+            button.evaluate(
+                """button => {
+                  const targets = new Map([
+                    [button, 'background-color'],
+                    [button.querySelector(
+                      '[data-slot="template-default-action"]',
+                    ), 'opacity'],
+                    [button.querySelector(
+                      '[data-slot="template-default-status"]',
+                    ), 'opacity'],
+                  ]);
+                  const captured = new Map();
+                  window.__defaultButtonAnimations = captured;
+                  const observer = new MutationObserver(() => {
+                    if (button.getAttribute('aria-label') !== '默认模板') return;
+                    for (const animation of button.getAnimations({ subtree: true })) {
+                      const target = animation.effect.target;
+                      if (!(animation instanceof CSSTransition) ||
+                          !targets.has(target) || captured.has(target) ||
+                          targets.get(target) !== animation.transitionProperty) {
+                        continue;
+                      }
+                      animation.pause();
+                      animation.currentTime = 0;
+                      captured.set(target, animation);
+                    }
+                    if (captured.size === targets.size) observer.disconnect();
+                  });
+                  observer.observe(button, {
+                    attributes: true, childList: true, subtree: true,
+                  });
+                }"""
+            )
         successful_save.release()
+        if reduced_motion != "reduce":
+            page.wait_for_function("window.__defaultButtonAnimations.size === 3")
+            samples = button.evaluate(
+                """button => {
+                  const animations = [...window.__defaultButtonAnimations.values()];
+                  const action = button.querySelector(
+                    '[data-slot="template-default-action"]',
+                  );
+                  const status = button.querySelector(
+                    '[data-slot="template-default-status"]',
+                  );
+                  return [0.2, 0.5, 0.8].map(progress => {
+                    for (const animation of animations) {
+                      animation.currentTime =
+                        animation.effect.getComputedTiming().duration * progress;
+                    }
+                    return {
+                      background: getComputedStyle(button).backgroundColor,
+                      actionOpacity: Number(getComputedStyle(action).opacity),
+                      statusOpacity: Number(getComputedStyle(status).opacity),
+                    };
+                  });
+                }"""
+            )
+            assert all(
+                0 < frame["actionOpacity"] < 1 and 0 < frame["statusOpacity"] < 1
+                for frame in samples
+            ), samples
+            assert len({frame["background"] for frame in samples}) == 3, samples
+            for previous, following in zip(samples, samples[1:], strict=False):
+                assert previous["actionOpacity"] > following["actionOpacity"], samples
+                assert previous["statusOpacity"] < following["statusOpacity"], samples
+            page.evaluate(
+                """() => {
+                  for (const animation of window.__defaultButtonAnimations.values()) {
+                    animation.play();
+                  }
+                }"""
+            )
         assert_selected_button()
         frames = page.evaluate(
             """() => {
               window.__defaultButtonRecording = false;
+              window.__sampleDefaultButton();
               return window.__defaultButtonFrames;
             }"""
         )
@@ -1522,15 +1598,6 @@ def test_default_template_action_transitions_after_success_and_allows_retry(
             assert all(
                 frame["background"] == selected_color for frame in selected_frames
             ), selected_frames
-        else:
-            assert any(
-                0 < frame["actionOpacity"] < 1 and 0 < frame["statusOpacity"] < 1
-                for frame in selected_frames
-            ), selected_frames
-            assert len({frame["background"] for frame in selected_frames}) > 2, (
-                selected_frames
-            )
-
         page.reload(wait_until="networkidle")
         assert_selected_button()
         assert page.evaluate("window.__defaultButtonTransitions") == []
@@ -1578,11 +1645,6 @@ def test_template_editor_fields_use_visible_labels_as_accessible_names(
         assert actions_box["y"] >= header_box["y"] + header_box["height"]
         assert tabs_box["y"] >= actions_box["y"] + actions_box["height"]
         _assert_template_actions_align_with_heading(editor)
-
-    def delay_default_template_response(route: Route) -> None:
-        response = route.fetch()
-        time.sleep(0.25)
-        route.fulfill(response=response)
 
     try:
         page.goto(f"{frontend_url}/template/minimal", wait_until="networkidle")
@@ -1748,10 +1810,7 @@ def test_template_editor_fields_use_visible_labels_as_accessible_names(
         assert save_payload["template"]["name"] == template_name
         assert save_payload["template"]["description"] == template_description
 
-        page.route(
-            "**/api/workspace/default-template",
-            delay_default_template_response,
-        )
+        default_save = DeferredRoute(page, "**/api/workspace/default-template")
         set_default_button = page.locator('[data-slot="template-default-button"]')
         expect(set_default_button).to_have_attribute(
             "aria-label",
@@ -1760,13 +1819,11 @@ def test_template_editor_fields_use_visible_labels_as_accessible_names(
         set_default_button.evaluate(
             """
             (button) => {
-              const frames = [];
-              window.__defaultTemplateButtonFrames = frames;
-              const startedAt = performance.now();
-              const sample = () => {
+              const record = { active: true, phase: 'before', frames: [] };
+              record.capture = () => {
                 const rect = button.getBoundingClientRect();
-                frames.push({
-                  elapsed: performance.now() - startedAt,
+                record.frames.push({
+                  phase: record.phase,
                   x: rect.x,
                   y: rect.y,
                   width: rect.width,
@@ -1775,13 +1832,31 @@ def test_template_editor_fields_use_visible_labels_as_accessible_names(
                   isBusy: button.getAttribute('aria-busy') === 'true',
                   hasSpinner: Boolean(button.querySelector('[role="status"]')),
                 });
-                if (performance.now() - startedAt < 900) {
-                  requestAnimationFrame(sample);
-                }
               };
-              requestAnimationFrame(sample);
+              const sample = () => {
+                if (!record.active
+                    || window.__defaultTemplateButtonRecording !== record)
+                  return;
+                record.capture();
+                requestAnimationFrame(sample);
+              };
+              window.__defaultTemplateButtonRecording = record;
+              sample();
             }
             """
+        )
+        set_default_button.click()
+        default_save.wait()
+        expect(set_default_button).to_have_attribute("aria-busy", "true")
+        expect(set_default_button).to_be_disabled()
+        expect(set_default_button.locator('[role="status"]')).to_be_visible()
+        page.evaluate(
+            """async () => {
+              const record = window.__defaultTemplateButtonRecording;
+              record.phase = 'busy';
+              record.capture();
+              await new Promise(requestAnimationFrame);
+            }"""
         )
         with page.expect_response(
             lambda response: (
@@ -1789,18 +1864,36 @@ def test_template_editor_fields_use_visible_labels_as_accessible_names(
                 and urlparse(response.url).path == "/api/workspace/default-template"
             )
         ):
-            set_default_button.click()
+            default_save.release()
         expect(set_default_button).to_have_attribute(
             "aria-label",
             "默认模板",
         )
-        page.wait_for_timeout(700)
-        default_button_frames = page.evaluate("window.__defaultTemplateButtonFrames")
-        assert len(default_button_frames) >= 20
+        expect(set_default_button).not_to_have_attribute("aria-busy", "true")
+        expect(set_default_button).to_be_disabled()
+        expect(set_default_button.locator("svg")).to_have_count(0)
+        default_button_frames = set_default_button.evaluate(
+            """async button => {
+              await Promise.all(button.getAnimations({ subtree: true })
+                .filter(animation =>
+                  animation.effect.getTiming().iterations !== Infinity)
+                .map(animation => animation.finished.catch(() => {})));
+              const record = window.__defaultTemplateButtonRecording;
+              record.phase = 'selected';
+              record.capture();
+              await new Promise(requestAnimationFrame);
+              record.active = false;
+              return record.frames;
+            }"""
+        )
+        assert {frame["phase"] for frame in default_button_frames} == {
+            "before",
+            "busy",
+            "selected",
+        }
         assert any(frame["isBusy"] for frame in default_button_frames)
         assert any(frame["hasSpinner"] for frame in default_button_frames)
         assert any(frame["label"] == "默认模板" for frame in default_button_frames)
-        expect(set_default_button.locator("svg")).to_have_count(0)
         for key in ("x", "y", "width", "height"):
             values = [frame[key] for frame in default_button_frames]
             assert max(values) - min(values) <= 1, {
