@@ -5,8 +5,9 @@ import time
 from urllib.parse import urlparse
 
 import pytest
-from playwright.sync_api import Browser, Page, Request, Route
+from playwright.sync_api import Browser, Page, Request, Route, expect
 
+from tests.e2e.browser_support import DeferredRoute
 from tests.e2e.browser_support import authenticated_context as _authenticated_context
 from tests.e2e.workspace_frame_support import (
     assert_visible_once_mounted,
@@ -22,12 +23,18 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _wait_for_route_frames(page: Page, path: str) -> None:
+def _wait_for_route_frames(page: Page, path: str, frame_key: str) -> None:
     page.wait_for_function(
-        """path => window.__workspaceFrames.filter(
-          frame => frame.path === path
-        ).length >= 2""",
-        arg=path,
+        """({ path, frameKey }) => {
+          const frames = window.__workspaceFrames.filter(frame => frame.path === path);
+          const stages = document.querySelectorAll(
+            '.workspace-route-stage, .workspace-document-enter');
+          const animating = [...stages].some(stage =>
+            stage.getAnimations().some(animation =>
+              animation.pending || animation.playState === 'running'));
+          return frames.length >= 2 && frames.at(-1)[frameKey] && !animating;
+        }""",
+        arg={"path": path, "frameKey": frame_key},
         timeout=5_000,
     )
 
@@ -46,12 +53,7 @@ def test_resume_navigation_keeps_cached_views_mounted_and_preview_fits(
     page = context.new_page()
     install_workspace_frame_recorder(page)
 
-    def continue_after_delay(route: Route) -> None:
-        time.sleep(0.2)
-        route.continue_()
-
-    page.route("**/api/workspace/pages/resume-editor", continue_after_delay)
-    page.route("**/api/workspace/pages/resumes", continue_after_delay)
+    detail_request = DeferredRoute(page, "**/api/workspace/pages/resume-editor")
 
     try:
         page.goto(f"{frontend_url}/resume", wait_until="networkidle")
@@ -60,10 +62,13 @@ def test_resume_navigation_keeps_cached_views_mounted_and_preview_fits(
         assert resume_link.count() == 1
         start_workspace_frame_recording(page)
         resume_link.click()
+        detail_request.wait()
+        expect(resume_link).to_have_attribute("aria-busy", "true")
+        assert page.url == f"{frontend_url}/resume"
+        _wait_for_route_frames(page, "/resume", "hasResumeGallery")
+        detail_request.release()
         page.wait_for_url(f"{frontend_url}/resume/{resume_id}")
-        page.wait_for_load_state("networkidle")
-        page.wait_for_timeout(600)
-        _wait_for_route_frames(page, f"/resume/{resume_id}")
+        _wait_for_route_frames(page, f"/resume/{resume_id}", "hasResumeDetail")
         detail_frames = stop_workspace_frame_recording(page)
 
         preview_frame = page.locator('[data-slot="document-canvas-viewport"]')
@@ -90,10 +95,10 @@ def test_resume_navigation_keeps_cached_views_mounted_and_preview_fits(
         assert_visible_once_mounted(routed_frames, "hasResumeDetail")
         assert all(
             bool(frame["hasResumeGallery"]) or bool(frame["hasResumeDetail"])
-            for frame in routed_frames
+            for frame in detail_frames
         )
-        assert not any(bool(frame["hasAppFallback"]) for frame in routed_frames)
-        assert not any(bool(frame["hasRouteSkeleton"]) for frame in routed_frames)
+        assert not any(bool(frame["hasAppFallback"]) for frame in detail_frames)
+        assert not any(bool(frame["hasRouteSkeleton"]) for frame in detail_frames)
         assert all(
             bool(frame["resumePreviewFits"])
             for frame in routed_frames
@@ -110,12 +115,15 @@ def test_resume_navigation_keeps_cached_views_mounted_and_preview_fits(
             exact=True,
         )
         assert back_button.count() == 1
+        gallery_request = DeferredRoute(page, "**/api/workspace/pages/resumes")
         start_workspace_frame_recording(page)
         back_button.click()
+        gallery_request.wait()
+        assert page.url == f"{frontend_url}/resume/{resume_id}"
+        _wait_for_route_frames(page, f"/resume/{resume_id}", "hasResumeDetail")
+        gallery_request.release()
         page.wait_for_url(f"{frontend_url}/resume")
-        page.wait_for_load_state("networkidle")
-        page.wait_for_timeout(600)
-        _wait_for_route_frames(page, "/resume")
+        _wait_for_route_frames(page, "/resume", "hasResumeGallery")
         gallery_frames = stop_workspace_frame_recording(page)
         routed_gallery_frames = [
             frame for frame in gallery_frames if frame["path"] == "/resume"
@@ -124,12 +132,10 @@ def test_resume_navigation_keeps_cached_views_mounted_and_preview_fits(
         assert_visible_once_mounted(routed_gallery_frames, "hasResumeGallery")
         assert all(
             bool(frame["hasResumeDetail"]) or bool(frame["hasResumeGallery"])
-            for frame in routed_gallery_frames
+            for frame in gallery_frames
         )
-        assert not any(bool(frame["hasAppFallback"]) for frame in routed_gallery_frames)
-        assert not any(
-            bool(frame["hasRouteSkeleton"]) for frame in routed_gallery_frames
-        )
+        assert not any(bool(frame["hasAppFallback"]) for frame in gallery_frames)
+        assert not any(bool(frame["hasRouteSkeleton"]) for frame in gallery_frames)
     finally:
         context.close()
 
@@ -556,11 +562,7 @@ def test_prepared_lateral_navigation_never_shows_loading_surface(
     page = context.new_page()
     install_workspace_frame_recorder(page)
 
-    def continue_after_delay(route: Route) -> None:
-        time.sleep(0.2)
-        route.continue_()
-
-    page.route(f"**{api_path}", continue_after_delay)
+    target_request = DeferredRoute(page, f"**{api_path}")
 
     try:
         page.goto(f"{frontend_url}/resume", wait_until="networkidle")
@@ -568,13 +570,15 @@ def test_prepared_lateral_navigation_never_shows_loading_surface(
 
         assert target_link.count() == 1
         target_link.hover()
-        page.wait_for_timeout(200)
         start_workspace_frame_recording(page)
         target_link.click()
+        target_request.wait()
+        expect(target_link).to_have_attribute("aria-busy", "true")
+        assert page.url == f"{frontend_url}/resume"
+        _wait_for_route_frames(page, "/resume", "hasResumeGallery")
+        target_request.release()
         page.wait_for_url(f"{frontend_url}{target_route}")
-        page.wait_for_load_state("networkidle")
-        page.wait_for_timeout(600)
-        _wait_for_route_frames(page, target_route)
+        _wait_for_route_frames(page, target_route, frame_key)
         frames = stop_workspace_frame_recording(page)
         routed_frames = [frame for frame in frames if frame["path"] == target_route]
 
@@ -582,11 +586,11 @@ def test_prepared_lateral_navigation_never_shows_loading_surface(
         assert_visible_once_mounted(routed_frames, frame_key)
         handoff_states = [
             bool(frame["hasResumeGallery"]) or bool(frame[frame_key])
-            for frame in routed_frames
+            for frame in frames
         ]
-        app_fallback_states = [bool(frame["hasAppFallback"]) for frame in routed_frames]
-        skeleton_states = [bool(frame["hasRouteSkeleton"]) for frame in routed_frames]
-        sidebar_states = [bool(frame["hasSidebar"]) for frame in routed_frames]
+        app_fallback_states = [bool(frame["hasAppFallback"]) for frame in frames]
+        skeleton_states = [bool(frame["hasRouteSkeleton"]) for frame in frames]
+        sidebar_states = [bool(frame["hasSidebar"]) for frame in frames]
 
         assert all(handoff_states), boolean_runs(handoff_states)
         assert not any(app_fallback_states), boolean_runs(app_fallback_states)

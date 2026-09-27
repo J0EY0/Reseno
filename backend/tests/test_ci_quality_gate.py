@@ -26,6 +26,7 @@ def gate_results(
         "model-metadata": {"result": "success" if metadata else "skipped"},
         "backend": {"result": "success" if checks else "skipped"},
         "frontend": {"result": "success" if checks else "skipped"},
+        "browser-shards": {"result": "success" if checks and browser else "skipped"},
         "browser-smoke": {"result": "success" if checks and browser else "skipped"},
         "container-validation": {
             "result": "success" if container and browser else "skipped"
@@ -110,7 +111,15 @@ def test_snapshot_only_changes_reject_unsuccessful_metadata_validation(status):
 
 
 @pytest.mark.parametrize(
-    "job", ["changes", "backend", "frontend", "browser-smoke", "container-validation"]
+    "job",
+    [
+        "changes",
+        "backend",
+        "frontend",
+        "browser-shards",
+        "browser-smoke",
+        "container-validation",
+    ],
 )
 @pytest.mark.parametrize("status", ["failure", "cancelled", "skipped"])
 def test_gate_rejects_unsuccessful_required_jobs(job, status):
@@ -147,6 +156,7 @@ def test_gate_rejects_missing_filter_output(name):
         "model-metadata",
         "backend",
         "frontend",
+        "browser-shards",
         "browser-smoke",
         "container-validation",
     ],
@@ -184,7 +194,14 @@ def test_release_tag_cannot_skip_validation_using_path_filters(git_ref, metadata
 
 @pytest.mark.parametrize(
     "job",
-    ["model-metadata", "backend", "frontend", "browser-smoke", "container-validation"],
+    [
+        "model-metadata",
+        "backend",
+        "frontend",
+        "browser-shards",
+        "browser-smoke",
+        "container-validation",
+    ],
 )
 def test_gate_rejects_unexpected_job_execution(job):
     needs = gate_results(checks=False, image=False, container=False)

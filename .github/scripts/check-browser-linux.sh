@@ -24,5 +24,5 @@ docker run --rm --init --ipc=host \
       exit "$status"
     }
     trap finalize_artifacts EXIT
-    pnpm test:browser:ci
-  '
+    pnpm test:browser:ci "$@"
+  ' -- "$@"

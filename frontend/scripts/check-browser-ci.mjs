@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { arch, platform, release } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,7 +35,26 @@ export function runBrowserCi({
   environment = process.env,
   log = console.log,
   nodeVersion = process.version,
+  args = [],
 } = {}) {
+  let shard;
+  if (args.length > 0) {
+    const match =
+      args.length === 2 &&
+      args[0] === "--shard" &&
+      /^([1-9]\d*)\/([1-9]\d*)$/.exec(args[1]);
+    if (!match) throw new Error("Expected --shard INDEX/TOTAL.");
+    const index = Number(match[1]);
+    const total = Number(match[2]);
+    if (
+      !Number.isSafeInteger(index) ||
+      !Number.isSafeInteger(total) ||
+      index > total
+    ) {
+      throw new Error("Invalid shard: INDEX must be between 1 and TOTAL.");
+    }
+    shard = { index, total };
+  }
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const resultsRoot = resolve(
     backendRoot,
@@ -43,6 +62,23 @@ export function runBrowserCi({
     `browser-${timestamp}-${process.pid}`,
   );
   log(`Browser CI results: ${resultsRoot}`);
+  const splitArgs = [];
+  if (shard) {
+    const durationsPath = resolve(resultsRoot, "split-durations.json");
+    mkdirSync(resultsRoot, { recursive: true });
+    writeFileSync(durationsPath, "{}\n");
+    splitArgs.push(
+      "--splits",
+      String(shard.total),
+      "--group",
+      String(shard.index),
+      "--splitting-algorithm",
+      "duration_based_chunks",
+      "--durations-path",
+      durationsPath,
+    );
+    log(`Browser CI shard: ${shard.index}/${shard.total}`);
+  }
   const env = { ...environment };
   for (const key of [
     "PLAYWRIGHT_CHROMIUM_EXECUTABLE",
@@ -158,6 +194,7 @@ export function runBrowserCi({
       args: ["build", "--manifest"],
       cwd: frontendRoot,
       mode: "dev",
+      shared: true,
     },
     {
       label: "Test production frontend hosting",
@@ -167,6 +204,7 @@ export function runBrowserCi({
         `--junitxml=${resolve(resultsRoot, "production.xml")}`,
       ],
       mode: "preview",
+      shared: true,
     },
     {
       label: "Test production editor chunk recovery",
@@ -176,6 +214,7 @@ export function runBrowserCi({
         `--junitxml=${resolve(resultsRoot, "editor-chunk-recovery.xml")}`,
       ],
       mode: "preview",
+      shared: true,
     },
     {
       label: "Run browser smoke tests",
@@ -183,6 +222,7 @@ export function runBrowserCi({
         "tests/e2e",
         "-m",
         "browser_smoke",
+        ...splitArgs,
         "-n",
         "2",
         "--dist",
@@ -204,9 +244,11 @@ export function runBrowserCi({
         `--junitxml=${resolve(resultsRoot, "pdf-ats.xml")}`,
       ],
       mode: "dev",
+      shared: true,
     },
   ];
   for (const stage of stages) {
+    if (stage.shared && shard && shard.index !== 1) continue;
     log(stage.label);
     run(
       stage.label,
@@ -225,7 +267,7 @@ if (
   resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 ) {
   try {
-    runBrowserCi();
+    runBrowserCi({ args: process.argv.slice(2) });
   } catch (error) {
     console.error(error.message);
     process.exitCode = error.exitCode ?? 1;

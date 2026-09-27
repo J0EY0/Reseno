@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -139,6 +139,58 @@ test("browser CI builds and runs every CI stage with explicit modes", () => {
     assert.equal(call.env.E2E_ARTIFACTS_DIR, resolve(resultsRoot, "browser"));
   }
 });
+
+test("browser shards run production and PDF checks only in the first shard", (t) => {
+  for (let index = 1; index <= 4; index += 1) {
+    const runner = recordingRunner();
+    runBrowserCi({
+      ...runner,
+      environment: {},
+      args: ["--shard", `${index}/4`],
+    });
+    const commands = runner.calls.slice(3);
+    const smoke = commands.find(({ args }) => args.includes("browser_smoke"));
+    assert.ok(smoke);
+    assert.equal(smoke.args[smoke.args.indexOf("--splits") + 1], "4");
+    assert.equal(smoke.args[smoke.args.indexOf("--group") + 1], String(index));
+    assert.equal(smoke.args[smoke.args.indexOf("-n") + 1], "2");
+    assert.equal(smoke.args[smoke.args.indexOf("--dist") + 1], "loadscope");
+    assert.equal(
+      smoke.args[smoke.args.indexOf("--splitting-algorithm") + 1],
+      "duration_based_chunks",
+    );
+    const durationsPath =
+      smoke.args[smoke.args.indexOf("--durations-path") + 1];
+    assert.equal(readFileSync(durationsPath, "utf8"), "{}\n");
+    assert.equal(
+      dirname(durationsPath),
+      runner.logs[0].replace("Browser CI results: ", ""),
+    );
+    t.after(() =>
+      rmSync(dirname(durationsPath), { recursive: true, force: true }),
+    );
+    assert.equal(commands.length, index === 1 ? 5 : 1);
+  }
+});
+
+for (const args of [
+  ["--unknown"],
+  ["--shard"],
+  ["--shard", "0/4"],
+  ["--shard", "5/4"],
+  ["--shard", "1/0"],
+  ["--shard", "1/4", "extra"],
+  ["--shard", "1/9007199254740992"],
+]) {
+  test(`browser CI rejects invalid shard arguments ${args.join(" ")}`, () => {
+    const runner = recordingRunner();
+    assert.throws(
+      () => runBrowserCi({ ...runner, environment: {}, args }),
+      /shard/,
+    );
+    assert.equal(runner.calls.length, 0);
+  });
+}
 
 for (const [tool, key, version] of [
   ["Node", "nodeVersion", "v26.0.0"],

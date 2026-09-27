@@ -163,7 +163,8 @@ jobs:
       - name: Check frontend quality
         run: pnpm check:frontend
 
-  browser-smoke:
+  browser-shards:
+    name: Browser smoke (${{ matrix.shard }}/4)
     if: >-
       needs.changes.outputs.run_checks == 'true' &&
       (github.event_name == 'pull_request' ||
@@ -171,6 +172,10 @@ jobs:
       github.ref == 'refs/heads/main' ||
       startsWith(github.ref, 'refs/tags/'))
     needs: [changes, backend, frontend]
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -178,15 +183,31 @@ jobs:
         uses: actions/checkout@v6
       - name: Run Linux browser checks
         working-directory: frontend
-        run: bash ../.github/scripts/check-browser-linux.sh
+        run: bash ../.github/scripts/check-browser-linux.sh --shard ${{ matrix.shard }}/4
       - name: Upload browser test results
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: browser-test-results
+          name: browser-test-results-${{ matrix.shard }}
           path: backend/test-results/
           if-no-files-found: ignore
           retention-days: 7
+
+  browser-smoke:
+    if: >-
+      always() && needs.changes.outputs.run_checks == 'true' &&
+      (github.event_name == 'pull_request' ||
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) ||
+      github.ref == 'refs/heads/main' ||
+      startsWith(github.ref, 'refs/tags/'))
+    needs: [changes, browser-shards]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every browser shard
+        env:
+          BROWSER_RESULT: ${{ needs.browser-shards.result }}
+        run: test "$BROWSER_RESULT" = success
 
   container-validation:
     name: Container validation (${{ matrix.arch }})
@@ -290,7 +311,7 @@ jobs:
   quality-gate:
     name: Quality gate
     if: always()
-    needs: [changes, model-metadata, backend, frontend, browser-smoke, container-validation]
+    needs: [changes, model-metadata, backend, frontend, browser-shards, browser-smoke, container-validation]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

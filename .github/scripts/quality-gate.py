@@ -41,6 +41,7 @@ def main() -> None:
         "model-metadata": metadata_only,
         "backend": run_checks,
         "frontend": run_checks,
+        "browser-shards": run_checks and full_validation,
         "browser-smoke": run_checks and full_validation,
         "container-validation": container_validation and full_validation,
     }
