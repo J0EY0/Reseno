@@ -186,6 +186,10 @@ Reseno 通过 GitHub App Manifest 流程创建归你所有的私有 GitHub App�
 CI 使用 `test:browser:linux` 对应的 Docker 脚本和相同测试入口。本地运行此命令需要 Docker；依赖和浏览器在镜像内安装，不挂载本机数据库、凭据或依赖目录。
 两种入口均在 `backend/test-results/` 下按次保存测试结果、失败截图、trace 和服务日志；任一阶段失败即停止，不自动重试。
 
+PR、main 和版本标签的 CI 通过相同入口运行四个固定浏览器分片。在 `frontend` 中执行
+`pnpm test:browser:linux --shard 1/4` 可复现单个分片（编号 1–4）。每片以双 worker 运行 smoke，
+第一片同时运行生产页面和 PDF 检查；`browser-smoke` 门禁要求四片全部通过。不传 `--shard` 则运行完整测试集。
+
 Linux 镜像固定操作系统、运行时和浏览器版本。Apple Silicon 本机默认运行 Linux ARM64，GitHub 浏览器任务运行 AMD64；
 需要复现同一架构时可设置 `DOCKER_DEFAULT_PLATFORM=linux/amd64`，但模拟执行会有额外开销。
 macOS 本机的 PDF 检查在安装 Swift 时还会覆盖 PDFKit。

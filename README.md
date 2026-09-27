@@ -243,6 +243,12 @@ directories mounted. Results, failure screenshots, traces and server logs are sa
 in a separate directory per run under `backend/test-results/` in both environments.
 Each stage stops on failure; tests are not automatically retried.
 
+PR, main, and release-tag CI run four fixed browser shards with the same entry
+point. To reproduce one shard locally, run `pnpm test:browser:linux --shard 1/4`
+from `frontend` (indices 1–4). Every shard runs smoke tests with two workers;
+the first also runs the production and PDF checks. The `browser-smoke` gate
+requires all four shards to pass. Omitting `--shard` runs the complete suite.
+
 The Linux image fixes OS, runtime and browser versions. On Apple Silicon it runs
 Linux ARM64; GitHub's browser job uses AMD64. Set `DOCKER_DEFAULT_PLATFORM=linux/amd64`
 when reproducing that architecture locally, allowing for emulation overhead.

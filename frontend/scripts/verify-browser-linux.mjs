@@ -17,25 +17,26 @@ const script = readFileSync(
   "utf8",
 );
 
-for (const [testStatus, ownershipStatus, expectedStatus] of [
-  [0, 0, 0],
-  [7, 0, 7],
-  [0, 1, 1],
-  [7, 1, 7],
-]) {
-  test(`Linux browser artifacts return to the caller after test status ${testStatus} and ownership status ${ownershipStatus}`, () => {
-    const root = mkdtempSync(resolve(tmpdir(), "reseno-browser-linux-"));
-    try {
-      mkdirSync(resolve(root, ".github/scripts"), { recursive: true });
-      mkdirSync(resolve(root, "frontend"));
-      mkdirSync(resolve(root, "bin"));
-      writeFileSync(
-        resolve(root, ".github/scripts/check-browser-linux.sh"),
-        script,
-      );
-      writeFileSync(resolve(root, "frontend/.node-version"), "24.15.0\n");
-      const commands = {
-        docker: `#!/usr/bin/env bash
+for (const shardArgs of [[], ["--shard", "3/4"]]) {
+  for (const [testStatus, ownershipStatus, expectedStatus] of [
+    [0, 0, 0],
+    [7, 0, 7],
+    [0, 1, 1],
+    [7, 1, 7],
+  ]) {
+    test(`Linux browser ${shardArgs.join(" ") || "full suite"} returns artifacts after test status ${testStatus} and ownership status ${ownershipStatus}`, () => {
+      const root = mkdtempSync(resolve(tmpdir(), "reseno-browser-linux-"));
+      try {
+        mkdirSync(resolve(root, ".github/scripts"), { recursive: true });
+        mkdirSync(resolve(root, "frontend"));
+        mkdirSync(resolve(root, "bin"));
+        writeFileSync(
+          resolve(root, ".github/scripts/check-browser-linux.sh"),
+          script,
+        );
+        writeFileSync(resolve(root, "frontend/.node-version"), "24.15.0\n");
+        const commands = {
+          docker: `#!/usr/bin/env bash
 set -eu
 command=$1
 shift
@@ -60,52 +61,55 @@ elif [ "$command" = run ]; then
   done
 fi
 `,
-        pnpm: `#!/usr/bin/env bash
+          pnpm: `#!/usr/bin/env bash
 printf '%s\\n' "$@" > "$TEST_COMMAND_LOG"
 exit "$TEST_STATUS"
 `,
-        chown: `#!/usr/bin/env bash
+          chown: `#!/usr/bin/env bash
 printf '%s\\n' "$@" > "$OWNERSHIP_LOG"
 exit "$OWNERSHIP_STATUS"
 `,
-      };
-      for (const [name, source] of Object.entries(commands)) {
-        const path = resolve(root, "bin", name);
-        writeFileSync(path, source);
-        chmodSync(path, 0o755);
-      }
-      const result = spawnSync(
-        "bash",
-        [".github/scripts/check-browser-linux.sh"],
-        {
-          cwd: root,
-          encoding: "utf8",
-          env: {
-            ...process.env,
-            PATH: `${resolve(root, "bin")}:${process.env.PATH}`,
-            TEST_COMMAND_LOG: resolve(root, "command.log"),
-            OWNERSHIP_LOG: resolve(root, "ownership.log"),
-            TEST_STATUS: String(testStatus),
-            OWNERSHIP_STATUS: String(ownershipStatus),
+        };
+        for (const [name, source] of Object.entries(commands)) {
+          const path = resolve(root, "bin", name);
+          writeFileSync(path, source);
+          chmodSync(path, 0o755);
+        }
+        const result = spawnSync(
+          "bash",
+          [".github/scripts/check-browser-linux.sh", ...shardArgs],
+          {
+            cwd: root,
+            encoding: "utf8",
+            env: {
+              ...process.env,
+              PATH: `${resolve(root, "bin")}:${process.env.PATH}`,
+              TEST_COMMAND_LOG: resolve(root, "command.log"),
+              OWNERSHIP_LOG: resolve(root, "ownership.log"),
+              TEST_STATUS: String(testStatus),
+              OWNERSHIP_STATUS: String(ownershipStatus),
+            },
           },
-        },
-      );
-      assert.equal(result.status, expectedStatus, result.stderr);
-      assert.equal(
-        readFileSync(resolve(root, "command.log"), "utf8"),
-        "test:browser:ci\n",
-      );
-      assert.deepEqual(
-        readFileSync(resolve(root, "ownership.log"), "utf8").trim().split("\n"),
-        [
-          "-R",
-          "--no-dereference",
-          `${process.getuid()}:${process.getgid()}`,
-          "/workspace/backend/test-results",
-        ],
-      );
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
+        );
+        assert.equal(result.status, expectedStatus, result.stderr);
+        assert.equal(
+          readFileSync(resolve(root, "command.log"), "utf8"),
+          ["test:browser:ci", ...shardArgs].join("\n") + "\n",
+        );
+        assert.deepEqual(
+          readFileSync(resolve(root, "ownership.log"), "utf8")
+            .trim()
+            .split("\n"),
+          [
+            "-R",
+            "--no-dereference",
+            `${process.getuid()}:${process.getgid()}`,
+            "/workspace/backend/test-results",
+          ],
+        );
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  }
 }
