@@ -381,6 +381,46 @@ it.each(["applied", "failed"] as const)(
   },
 );
 
+it("keeps the historical preview template stable across pagination readiness updates", async () => {
+  const f = fixture();
+  const first: ResumeDetailResponse = {
+    resume: { ...f.initial, templateSettings: { pagePaddingX: 18 } },
+    savedAt: "first-history",
+    versionId: "v2",
+  };
+  const second: ResumeDetailResponse = {
+    resume: { ...f.initial, templateSettings: { pagePaddingX: 12 } },
+    savedAt: "second-history",
+    versionId: "v3",
+  };
+  vi.mocked(fetchResumeVersionApi)
+    .mockResolvedValueOnce(first)
+    .mockResolvedValueOnce(second);
+  await act(async () => f.result.current.model.commands.selectVersion("v2"));
+  const template = f.result.current.model.state.previewTemplate;
+  const settings = template.settings;
+  expect(settings.pagePaddingX).toBe(18);
+
+  for (const ready of [true, false, true]) {
+    act(() => f.result.current.model.commands.onPreviewReadyChange(ready));
+    expect(f.result.current.model.state.document.isPreviewReady).toBe(ready);
+    expect(f.result.current.model.state.previewTemplate).toBe(template);
+    expect(f.result.current.model.state.previewTemplate.settings).toBe(
+      settings,
+    );
+  }
+
+  await act(async () => f.result.current.model.commands.selectVersion("v3"));
+  expect(f.result.current.model.state.previewTemplate).not.toBe(template);
+  expect(f.result.current.model.state.previewTemplate.settings).not.toBe(
+    settings,
+  );
+  expect(
+    f.result.current.model.state.previewTemplate.settings.pagePaddingX,
+  ).toBe(12);
+  expect(f.result.current.model.state.resumeItem).toEqual(f.initial);
+});
+
 it.each(["route refresh", "history selection"] as const)(
   "preserves the formal document and Agent review boundaries for %s",
   async (source) => {
