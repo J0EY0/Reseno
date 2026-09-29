@@ -1,0 +1,22 @@
+{
+  "en": {
+    "viewing": "Viewing historical version",
+    "viewedVersion": "Viewing",
+    "readOnly": "Read-only",
+    "description": "This is a read-only preview. Restoring it will replace your current resume.",
+    "restore": "Restore this version",
+    "returnToLatest": "Back to latest",
+    "restoring": "Restoring version…",
+    "restoreFailed": "Could not restore this version. Try again."
+  },
+  "zh": {
+    "viewing": "正在查看历史版本",
+    "viewedVersion": "查看中",
+    "readOnly": "只读",
+    "description": "当前为只读预览。恢复后将替换当前简历。",
+    "restore": "恢复此版本",
+    "returnToLatest": "回到最新版",
+    "restoring": "正在恢复版本…",
+    "restoreFailed": "恢复此版本失败，请重试。"
+  }
+}

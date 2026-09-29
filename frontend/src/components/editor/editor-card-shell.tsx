@@ -7,6 +7,7 @@ import { EditorCollapseButton } from "@/components/editor/editor-collapse-button
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
 
 export function EditorCardShell({
+  sectionId,
   icon: Icon,
   title,
   titleMeta,
@@ -17,6 +18,7 @@ export function EditorCardShell({
   sort,
   children,
 }: {
+  sectionId?: string;
   icon: LucideIcon;
   title: string;
   titleMeta?: string;
@@ -31,6 +33,7 @@ export function EditorCardShell({
 
   return (
     <section
+      data-editor-section-id={sectionId}
       data-collapsed={collapsed ? "true" : "false"}
       className="min-w-0 border-b border-border/70"
     >

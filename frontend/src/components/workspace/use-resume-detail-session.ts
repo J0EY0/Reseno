@@ -1,6 +1,12 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { createEmptyResume } from "@/lib/resume";
+import {
+  createResumeEditHistory,
+  recordResumeEdit,
+  travelResumeHistory,
+  type ResumeEditHistory,
+} from "@/lib/resume-edit-history";
 import { createResumeFingerprint } from "@/lib/workspace-change-tracking";
 import type {
   ResumeData,
@@ -28,10 +34,21 @@ export function useResumeDetailSession({
   initialResume,
 }: ResumeDetailSessionOptions) {
   const emptyResume = useMemo(() => createEmptyResume(), []);
-  const [{ document, openSectionId }, setSession] = useState<{
-    document: ResumeWorkspaceItem | null;
-    openSectionId: string | null;
-  }>(() => ({ document: initialResume, openSectionId: null }));
+  const [session, setSession] = useState<
+    ResumeEditHistory & {
+      openSectionId: string | null;
+      sectionNavigation: {
+        sectionId: string;
+        itemId?: string;
+        requestId: number;
+      } | null;
+    }
+  >(() => ({
+    ...createResumeEditHistory(initialResume),
+    openSectionId: null,
+    sectionNavigation: null,
+  }));
+  const { document, openSectionId, sectionNavigation } = session;
   const fingerprint = useMemo(
     () => createResumeFingerprint(document),
     [document],
@@ -44,22 +61,33 @@ export function useResumeDetailSession({
   }, [document, fingerprint]);
 
   const updateDocument = useCallback(
-    (update: (current: ResumeWorkspaceItem) => ResumeWorkspaceItem) => {
+    (
+      update: (current: ResumeWorkspaceItem) => ResumeWorkspaceItem,
+      historyGroup?: string,
+    ) => {
+      const editedAt = Date.now();
       setSession((current) => {
         if (!current.document) {
           return current;
         }
-        const next = update(current.document);
-        return next === current.document
-          ? current
-          : { ...current, document: next };
+        const next = recordResumeEdit(
+          current,
+          update(current.document),
+          editedAt,
+          historyGroup,
+        );
+        return next === current ? current : { ...current, ...next };
       });
     },
     [],
   );
 
   const hydrate = useCallback((item: ResumeWorkspaceItem) => {
-    setSession({ document: item, openSectionId: null });
+    setSession({
+      ...createResumeEditHistory(item),
+      openSectionId: null,
+      sectionNavigation: null,
+    });
   }, []);
 
   const getSnapshot = useCallback(
@@ -74,27 +102,35 @@ export function useResumeDetailSession({
 
   const adoptSavedResume = useCallback(
     (item: ResumeWorkspaceItem, submitted: ResumeWorkspaceItem) => {
-      updateDocument((current) =>
-        current.id === item.id
+      setSession((current) =>
+        current.document?.id === item.id
           ? {
               ...current,
-              title:
-                current.title === submitted.title ? item.title : current.title,
-              updatedAt: item.updatedAt,
+              document: {
+                ...current.document,
+                title:
+                  current.document.title === submitted.title
+                    ? item.title
+                    : current.document.title,
+                updatedAt: item.updatedAt,
+              },
             }
           : current,
       );
     },
-    [updateDocument],
+    [],
   );
 
   const updateContent = useCallback(
-    (update: ResumeData | ((current: ResumeData) => ResumeData)) => {
+    (
+      update: ResumeData | ((current: ResumeData) => ResumeData),
+      historyGroup?: string,
+    ) => {
       updateDocument((current) => {
         const resume =
           typeof update === "function" ? update(current.resume) : update;
         return resume === current.resume ? current : { ...current, resume };
-      });
+      }, historyGroup);
     },
     [updateDocument],
   );
@@ -122,82 +158,147 @@ export function useResumeDetailSession({
   );
 
   const updateStyle = useCallback(
-    (update: ResumeStyleUpdate) => {
-      updateDocument((current) => ({
+    (update: ResumeStyleUpdate, historyGroup?: string) => {
+      updateDocument(
+        (current) => ({
+          ...current,
+          ...(typeof update === "function" ? update(current) : update),
+        }),
+        historyGroup,
+      );
+    },
+    [updateDocument],
+  );
+
+  const applyAgentResume = useCallback(
+    (resume: ResumeData) => {
+      updateDocument((current) => ({ ...current, resume }));
+      setSession((current) => ({
         ...current,
-        ...(typeof update === "function" ? update(current) : update),
+        openSectionId: null,
+        sectionNavigation: null,
       }));
     },
     [updateDocument],
   );
 
-  const applyAgentResume = useCallback((resume: ResumeData) => {
+  const addSection = useCallback(
+    (section: ResumeSection) => {
+      updateDocument((current) => ({
+        ...current,
+        resume: {
+          ...current.resume,
+          sections: [...current.resume.sections, section],
+        },
+      }));
+      setSession((current) =>
+        current.document
+          ? {
+              ...current,
+              openSectionId: section.id,
+            }
+          : current,
+      );
+    },
+    [updateDocument],
+  );
+
+  const removeSection = useCallback(
+    (id: string) => {
+      updateDocument((current) => ({
+        ...current,
+        resume: {
+          ...current.resume,
+          sections: current.resume.sections.filter(
+            (section) => section.id !== id,
+          ),
+        },
+      }));
+      setSession((current) =>
+        current.document
+          ? {
+              ...current,
+              openSectionId:
+                current.openSectionId === id ? null : current.openSectionId,
+            }
+          : current,
+      );
+    },
+    [updateDocument],
+  );
+
+  const finishHistoryGroup = useCallback(() => {
     setSession((current) =>
-      current.document
-        ? {
-            document: { ...current.document, resume },
-            openSectionId: null,
-          }
-        : current,
+      current.group ? { ...current, group: null } : current,
     );
   }, []);
 
-  const addSection = useCallback((section: ResumeSection) => {
-    setSession((current) =>
-      current.document
-        ? {
-            document: {
-              ...current.document,
-              resume: {
-                ...current.document.resume,
-                sections: [...current.document.resume.sections, section],
-              },
-            },
-            openSectionId: section.id,
-          }
-        : current,
-    );
+  const travelHistory = useCallback((direction: "undo" | "redo") => {
+    setSession((current) => {
+      const next = travelResumeHistory(current, direction);
+      if (next === current) return current;
+      const openSectionId =
+        current.openSectionId === "basic" ||
+        next.document?.resume.sections.some(
+          (section) => section.id === current.openSectionId,
+        )
+          ? current.openSectionId
+          : null;
+      return { ...current, ...next, openSectionId, sectionNavigation: null };
+    });
   }, []);
+  const undo = useCallback(() => travelHistory("undo"), [travelHistory]);
+  const redo = useCallback(() => travelHistory("redo"), [travelHistory]);
 
-  const removeSection = useCallback((id: string) => {
-    setSession((current) =>
-      current.document
-        ? {
-            document: {
-              ...current.document,
-              resume: {
-                ...current.document.resume,
-                sections: current.document.resume.sections.filter(
-                  (section) => section.id !== id,
-                ),
-              },
-            },
-            openSectionId:
-              current.openSectionId === id ? null : current.openSectionId,
-          }
-        : current,
-    );
+  const activateSection = useCallback((sectionId: string, itemId?: string) => {
+    setSession((current) => {
+      const section = current.document?.resume.sections.find(
+        (section) => section.id === sectionId,
+      );
+      if (sectionId !== "basic" && !section) return current;
+      if (itemId && !section?.items.some((item) => item.id === itemId))
+        return current;
+      return {
+        ...current,
+        openSectionId: sectionId,
+        sectionNavigation: {
+          sectionId,
+          itemId,
+          requestId: (current.sectionNavigation?.requestId ?? 0) + 1,
+        },
+        group: null,
+      };
+    });
   }, []);
 
   const toggleSection = useCallback((id: string) => {
     setSession((current) => ({
       ...current,
       openSectionId: current.openSectionId === id ? null : id,
+      sectionNavigation: null,
+      group: null,
     }));
   }, []);
 
   return {
+    activateSection,
     addSection,
     adoptSavedResume,
     applyAgentResume,
     applyTemplate,
+    canUndo: session.past.length > 0,
+    canRedo: session.future.length > 0,
     document,
     fingerprint,
+    finishHistoryGroup,
     getFingerprint,
     getSnapshot,
     hydrate,
     jobBrief: document?.jobBrief ?? "",
     openSectionId,
+    sectionNavigation,
+    undo,
+    redo,
     removeSection,
     rename,
     resume: document?.resume ?? emptyResume,

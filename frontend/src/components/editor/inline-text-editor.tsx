@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 import { InlineFormatControls } from "./inline-format-controls";
 import type { InlineTextInputProps } from "./inline-text-input";
 import { resumeTextMarks } from "./resume-text-marks";
+import { syncEditorContent } from "./sync-editor-content";
 
 const InlineDocument = Document.extend({ content: "paragraph" });
 const menuOptions = {
@@ -56,6 +57,7 @@ export default function InlineTextEditor({
       shouldRerenderOnTransaction: false,
       extensions: [
         StarterKit.configure({
+          undoRedo: false,
           document: false,
           heading: false,
           blockquote: false,
@@ -138,7 +140,7 @@ export default function InlineTextEditor({
       ) === editorValue
     )
       return;
-    editor.commands.setContent(editorValue, { emitUpdate: false });
+    syncEditorContent(editor, editorValue);
   }, [editor, editorValue, multiline]);
 
   return (

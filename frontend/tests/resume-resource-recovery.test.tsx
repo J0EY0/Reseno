@@ -72,6 +72,7 @@ function renderRecovery() {
     () => {
       const session = useResumeDetailSession({ initialResume: initial });
       const save = useResumeDetailSave({
+        autosavePaused: false,
         getFingerprint: session.getFingerprint,
         getSnapshot: session.getSnapshot,
         initialResume: initial,

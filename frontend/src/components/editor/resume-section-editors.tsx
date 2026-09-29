@@ -16,6 +16,8 @@ type SectionItemsEditorProps = {
   t: AppMessages;
   section: ResumeSection;
   initiallyOpenItemId?: string | null;
+  expandedItemIds: ReadonlySet<string>;
+  onItemOpenChange: (itemId: string, open: boolean) => void;
   onMutation: (mutation: ResumeSectionMutation) => void;
 };
 
@@ -23,6 +25,8 @@ export function ResumeSectionItemsEditor({
   t,
   section,
   initiallyOpenItemId,
+  expandedItemIds,
+  onItemOpenChange,
   onMutation,
 }: SectionItemsEditorProps) {
   const onRemoveItem = (itemId: string) => {
@@ -103,6 +107,8 @@ export function ResumeSectionItemsEditor({
           t={t}
           section={section}
           initiallyOpenItemId={initiallyOpenItemId}
+          expandedItemIds={expandedItemIds}
+          onItemOpenChange={onItemOpenChange}
           onUpdateItem={onUpdateItem}
           onRemoveItem={onRemoveItem}
           onMoveItem={onMoveItem}
@@ -114,6 +120,8 @@ export function ResumeSectionItemsEditor({
           t={t}
           section={section}
           initiallyOpenItemId={initiallyOpenItemId}
+          expandedItemIds={expandedItemIds}
+          onItemOpenChange={onItemOpenChange}
           onUpdateItem={onUpdateItem}
           onRemoveItem={onRemoveItem}
           onMoveItem={onMoveItem}
@@ -125,6 +133,8 @@ export function ResumeSectionItemsEditor({
           t={t}
           section={section}
           initiallyOpenItemId={initiallyOpenItemId}
+          expandedItemIds={expandedItemIds}
+          onItemOpenChange={onItemOpenChange}
           onUpdateItem={onUpdateItem}
           onRemoveItem={onRemoveItem}
           onMoveItem={onMoveItem}
@@ -136,6 +146,8 @@ export function ResumeSectionItemsEditor({
           t={t}
           section={section}
           initiallyOpenItemId={initiallyOpenItemId}
+          expandedItemIds={expandedItemIds}
+          onItemOpenChange={onItemOpenChange}
           onUpdateItem={onUpdateItem}
           onRemoveItem={onRemoveItem}
           onMoveItem={onMoveItem}
@@ -147,6 +159,8 @@ export function ResumeSectionItemsEditor({
           t={t}
           section={section}
           initiallyOpenItemId={initiallyOpenItemId}
+          expandedItemIds={expandedItemIds}
+          onItemOpenChange={onItemOpenChange}
           onUpdateItem={onUpdateItem}
           onRemoveItem={onRemoveItem}
           onMoveItem={onMoveItem}

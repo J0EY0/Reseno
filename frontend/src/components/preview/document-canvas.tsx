@@ -2,6 +2,7 @@ import type { TemplateImageGeometry } from "@/lib/template-image-geometry";
 import {
   forwardRef,
   memo,
+  startTransition,
   useCallback,
   useEffect,
   useImperativeHandle,
@@ -45,6 +46,7 @@ interface DocumentCanvasBaseProps {
   resume: ResumeData;
   t: AppMessages;
   template: ResumeTemplateDefinition;
+  statusBar?: ReactNode;
   toolbarTrailing?: ReactNode;
 }
 
@@ -60,6 +62,7 @@ type DocumentCanvasProps =
   | (DocumentCanvasBaseProps & {
       draftReview?: ResumeDraftReviewPresentation;
       diffs?: ResumeDraftDiff[];
+      onActivateSection?: (sectionId: string, itemId?: string) => void;
       typography: ResumeTypographySettings;
       variant: "resume";
     })
@@ -182,6 +185,7 @@ export const DocumentCanvas = memo(
           }
           onKeyDown={onKeyDown}
         >
+          {props.statusBar}
           <div
             ref={viewportRef}
             data-slot="document-canvas-viewport"
@@ -191,6 +195,28 @@ export const DocumentCanvas = memo(
             className="document-canvas-viewport min-h-0 flex-1 cursor-default overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
             onAuxClick={onClick}
             onClick={onClick}
+            onDoubleClick={(event) => {
+              if (props.variant !== "resume" || !props.onActivateSection)
+                return;
+              const target = event.target;
+              if (!(target instanceof Element)) return;
+              const section = target.closest<HTMLElement>(
+                "[data-resume-section-id]",
+              );
+              const sectionId = section?.dataset.resumeSectionId;
+              if (
+                !sectionId ||
+                !previewRef.current?.contains(section) ||
+                section.closest('[inert], [aria-hidden="true"]')
+              )
+                return;
+              const itemId = target.closest<HTMLElement>(
+                "[data-resume-item-id]",
+              )?.dataset.resumeItemId;
+              startTransition(() =>
+                props.onActivateSection?.(sectionId, itemId),
+              );
+            }}
             onClickCapture={draftReviewInteraction.onClick}
             onBlur={(event) => {
               onViewportBlur(event);

@@ -104,7 +104,15 @@ export function useResumeDetailWorkspace({
     resumeId,
   });
   const { isLoading } = loader;
+  const agent = useResumeAgentDraft({
+    messages,
+    onApplyResume: session.applyAgentResume,
+    onResolveDraftReview: resolveAgentDraftReview,
+    resume: session.resume,
+    resumeId: session.document?.id,
+  });
   const save = useResumeDetailSave({
+    autosavePaused: Boolean(agent.review?.resolvingStatus),
     getFingerprint: session.getFingerprint,
     getSnapshot: session.getSnapshot,
     initialCheckpoint,
@@ -117,13 +125,20 @@ export function useResumeDetailWorkspace({
     onHydrateResume: hydrateResume,
     resumeId,
   });
-  const agent = useResumeAgentDraft({
-    messages,
-    onApplyResume: session.applyAgentResume,
-    onResolveDraftReview: save.resolveAgentDraftReview,
-    resume: session.resume,
-    resumeId: session.document?.id,
-  });
+  const editingDisabled =
+    isLoading ||
+    loader.hasLoadError ||
+    save.isViewingHistory ||
+    save.isVersionLoading ||
+    save.isRestoringVersion ||
+    Boolean(agent.review?.resolvingStatus);
+  const { undo: undoDocument, redo: redoDocument } = session;
+  const undo = useCallback(() => {
+    if (!editingDisabled) undoDocument();
+  }, [editingDisabled, undoDocument]);
+  const redo = useCallback(() => {
+    if (!editingDisabled) redoDocument();
+  }, [editingDisabled, redoDocument]);
   const previewPresentation = useMemo(() => {
     if (agent.review) {
       return { ...agent.review.projection, review: agent.review };
@@ -150,6 +165,14 @@ export function useResumeDetailWorkspace({
     session.hydrate(item);
   }
 
+  function resolveAgentDraftReview(
+    ...args: Parameters<
+      ReturnType<typeof useResumeDetailSave>["resolveAgentDraftReview"]
+    >
+  ) {
+    return save.resolveAgentDraftReview(...args);
+  }
+
   function handleRouteLoad({
     detail,
     routeData,
@@ -167,8 +190,9 @@ export function useResumeDetailWorkspace({
     beginNavigation,
   });
   const saveCheckpoint = useCallback(() => {
+    if (editingDisabled) return;
     void saveResume("checkpoint").catch(notifyApiError);
-  }, [saveResume]);
+  }, [editingDisabled, saveResume]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -179,14 +203,42 @@ export function useResumeDetailWorkspace({
         return;
       }
       event.preventDefault();
-      if (isLoading || loader.hasLoadError) {
+      if (editingDisabled) {
         return;
       }
       saveCheckpoint();
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isLoading, loader.hasLoadError, saveCheckpoint]);
+  }, [editingDisabled, saveCheckpoint]);
+
+  useEffect(() => {
+    const handleHistoryKey = (event: KeyboardEvent) => {
+      if (
+        event.defaultPrevented ||
+        event.isComposing ||
+        event.altKey ||
+        !(event.metaKey || event.ctrlKey)
+      )
+        return;
+      const target = event.target;
+      if (
+        target instanceof Element &&
+        target.closest(
+          'input, textarea, select, [contenteditable="true"], [role="dialog"], [role="alertdialog"], #resume-detail-agent-panel',
+        )
+      )
+        return;
+      const key = event.key.toLowerCase();
+      if (key !== "z" && !(key === "y" && event.ctrlKey && !event.metaKey))
+        return;
+      event.preventDefault();
+      if (key === "y" || event.shiftKey) redo();
+      else undo();
+    };
+    window.addEventListener("keydown", handleHistoryKey);
+    return () => window.removeEventListener("keydown", handleHistoryKey);
+  }, [undo, redo]);
 
   const templateCatalog = useMemo(
     () => getTemplateCatalog(messages, customTemplates),
@@ -208,10 +260,25 @@ export function useResumeDetailWorkspace({
     session.typography.fontFamily !== baseTemplate.typography.fontFamily ||
     session.typography.fontSize !== baseTemplate.typography.fontSize ||
     !areSettingsEqual(activeTemplate.settings, baseTemplate.settings);
+  const historyTemplate = save.historyVersion
+    ? getTemplateById(templateCatalog, save.historyVersion.resume.template)
+    : null;
+  const historyPreviewTemplate =
+    historyTemplate && save.historyVersion
+      ? {
+          ...historyTemplate,
+          settings: createTemplateSettings(historyTemplate.preset, {
+            ...historyTemplate.settings,
+            ...(save.historyVersion.resume.templateSettings ?? {}),
+          }),
+        }
+      : null;
 
   const leave = useResumeDetailLeave({
     discard: save.discard,
     hasUnsavedChanges: save.hasUnsavedChanges,
+    isCommitting:
+      save.isRestoringVersion || Boolean(agent.review?.resolvingStatus),
     markCheckpointPromotionSkipped: save.markCheckpointPromotionSkipped,
     messages,
     promoteCheckpoint: () => save.save("checkpoint", { notifyOnError: false }),
@@ -310,7 +377,7 @@ export function useResumeDetailWorkspace({
   );
   const documentCommands = useResumeDetailCommands({
     activeTemplate: baseTemplate,
-    isLoading,
+    disabled: editingDisabled,
     messages,
     navigateToResume,
     previewResume: preview.resume,
@@ -374,15 +441,24 @@ export function useResumeDetailWorkspace({
     [preferences],
   );
   const selectVersion = useCallback(
-    (versionId: string) =>
+    (versionId: string) => {
+      if (isLoading || agent.review?.resolvingStatus || save.isRestoringVersion)
+        return;
       requestLeave(() => {
         void save.selectVersion(versionId);
-      }),
-    [requestLeave, save],
+      });
+    },
+    [agent.review?.resolvingStatus, isLoading, requestLeave, save],
   );
 
   const model: ResumeDetailWorkspaceModel = {
     commands: {
+      undo,
+      redo,
+      finishHistoryGroup: session.finishHistoryGroup,
+      activateSection: session.activateSection,
+      restoreVersion: save.restoreVersion,
+      returnToLatest: save.returnToLatest,
       agent: {
         applyDraft: agent.applyAgentDraft,
         changeSelectedModelConfig,
@@ -426,14 +502,27 @@ export function useResumeDetailWorkspace({
       updateTypography: (typography) => session.updateStyle({ typography }),
     },
     state: {
+      history: {
+        version: save.historyVersion,
+        isRestoring: save.isRestoringVersion,
+        hasRestoreError: save.hasVersionRestoreError,
+      },
+      editing: {
+        canUndo: session.canUndo,
+        canRedo: session.canRedo,
+        disabled: editingDisabled,
+      },
+      sectionNavigation: session.sectionNavigation,
       activeTemplate,
-      previewTemplate,
+      previewTemplate: historyPreviewTemplate ?? previewTemplate,
       previewTypography:
-        documentCommands.previewStyle?.typography ?? session.typography,
+        save.historyVersion?.resume.typography ??
+        documentCommands.previewStyle?.typography ??
+        session.typography,
       agent: {
         draft: agent.agentDraft,
         draftState: agent.agentDraftState,
-        isPanelCollapsed: agentLayout.isPanelCollapsed,
+        isPanelCollapsed: save.isViewingHistory || agentLayout.isPanelCollapsed,
         modelConfigs: models.modelConfigs,
         panelStatus: agentLayout.panelStatus,
         review: agent.review,
@@ -456,9 +545,9 @@ export function useResumeDetailWorkspace({
         isOpen: leave.isOpen,
         isResolving: leave.isResolving,
       },
-      previewResume: preview.resume,
-      previewDiffs: preview.diffs,
-      previewReview: preview.review,
+      previewResume: save.historyVersion?.resume.resume ?? preview.resume,
+      previewDiffs: save.isViewingHistory ? undefined : preview.diffs,
+      previewReview: save.isViewingHistory ? null : preview.review,
       resolvedTheme: preferences.resolvedTheme,
       resume: session.resume,
       resumeItem: session.document,

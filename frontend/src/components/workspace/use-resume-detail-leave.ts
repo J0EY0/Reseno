@@ -13,6 +13,7 @@ interface PendingLeaveAction {
 interface ResumeDetailLeaveOptions {
   discard: () => Promise<void>;
   hasUnsavedChanges: () => boolean;
+  isCommitting: boolean;
   markCheckpointPromotionSkipped: () => void;
   messages: AppMessages;
   promoteCheckpoint: () => Promise<unknown>;
@@ -24,6 +25,7 @@ interface ResumeDetailLeaveOptions {
 export function useResumeDetailLeave({
   discard,
   hasUnsavedChanges,
+  isCommitting,
   markCheckpointPromotionSkipped,
   messages,
   promoteCheckpoint,
@@ -39,6 +41,10 @@ export function useResumeDetailLeave({
 
   const requestLeave = useCallback(
     (run: () => void, cancel?: () => void) => {
+      if (isCommitting) {
+        cancel?.();
+        return;
+      }
       if (hasUnsavedChanges()) {
         setPendingAction({ cancel, run });
         return;
@@ -87,6 +93,7 @@ export function useResumeDetailLeave({
     },
     [
       hasUnsavedChanges,
+      isCommitting,
       markCheckpointPromotionSkipped,
       messages.checkpointPromotionFailed,
       promoteCheckpoint,
@@ -95,8 +102,8 @@ export function useResumeDetailLeave({
   );
 
   const shouldBlockNavigation = useCallback(
-    () => hasUnsavedChanges() || requiresCheckpointPromotion(),
-    [hasUnsavedChanges, requiresCheckpointPromotion],
+    () => isCommitting || hasUnsavedChanges() || requiresCheckpointPromotion(),
+    [hasUnsavedChanges, isCommitting, requiresCheckpointPromotion],
   );
   const navigationBlocker = useBlocker(shouldBlockNavigation);
 
@@ -125,7 +132,7 @@ export function useResumeDetailLeave({
 
   useEffect(() => {
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
-      if (!hasUnsavedChanges()) {
+      if (!isCommitting && !hasUnsavedChanges()) {
         return;
       }
       event.preventDefault();
@@ -133,7 +140,7 @@ export function useResumeDetailLeave({
     };
     window.addEventListener("beforeunload", handleBeforeUnload);
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
-  }, [hasUnsavedChanges]);
+  }, [hasUnsavedChanges, isCommitting]);
 
   const cancelLeave = useCallback(() => {
     pendingAction?.cancel?.();
@@ -141,7 +148,7 @@ export function useResumeDetailLeave({
   }, [pendingAction]);
 
   const saveAndLeave = useCallback(async () => {
-    if (!pendingAction || isResolving) {
+    if (!pendingAction || isResolving || isCommitting) {
       return;
     }
     const action = pendingAction.run;
@@ -156,10 +163,10 @@ export function useResumeDetailLeave({
     } finally {
       setIsResolving(false);
     }
-  }, [isResolving, messages.loadError, pendingAction, save]);
+  }, [isCommitting, isResolving, messages.loadError, pendingAction, save]);
 
   const discardAndLeave = useCallback(async () => {
-    if (!pendingAction || isResolving) {
+    if (!pendingAction || isResolving || isCommitting) {
       return;
     }
     const action = pendingAction.run;
@@ -174,7 +181,7 @@ export function useResumeDetailLeave({
     } finally {
       setIsResolving(false);
     }
-  }, [discard, isResolving, messages.loadError, pendingAction]);
+  }, [discard, isCommitting, isResolving, messages.loadError, pendingAction]);
 
   return {
     cancelLeave,

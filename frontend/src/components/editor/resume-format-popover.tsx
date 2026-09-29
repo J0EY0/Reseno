@@ -175,6 +175,7 @@ function FormatSliderField({
 
 export function ResumeFormatPopover({
   compact = false,
+  disabled = false,
   t,
   template,
   templates,
@@ -187,6 +188,7 @@ export function ResumeFormatPopover({
   onTemplateSettingsChange,
 }: {
   compact?: boolean;
+  disabled?: boolean;
   t: AppMessages;
   template: ResumeTemplateId;
   templates: ResumeTemplateDefinition[];
@@ -204,6 +206,7 @@ export function ResumeFormatPopover({
     <Popover>
       <PopoverTrigger
         type="button"
+        disabled={disabled}
         className={cn(
           buttonVariants({
             variant: "outline",

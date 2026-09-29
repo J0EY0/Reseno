@@ -6,6 +6,7 @@ import type {
   AgentResumeEditSuggestion,
   AgentSessionResponse,
   AgentTransactionState,
+  ResumeDetailResponse,
   WorkspaceVersionSummary,
 } from "@/types/api";
 import type {
@@ -59,6 +60,17 @@ interface ResumeDetailAgentViewState {
 }
 
 interface ResumeDetailWorkspaceState {
+  history: {
+    version: ResumeDetailResponse | null;
+    isRestoring: boolean;
+    hasRestoreError: boolean;
+  };
+  editing: { canUndo: boolean; canRedo: boolean; disabled: boolean };
+  sectionNavigation: {
+    sectionId: string;
+    itemId?: string;
+    requestId: number;
+  } | null;
   activeTemplate: ResumeTemplateDefinition;
   previewTemplate: ResumeTemplateDefinition;
   previewTypography: ResumeTypographySettings;
@@ -106,6 +118,12 @@ interface ResumeDetailAgentCommands {
 }
 
 interface ResumeDetailWorkspaceCommands {
+  undo: () => void;
+  redo: () => void;
+  finishHistoryGroup: () => void;
+  activateSection: (sectionId: string, itemId?: string) => void;
+  restoreVersion: () => void | Promise<unknown>;
+  returnToLatest: () => void;
   agent: ResumeDetailAgentCommands;
   applyTemplate: (templateId: string) => void;
   back: () => void;
@@ -129,7 +147,10 @@ interface ResumeDetailWorkspaceCommands {
   addSection: (section: ResumeSection) => void;
   removeSection: (sectionId: string) => void;
   toggleSection: (sectionId: string) => void;
-  updateContent: (update: (current: ResumeData) => ResumeData) => void;
+  updateContent: (
+    update: (current: ResumeData) => ResumeData,
+    historyGroup?: string,
+  ) => void;
   setTitleDialogOpen: (open: boolean) => void;
   updateTemplateSettings: (patch: Partial<ResumeTemplateSettings>) => void;
   updateTypography: (typography: ResumeTypographySettings) => void;

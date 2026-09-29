@@ -9,6 +9,7 @@ import { useResumeDetailSave } from "@/components/workspace/use-resume-detail-sa
 import { useResumeDetailSession } from "@/components/workspace/use-resume-detail-session";
 import { useTemplateDetailSave } from "@/components/workspace/use-template-detail-save";
 import { defaultMessages } from "@/i18n";
+import * as i18n from "@/i18n";
 import {
   fetchResumeVersionApi,
   fetchResumeVersionsApi,
@@ -99,8 +100,11 @@ function renderSave({
       }),
   );
   const hydrate = vi.fn();
+  const initialProps: { isLoading: boolean; autosavePaused?: boolean } = {
+    isLoading: false,
+  };
   const hook = renderHook(
-    (props: { isLoading: boolean } | undefined) => {
+    (props: typeof initialProps) => {
       const isLoading = props?.isLoading ?? false;
       const session = useResumeDetailSession({ initialResume: initial });
       const hydrateSession = session.hydrate;
@@ -112,6 +116,7 @@ function renderSave({
         [hydrateSession],
       );
       const persistence = useResumeDetailSave({
+        autosavePaused: props?.autosavePaused ?? false,
         getFingerprint: session.getFingerprint,
         getSnapshot: session.getSnapshot,
         initialCheckpoint: checkpoint,
@@ -126,7 +131,7 @@ function renderSave({
       });
       return { session, persistence };
     },
-    { initialProps: { isLoading: false } },
+    { initialProps },
   );
   return {
     ...hook,
@@ -265,6 +270,35 @@ describe("resume detail save", () => {
     },
   );
 
+  it("cancels queued autosave when paused and saves newer edits after resuming", async () => {
+    const fixture = renderSave();
+    const gate = deferred<ResumeDetailResponse>();
+    vi.mocked(saveResumeApi).mockImplementationOnce(() => gate.promise);
+    const submitted = { ...createResumeDetailItem(), title: "Submitted title" };
+    fixture.edit(submitted);
+    let saving!: Promise<ResumeDetailResponse>;
+    act(() => {
+      saving = fixture.result.current.persistence.save();
+    });
+    fixture.edit({ ...submitted, title: "Newer title" });
+    await act(() => vi.advanceTimersByTimeAsync(5_000));
+    expect(saveResumeApi).toHaveBeenCalledOnce();
+    fixture.rerender({ isLoading: false, autosavePaused: true });
+    await act(async () => {
+      gate.resolve(detail({ ...submitted, updatedAt: "saved" }, "version-b"));
+      await saving;
+    });
+    await act(() => vi.advanceTimersByTimeAsync(5_000));
+    expect(saveResumeApi).toHaveBeenCalledOnce();
+    expect(fixture.result.current.persistence.hasUnsavedChanges()).toBe(true);
+    fixture.rerender({ isLoading: false, autosavePaused: false });
+    await act(() => vi.advanceTimersByTimeAsync(5_000));
+    expect(saveResumeApi).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(saveResumeApi).mock.calls[1][1].title).toBe("Newer title");
+    expect(vi.mocked(saveResumeApi).mock.calls[1][2]).toBe("autosave");
+    expect(fixture.result.current.persistence.hasUnsavedChanges()).toBe(false);
+  });
+
   it("retries failed autosave at bounded delays and clears the final warning after manual checkpoint", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const fixture = renderSave();
@@ -346,7 +380,7 @@ describe("resume detail save", () => {
     expect(saveResumeApi).toHaveBeenCalledTimes(2);
   });
 
-  it("moves both baselines through history selection and an autosave discard checkpoint", async () => {
+  it("previews history without replacing or autosaving the current document", async () => {
     const selected = {
       ...createResumeDetailItem(),
       title: "Historical title",
@@ -375,35 +409,67 @@ describe("resume detail save", () => {
     await act(async () => {
       await result.current.persistence.selectVersion("version-old");
     });
-    expect(result.current.session.document?.title).toBe("Historical title");
-    expect(result.current.persistence.activeVersionId).toBe("version-old");
-    expect(result.current.persistence.lastSavedAt).toBe("historical-time");
+    expect(result.current.session.document?.title).toBe("Loaded current title");
+    expect(result.current.persistence.historyVersion?.resume).toEqual(selected);
+    expect(result.current.persistence.isViewingHistory).toBe(true);
+    expect(result.current.persistence.activeVersionId).toBe("version-current");
+    expect(result.current.persistence.lastSavedAt).toBe("current-time");
     expect(result.current.persistence.hasUnsavedChanges()).toBe(false);
     expect(result.current.persistence.changeCount).toBe(0);
-    edit({ ...selected, title: "Autosaved historical edit" });
-    await act(async () => {
-      await result.current.persistence.save("autosave");
-    });
-    expect(result.current.persistence.requiresCheckpointPromotion()).toBe(true);
-    edit({ ...selected, title: "Unsaved historical edit" });
-    await act(async () => {
-      await result.current.persistence.discard();
-    });
-    expect(result.current.session.document?.title).toBe(
-      "Autosaved historical edit",
-    );
-    expect(vi.mocked(saveResumeApi).mock.calls.map((call) => call[2])).toEqual([
-      "autosave",
-      "checkpoint",
-    ]);
-    expect(result.current.persistence.hasUnsavedChanges()).toBe(false);
-    expect(result.current.persistence.changeCount).toBe(0);
-    expect(result.current.persistence.lastSavedAt).toBe("saved-2");
-    expect(result.current.persistence.activeVersionId).toBe("version-3");
-    expect(result.current.persistence.requiresCheckpointPromotion()).toBe(
-      false,
-    );
+    await act(() => vi.advanceTimersByTimeAsync(30_000));
+    await act(() => result.current.persistence.save());
+    expect(saveResumeApi).not.toHaveBeenCalled();
+    act(() => result.current.persistence.returnToLatest());
+    expect(result.current.persistence.isViewingHistory).toBe(false);
+    expect(result.current.persistence.historyVersion).toBeNull();
+    expect(result.current.session.document?.title).toBe("Loaded current title");
   });
+
+  it("keeps the visible history snapshot when selecting it again", async () => {
+    const selected = createResumeDetailItem();
+    const { result } = renderSave({
+      version: async () => detail(selected, "version-old"),
+    });
+    await act(() => result.current.persistence.selectVersion("version-old"));
+    const snapshot = result.current.persistence.historyVersion;
+    await act(() => result.current.persistence.selectVersion("version-old"));
+    expect(fetchResumeVersionApi).toHaveBeenCalledOnce();
+    expect(result.current.persistence.historyVersion).toBe(snapshot);
+    expect(result.current.persistence.isVersionLoading).toBe(false);
+  });
+
+  it.each([false, true])(
+    "waits for the historical document language before publishing its preview (cancelled=%s)",
+    async (cancelled) => {
+      const messages = deferred<i18n.AppMessages>();
+      const loader = vi
+        .spyOn(i18n, "loadMessages")
+        .mockReturnValueOnce(messages.promise);
+      const selected = {
+        ...createResumeDetailItem(),
+        documentLocale: "zh" as const,
+      };
+      const { result } = renderSave({
+        version: async () => detail(selected, "version-old"),
+      });
+      let switching!: Promise<void>;
+      await act(async () => {
+        switching = result.current.persistence.selectVersion("version-old");
+      });
+      expect(result.current.persistence.historyVersion).toBeNull();
+      expect(result.current.persistence.isVersionLoading).toBe(true);
+      expect(loader).toHaveBeenCalledWith("zh");
+      if (cancelled) act(() => result.current.persistence.returnToLatest());
+      await act(async () => {
+        messages.resolve(defaultMessages);
+        await switching;
+      });
+      expect(result.current.persistence.historyVersion?.resume ?? null).toEqual(
+        cancelled ? null : selected,
+      );
+      expect(result.current.persistence.isVersionLoading).toBe(false);
+    },
+  );
 
   it("preserves input entered while a historical version is loading", async () => {
     const gate = deferred<ResumeDetailResponse>();
@@ -431,6 +497,137 @@ describe("resume detail save", () => {
     expect(result.current.persistence.hasUnsavedChanges()).toBe(true);
     expect(result.current.persistence.activeVersionId).toBe("version-a");
     expect(result.current.persistence.isVersionLoading).toBe(false);
+  });
+
+  it("restores the viewed snapshot as a new checkpoint only after confirmation", async () => {
+    const historical = {
+      ...createResumeDetailItem(),
+      title: "Historical title",
+    };
+    const gate = deferred<ResumeDetailResponse>();
+    const fixture = renderSave({
+      version: async () => detail(historical, "version-old"),
+      save: () => gate.promise,
+    });
+    await act(() =>
+      fixture.result.current.persistence.selectVersion("version-old"),
+    );
+    let restoring!: Promise<boolean>;
+    act(() => {
+      restoring = fixture.result.current.persistence.restoreVersion();
+    });
+    expect(fixture.result.current.persistence.isRestoringVersion).toBe(true);
+    expect(fixture.result.current.session.document?.title).toBe(
+      "Original title",
+    );
+    expect(fixture.result.current.persistence.activeVersionId).toBe(
+      "version-a",
+    );
+    expect(saveResumeApi).toHaveBeenCalledExactlyOnceWith(
+      historical.id,
+      expect.objectContaining({ title: "Historical title" }),
+      "checkpoint",
+      { notifyOnError: false },
+    );
+    let restored!: boolean;
+    await act(async () => {
+      gate.resolve(
+        detail({ ...historical, updatedAt: "restored" }, "version-restored"),
+      );
+      restored = await restoring;
+    });
+    expect(restored).toBe(true);
+    expect(fixture.result.current.persistence.isViewingHistory).toBe(false);
+    expect(fixture.result.current.persistence.isRestoringVersion).toBe(false);
+    expect(fixture.result.current.session.document?.title).toBe(
+      "Historical title",
+    );
+    expect(fixture.result.current.persistence.activeVersionId).toBe(
+      "version-restored",
+    );
+    expect(fixture.result.current.persistence.hasUnsavedChanges()).toBe(false);
+  });
+
+  it("keeps a failed restore available to retry without changing the formal document", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const historical = {
+      ...createResumeDetailItem(),
+      title: "Retry historical title",
+    };
+    const fixture = renderSave({
+      version: async () => detail(historical, "version-old"),
+    });
+    await act(() =>
+      fixture.result.current.persistence.selectVersion("version-old"),
+    );
+    vi.mocked(saveResumeApi).mockRejectedValueOnce(new Error("Offline"));
+    await act(async () => {
+      expect(await fixture.result.current.persistence.restoreVersion()).toBe(
+        false,
+      );
+    });
+    expect(fixture.result.current.persistence.hasVersionRestoreError).toBe(
+      true,
+    );
+    expect(fixture.result.current.persistence.historyVersion?.resume).toEqual(
+      historical,
+    );
+    expect(fixture.result.current.session.document?.title).toBe(
+      "Original title",
+    );
+    expect(fixture.result.current.persistence.activeVersionId).toBe(
+      "version-a",
+    );
+    await act(async () => {
+      expect(await fixture.result.current.persistence.restoreVersion()).toBe(
+        true,
+      );
+    });
+    expect(fixture.result.current.persistence.hasVersionRestoreError).toBe(
+      false,
+    );
+    expect(fixture.result.current.persistence.historyVersion).toBeNull();
+    expect(fixture.result.current.session.document?.title).toBe(
+      "Retry historical title",
+    );
+    expect(saveResumeApi).toHaveBeenCalledTimes(2);
+  });
+
+  it("cancels a pending history read before restoring the version currently visible", async () => {
+    const first = { ...createResumeDetailItem(), title: "Visible history" };
+    const second = { ...first, title: "Pending history" };
+    const readGate = deferred<ResumeDetailResponse>();
+    const saveGate = deferred<ResumeDetailResponse>();
+    const fixture = renderSave({
+      version: async (_resumeId, versionId) =>
+        versionId === "first" ? detail(first, "first") : readGate.promise,
+      save: () => saveGate.promise,
+    });
+    await act(() => fixture.result.current.persistence.selectVersion("first"));
+    let reading!: Promise<void>;
+    let restoring!: Promise<boolean>;
+    act(() => {
+      reading = fixture.result.current.persistence.selectVersion("second");
+      restoring = fixture.result.current.persistence.restoreVersion();
+    });
+    const signal = vi
+      .mocked(fetchResumeVersionApi)
+      .mock.calls.at(-1)?.[2]?.signal;
+    expect(signal?.aborted).toBe(true);
+    await act(async () => {
+      readGate.resolve(detail(second, "second"));
+      await reading;
+    });
+    expect(
+      fixture.result.current.persistence.historyVersion?.resume.title,
+    ).toBe("Visible history");
+    await act(async () => {
+      saveGate.resolve(detail(first, "restored"));
+      await restoring;
+    });
+    expect(fixture.result.current.session.document?.title).toBe(
+      "Visible history",
+    );
   });
 
   it("aborts historical reads on unmount and never hydrates a late response", async () => {

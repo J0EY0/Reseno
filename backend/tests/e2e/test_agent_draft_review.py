@@ -81,6 +81,7 @@ def test_pending_agent_draft_page_load_stays_preview_only(
         context.close()
 
 
+@pytest.mark.browser_smoke
 def test_agent_draft_review_supports_single_item_decisions_and_motion(
     browser: Browser,
     workspace_servers: tuple[str, str],
@@ -239,7 +240,12 @@ def test_agent_draft_review_supports_single_item_decisions_and_motion(
                     '[data-slot="document-canvas-viewport"]',
                   );
                   const initialScrollTop = viewport?.scrollTop ?? 0;
-                  const startedAt = performance.now();
+                  let startedAt = null;
+                  const onClick = () => { startedAt = performance.now(); };
+                  document.addEventListener('click', onClick, {
+                    capture: true,
+                    once: true,
+                  });
                   const frames = [];
                   const scrollPositions = [];
                   const motionFrames = Object.fromEntries(
@@ -290,6 +296,10 @@ def test_agent_draft_review_supports_single_item_decisions_and_motion(
                         ? readHighlight(retainedTarget)
                         : null,
                     );
+                    if (startedAt === null) {
+                      frameId = requestAnimationFrame(sample);
+                      return;
+                    }
                     const elapsed = performance.now() - startedAt;
                     for (const reviewItemId of watchedReviewItemIds) {
                       const target = findTopLevelTarget(reviewItemId);
@@ -316,6 +326,7 @@ def test_agent_draft_review_supports_single_item_decisions_and_motion(
                   window.__agentReviewTransitionProbe = {
                     finish() {
                       cancelAnimationFrame(frameId);
+                      document.removeEventListener('click', onClick, true);
                       document.removeEventListener(
                         'animationstart',
                         onAnimationStart,
@@ -904,6 +915,7 @@ def test_agent_draft_decision_blocks_a_concurrent_prompt(
         context.close()
 
 
+@pytest.mark.browser_smoke
 def test_queued_agent_draft_apply_stops_after_save_owner_unmounts(
     browser: Browser,
     workspace_servers: tuple[str, str],
@@ -958,6 +970,10 @@ def test_queued_agent_draft_apply_stops_after_save_owner_unmounts(
               const { useResumeDetailSave } = await import(
                 '/src/components/workspace/use-resume-detail-save.ts'
               );
+              const { createResumeFingerprint } = await import(
+                '/src/lib/workspace-change-tracking.ts'
+              );
+              const fingerprint = createResumeFingerprint(submittedResume);
               const host = document.createElement('div');
               host.hidden = true;
               document.body.append(host);
@@ -969,6 +985,8 @@ def test_queued_agent_draft_apply_stops_after_save_owner_unmounts(
 
               function Harness() {
                 const controller = useResumeDetailSave({
+                  autosavePaused: false,
+                  getFingerprint: () => fingerprint,
                   getSnapshot: () => submittedResume,
                   initialCheckpoint: {
                     savedAt: detailBefore.savedAt,
@@ -976,7 +994,7 @@ def test_queued_agent_draft_apply_stops_after_save_owner_unmounts(
                   },
                   initialResume: detailBefore.resume,
                   isLoading: true,
-                  liveFingerprint: 'queued-apply-harness',
+                  liveFingerprint: fingerprint,
                   liveResume: submittedResume,
                   messages: { loadError: 'load error' },
                   onAdoptSavedResume: () => undefined,
@@ -1023,6 +1041,7 @@ def test_queued_agent_draft_apply_stops_after_save_owner_unmounts(
         )
         page.wait_for_timeout(1_800)
 
+        assert ("PUT", f"/api/resumes/{resume_id}") in writes, writes
         draft_patch = (
             "PATCH",
             f"/api/agent/resumes/{resume_id}/session/messages/{message_id}/draft",

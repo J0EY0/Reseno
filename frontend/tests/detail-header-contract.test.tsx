@@ -32,6 +32,9 @@ function workspace(): ResumeDetailWorkspaceModel {
   const template = createResumeDetailTemplate("minimal");
   return {
     state: {
+      history: { version: null, isRestoring: false, hasRestoreError: false },
+      editing: { canUndo: false, canRedo: false, disabled: false },
+      sectionNavigation: null,
       activeTemplate: template,
       previewTemplate: template,
       previewTypography: item.typography,
@@ -80,6 +83,12 @@ function workspace(): ResumeDetailWorkspaceModel {
       typography: item.typography,
     },
     commands: {
+      undo: vi.fn(),
+      redo: vi.fn(),
+      finishHistoryGroup: vi.fn(),
+      activateSection: vi.fn(),
+      restoreVersion: vi.fn(),
+      returnToLatest: vi.fn(),
       agent: {
         applyDraft: vi.fn(async () => null),
         changeSelectedModelConfig: vi.fn(),

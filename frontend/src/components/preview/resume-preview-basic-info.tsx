@@ -230,6 +230,7 @@ export function StandardBasicInfo({
 
   return (
     <header
+      data-resume-section-id="basic"
       className={cn(
         "relative grid gap-4",
         isProfile && "overflow-hidden rounded-2xl px-5 py-5",
@@ -318,6 +319,7 @@ export function SidebarBasicInfo({
 
   return (
     <aside
+      data-resume-section-id="basic"
       className="flex min-h-[297mm] flex-col gap-8 px-7 py-10 text-white"
       style={{ backgroundColor: settings.surfaceColor }}
     >

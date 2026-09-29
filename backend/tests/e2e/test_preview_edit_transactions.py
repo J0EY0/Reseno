@@ -346,7 +346,9 @@ def test_smart_fit_completion_and_undo_preserve_the_document(
         if item_count == 9:
             page.get_by_text("已压缩到一页", exact=True).wait_for()
             expect(stack).to_have_attribute("data-resume-page-count", "1")
-            page.get_by_role("button", name="撤销", exact=True).click()
+            page.locator("[data-sonner-toast]").get_by_role(
+                "button", name="撤销", exact=True
+            ).click()
         else:
             page.get_by_text("未能排到一页，已保留原排版", exact=True).wait_for()
         expect(stack).to_have_attribute("data-resume-page-count", initial_pages)

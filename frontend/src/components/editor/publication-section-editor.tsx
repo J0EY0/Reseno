@@ -13,6 +13,8 @@ export function PublicationSectionEditor({
   t,
   section,
   initiallyOpenItemId,
+  expandedItemIds,
+  onItemOpenChange,
   onUpdateItem,
   onRemoveItem,
   onMoveItem,
@@ -53,7 +55,8 @@ export function PublicationSectionEditor({
         .map((value) => getRichTextPlainText(value).trim())
         .filter(Boolean)
         .join(" · ")}
-      initiallyOpen={item.id === initiallyOpenItemId}
+      open={expandedItemIds.has(item.id)}
+      onOpenChange={(open) => onItemOpenChange(item.id, open)}
       canMoveUp={index > 0}
       canMoveDown={index < section.items.length - 1}
       removeLabel={t.removeItem}

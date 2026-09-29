@@ -9,6 +9,8 @@ import type { ResumeSectionMutation } from "@/lib/resume-section-mutations";
 import type { ResumeSection } from "@/types/resume";
 
 import { FormField } from "./form-field";
+import { useResumeEditHistory } from "./resume-edit-history-context";
+import { ResumeEditHistoryProvider } from "./resume-edit-history-provider";
 import { ResumeSectionItemsEditor } from "./resume-section-editors";
 import { SortableEditorList } from "./sortable-editor-list";
 
@@ -21,32 +23,40 @@ export function ResumeSectionNameField({
   section: ResumeSection;
   onMutation: (mutation: ResumeSectionMutation) => void;
 }) {
+  const history = useResumeEditHistory();
+
   return (
-    <FormField label={t.renameSection}>
-      <Input
-        autoFocus
-        value={section.title}
-        placeholder={t.placeholders.sectionName}
-        onChange={(event) =>
-          onMutation({
-            type: "section.rename",
-            sectionId: section.id,
-            title: event.target.value,
-          })
-        }
-      />
-    </FormField>
+    <ResumeEditHistoryProvider value={history}>
+      <FormField label={t.renameSection}>
+        <Input
+          autoFocus
+          value={section.title}
+          placeholder={t.placeholders.sectionName}
+          onChange={(event) =>
+            onMutation({
+              type: "section.rename",
+              sectionId: section.id,
+              title: event.target.value,
+            })
+          }
+        />
+      </FormField>
+    </ResumeEditHistoryProvider>
   );
 }
 
 export function ResumeSectionContent({
   t,
   section,
+  expandedItemIds,
+  onItemOpenChange,
   onMutation,
 }: {
   t: AppMessages;
   section: ResumeSection;
   onMutation: (mutation: ResumeSectionMutation) => void;
+  expandedItemIds: ReadonlySet<string>;
+  onItemOpenChange: (itemId: string, open: boolean) => void;
 }) {
   const [initiallyOpenItemId, setInitiallyOpenItemId] = useState<string | null>(
     null,
@@ -57,8 +67,6 @@ export function ResumeSectionContent({
       initiallyOpenItemId &&
       section.items.some((item) => item.id === initiallyOpenItemId)
     ) {
-      // The id only seeds the new child's initial state; clearing it prevents
-      // that entry from reopening whenever the whole section remounts.
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setInitiallyOpenItemId(null);
     }
@@ -67,6 +75,7 @@ export function ResumeSectionContent({
   function addItem() {
     const itemId = createId("item");
     setInitiallyOpenItemId(itemId);
+    onItemOpenChange(itemId, true);
     onMutation({ type: "item.add", sectionId: section.id, itemId });
   }
 
@@ -88,6 +97,8 @@ export function ResumeSectionContent({
           t={t}
           section={section}
           initiallyOpenItemId={initiallyOpenItemId}
+          expandedItemIds={expandedItemIds}
+          onItemOpenChange={onItemOpenChange}
           onMutation={onMutation}
         />
       </SortableEditorList>

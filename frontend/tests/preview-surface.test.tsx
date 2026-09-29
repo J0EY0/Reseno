@@ -230,6 +230,65 @@ it("wires real canvas keyboard, wheel and toolbar zoom with bounded controls and
   ).toBeTruthy();
 });
 
+it.each(["centered", "sidebar"] as const)(
+  "activates visible %s preview sections only on double click",
+  (basicInfo) => {
+    const item = createResumeDetailItem();
+    const section = createResumeSection("experience");
+    section.id = "experience";
+    if (section.kind !== "experience") throw new Error("Expected experience");
+    section.items[0].company = "Example Company";
+    section.items[0].description = "Built a resume editor";
+    item.resume.sections = [section];
+    const template = createResumeDetailTemplate("custom");
+    template.layout.basicInfo = basicInfo;
+    const activate = vi.fn();
+    const { container } = render(
+      <DocumentCanvas
+        variant="resume"
+        t={t}
+        documentT={t}
+        resume={item.resume}
+        template={template}
+        typography={item.typography}
+        onActivateSection={activate}
+      />,
+    );
+    const pages = container.querySelectorAll(
+      '[data-export-root="resume-page"]',
+    );
+    const basic = pages[0].querySelector(
+      '[data-resume-section-id="basic"] h1',
+    )!;
+    fireEvent.click(basic);
+    expect(activate).not.toHaveBeenCalled();
+    fireEvent.doubleClick(basic);
+    expect(activate).toHaveBeenLastCalledWith("basic", undefined);
+    for (const target of container.querySelectorAll(
+      '[data-export-root="resume-page"] [data-resume-section-id="experience"]',
+    )) {
+      fireEvent.doubleClick(target);
+      expect(activate).toHaveBeenLastCalledWith("experience", undefined);
+      const entry = target.querySelector("[data-resume-item-id]")!;
+      fireEvent.doubleClick(entry.querySelector("h3")!);
+      expect(activate).toHaveBeenLastCalledWith(
+        "experience",
+        section.items[0].id,
+      );
+      fireEvent.doubleClick(entry.querySelector("p")!);
+      expect(activate).toHaveBeenLastCalledWith(
+        "experience",
+        section.items[0].id,
+      );
+    }
+    activate.mockClear();
+    fireEvent.doubleClick(screen.getByRole("region", { name: t.preview }));
+    const hidden = container.querySelector("[inert] [data-resume-section-id]")!;
+    fireEvent.doubleClick(hidden);
+    expect(activate).not.toHaveBeenCalled();
+  },
+);
+
 it.each([
   ["background", 0, "mouse", true],
   ["paper", 1, "mouse", true],

@@ -443,6 +443,7 @@ describe("prepared detail navigation", () => {
             discard: vi.fn(),
             save: vi.fn(),
             hasUnsavedChanges: () => false,
+            isCommitting: false,
             requiresCheckpointPromotion: () => needsPromotion,
             promoteCheckpoint,
             markCheckpointPromotionSkipped,

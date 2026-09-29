@@ -32,7 +32,7 @@ import type {
 
 interface ResumeDetailCommandsOptions {
   activeTemplate: ResumeTemplateDefinition;
-  isLoading: boolean;
+  disabled: boolean;
   messages: AppMessages;
   navigateToResume: (detail: ResumeDetailResponse) => void;
   previewResume: ResumeData;
@@ -59,7 +59,7 @@ interface ResumeDetailCommandsOptions {
 /** Owns editor commands that do not belong to transport or page layout. */
 export function useResumeDetailCommands({
   activeTemplate,
-  isLoading,
+  disabled,
   messages,
   navigateToResume,
   previewResume,
@@ -80,21 +80,24 @@ export function useResumeDetailCommands({
     resume: ResumeData;
   } | null>(null);
   const latestSessionRef = useRef(session);
+  const disabledRef = useRef(disabled);
   const [isPreviewReady, setIsPreviewReady] = useState(false);
   const [isTitleDialogOpen, setIsTitleDialogOpen] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
 
   useLayoutEffect(() => {
     latestSessionRef.current = session;
+    disabledRef.current = disabled;
     const fitting = fittingRef.current;
     if (
       fitting &&
-      (fitting.fingerprint !== session.fingerprint ||
+      (disabled ||
+        fitting.fingerprint !== session.fingerprint ||
         fitting.resume !== previewResume)
     ) {
       fitting.controller.abort();
     }
-  }, [previewResume, session]);
+  }, [disabled, previewResume, session]);
   useEffect(() => () => fittingRef.current?.controller.abort(), []);
   const previewStyle =
     fittingRef.current &&
@@ -154,20 +157,23 @@ export function useResumeDetailCommands({
 
   const updateTemplateSettings = useCallback(
     (patch: Partial<ResumeTemplateSettings>) => {
-      session.updateStyle((current) => ({
-        templateSettings: createTemplateSettings(activeTemplate.preset, {
-          ...activeTemplate.settings,
-          ...(current.templateSettings ?? {}),
-          ...patch,
+      session.updateStyle(
+        (current) => ({
+          templateSettings: createTemplateSettings(activeTemplate.preset, {
+            ...activeTemplate.settings,
+            ...(current.templateSettings ?? {}),
+            ...patch,
+          }),
         }),
-      }));
+        `style:${Object.keys(patch).sort().join(",")}`,
+      );
     },
     [activeTemplate, session],
   );
 
   const fitOnePage = useCallback(async () => {
     const previewHandle = documentPreviewRef.current;
-    if (!isPreviewReady || fittingRef.current || !previewHandle) {
+    if (disabled || !isPreviewReady || fittingRef.current || !previewHandle) {
       return;
     }
 
@@ -210,6 +216,7 @@ export function useResumeDetailCommands({
             onClick: () => {
               const latest = latestSessionRef.current;
               if (
+                disabledRef.current ||
                 latest.typography !== result.style.typography ||
                 latest.templateSettings !== result.style.templateSettings
               ) {
@@ -233,12 +240,19 @@ export function useResumeDetailCommands({
       setCandidateStyle(null);
       setIsSmartFitting(false);
     }
-  }, [activeTemplate, isPreviewReady, messages, previewResume, session]);
+  }, [
+    activeTemplate,
+    disabled,
+    isPreviewReady,
+    messages,
+    previewResume,
+    session,
+  ]);
 
   const duplicate = useCallback(async () => {
     if (
       !session.document ||
-      isLoading ||
+      disabled ||
       save.saveState === "saving" ||
       duplicateInFlightRef.current
     ) {
@@ -278,7 +292,7 @@ export function useResumeDetailCommands({
       duplicateInFlightRef.current = false;
       setIsDuplicating(false);
     }
-  }, [isLoading, messages, navigateToResume, save, session.document]);
+  }, [disabled, messages, navigateToResume, save, session.document]);
 
   return {
     applyTemplate,

@@ -56,7 +56,7 @@ async function renderCommands() {
     await import("@/components/workspace/use-resume-detail-commands");
   const options: CommandsOptions = {
     activeTemplate: template,
-    isLoading: false,
+    disabled: false,
     messages: defaultMessages,
     navigateToResume: vi.fn(),
     previewResume: document.resume,
@@ -135,7 +135,12 @@ describe("smart one-page command", () => {
     expect(toast.success).toHaveBeenCalledOnce();
   });
 
-  it.each(["document change", "preview change", "unmount"] as const)(
+  it.each([
+    "document change",
+    "preview change",
+    "history view",
+    "unmount",
+  ] as const)(
     "cancels during module loading after %s before fitting or measuring",
     async (change) => {
       const f = await renderCommands();
@@ -147,7 +152,9 @@ describe("smart one-page command", () => {
           ...f.options,
           ...(change === "document change"
             ? { session: { ...f.options.session, fingerprint: "changed" } }
-            : { previewResume: structuredClone(f.options.previewResume) }),
+            : change === "history view"
+              ? { disabled: true }
+              : { previewResume: structuredClone(f.options.previewResume) }),
         });
       await act(async () => {
         f.ready.resolve();
@@ -167,7 +174,12 @@ describe("smart one-page command", () => {
     },
   );
 
-  it.each(["unchanged", "typography", "templateSettings"] as const)(
+  it.each([
+    "unchanged",
+    "typography",
+    "templateSettings",
+    "history view",
+  ] as const)(
     "only undoes the still-current fitted style after %s",
     async (change) => {
       const f = await renderCommands();
@@ -181,10 +193,11 @@ describe("smart one-page command", () => {
       }
       f.rerender({
         ...f.options,
+        disabled: change === "history view",
         session: {
           ...f.options.session,
           ...f.style,
-          ...(change === "unchanged"
+          ...(change === "unchanged" || change === "history view"
             ? {}
             : { [change]: { ...f.style[change] } }),
         },
