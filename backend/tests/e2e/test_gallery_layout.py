@@ -1015,14 +1015,14 @@ def test_mobile_workspace_headers_fit_and_keep_primary_actions(
     )
     page = context.new_page()
 
-    def assert_header_fits_single_row() -> None:
+    def assert_header_fits(*, resume_detail: bool = False) -> None:
         header = page.locator("#main-content > header")
         header.wait_for(state="visible")
         geometry = header.evaluate(
             """
-            (element) => {
+            (element, resumeDetail) => {
               const rect = element.getBoundingClientRect();
-              const visibleChildren = [...element.children]
+              const visibleRects = children => [...children]
                 .filter(child => {
                   const style = getComputedStyle(child);
                   const childRect = child.getBoundingClientRect();
@@ -1039,6 +1039,9 @@ def test_mobile_workspace_headers_fit_and_keep_primary_actions(
                     bottom: childRect.bottom,
                   };
                 });
+              const visibleChildren = visibleRects(resumeDetail
+                ? element.firstElementChild.children
+                : element.children);
               return {
                 clientHeight: element.clientHeight,
                 clientWidth: element.clientWidth,
@@ -1054,27 +1057,34 @@ def test_mobile_workspace_headers_fit_and_keep_primary_actions(
                 scrollWidth: element.scrollWidth,
                 viewportWidth: window.innerWidth,
                 visibleChildren,
+                visibleButtons: visibleRects(element.querySelectorAll('button')),
               };
             }
-            """
+            """,
+            resume_detail,
         )
 
-        assert 63 <= geometry["header"]["height"] <= 65, geometry
+        expected_height = 97 if resume_detail else 64
+        assert abs(geometry["header"]["height"] - expected_height) <= 1, geometry
         assert geometry["scrollHeight"] <= geometry["clientHeight"] + 1, geometry
         assert geometry["scrollWidth"] <= geometry["clientWidth"] + 1, geometry
         assert geometry["documentWidth"] <= geometry["viewportWidth"], geometry
         assert len(geometry["visibleChildren"]) >= 2, geometry
+        if resume_detail:
+            assert len(geometry["visibleChildren"]) == 2, geometry
+            title_row, action_row = geometry["visibleChildren"]
+            assert 7 <= action_row["top"] - title_row["bottom"] <= 9, geometry
         assert all(
             child["left"] >= geometry["header"]["left"] - 1
             and child["right"] <= geometry["header"]["right"] + 1
             and child["top"] >= geometry["header"]["top"] - 1
             and child["bottom"] <= geometry["header"]["bottom"] + 1
-            for child in geometry["visibleChildren"]
+            for child in geometry["visibleChildren"] + geometry["visibleButtons"]
         ), geometry
 
     try:
         page.goto(f"{frontend_url}/resume", wait_until="networkidle")
-        assert_header_fits_single_row()
+        assert_header_fits()
 
         gallery_header = page.locator("#main-content > header")
         gallery_menu_trigger = gallery_header.locator(
@@ -1095,7 +1105,7 @@ def test_mobile_workspace_headers_fit_and_keep_primary_actions(
         page.locator(".resume-preview-card article.resume-page").wait_for(
             state="visible"
         )
-        assert_header_fits_single_row()
+        assert_header_fits(resume_detail=True)
 
         detail_header = page.locator("#main-content > header")
         format_trigger = detail_header.locator('[data-slot="popover-trigger"]').first
@@ -1115,6 +1125,36 @@ def test_mobile_workspace_headers_fit_and_keep_primary_actions(
         assert history_trigger.get_attribute("aria-label")
         expect(detail_menu_trigger).to_be_visible()
         expect(detail_menu_trigger).to_have_attribute("aria-haspopup", "menu")
+        undo_trigger = detail_header.get_by_role("button", name="Undo", exact=True)
+        redo_trigger = detail_header.get_by_role("button", name="Redo", exact=True)
+        expect(undo_trigger).to_be_visible()
+        expect(redo_trigger).to_be_visible()
+        expect(undo_trigger).to_be_disabled()
+        expect(redo_trigger).to_be_disabled()
+        action_bounds = [
+            trigger.bounding_box()
+            for trigger in (
+                undo_trigger,
+                redo_trigger,
+                format_trigger,
+                save_trigger,
+                history_trigger,
+                detail_menu_trigger,
+            )
+        ]
+        assert all(bounds is not None for bounds in action_bounds)
+        assert (
+            max(bounds["y"] for bounds in action_bounds)
+            - min(bounds["y"] for bounds in action_bounds)
+            <= 1
+        ), action_bounds
+
+        format_trigger.click()
+        format_popover = page.locator('[data-slot="popover-content"]')
+        expect(format_popover).to_be_visible()
+        page.keyboard.press("Escape")
+        expect(format_popover).to_have_count(0)
+        save_trigger.click(trial=True)
 
         history_trigger.focus()
         page.keyboard.press("Enter")
@@ -1141,7 +1181,7 @@ def test_mobile_workspace_headers_fit_and_keep_primary_actions(
         page.locator(
             ".template-workspace .resume-preview-card article.resume-page"
         ).first.wait_for(state="visible")
-        assert_header_fits_single_row()
+        assert_header_fits()
 
         template_header = page.locator("#main-content > header")
         template_menu_trigger = template_header.locator(

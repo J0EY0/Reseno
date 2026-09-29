@@ -78,6 +78,7 @@ it.each([false, true])(
     const { result, rerender } = renderHook(() => {
       const session = useResumeDetailSession({ initialResume: initial });
       const persistence = useResumeDetailSave({
+        autosavePaused: false,
         getFingerprint: session.getFingerprint,
         getSnapshot: session.getSnapshot,
         initialCheckpoint: checkpoint,

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { CircleCheck, History, LoaderCircle, Save } from "lucide-react";
 
 import type { Locale } from "@/i18n";
+import historyMessages from "@/i18n/resume-history.json";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -50,6 +51,8 @@ export function SaveStatusButton({
   onSave,
   onSelectVersion,
   showVersions = true,
+  history,
+  disabled = false,
 }: {
   locale: Locale;
   label: string;
@@ -68,13 +71,19 @@ export function SaveStatusButton({
   onSave: () => void;
   onSelectVersion: (versionId: string) => void;
   showVersions?: boolean;
+  history?: WorkspaceVersionSummary | null;
+  disabled?: boolean;
 }) {
   const [versionsOpen, setVersionsOpen] = useState(false);
   const formattedTime = formatSavedTime(locale, lastSavedAt);
   const isSaving = state === "saving";
   let tooltipText = savedText;
 
-  if (isSaving) {
+  if (history) {
+    tooltipText = isSaving
+      ? historyMessages[locale].restoring
+      : `${historyMessages[locale].viewing} · ${formatSavedTime(locale, history.savedAt)}`;
+  } else if (isSaving) {
     tooltipText = savingText;
   } else if (hasUnsavedChanges) {
     tooltipText = unsavedText;
@@ -90,11 +99,13 @@ export function SaveStatusButton({
       className={showVersions ? "rounded-r-none" : undefined}
       aria-label={label}
       title={tooltipText}
-      disabled={isSaving}
+      disabled={disabled || isSaving || Boolean(history)}
       onClick={onSave}
     >
       {isSaving ? (
         <LoaderCircle className="animate-spin" />
+      ) : history ? (
+        <History aria-hidden="true" />
       ) : hasUnsavedChanges ? (
         <Save />
       ) : (
@@ -141,7 +152,7 @@ export function SaveStatusButton({
             className="rounded-l-none border-l-0"
             aria-label={versionsLabel}
             title={versionsLabel}
-            disabled={isSaving}
+            disabled={disabled || isSaving}
           >
             <History aria-hidden="true" />
           </Button>
@@ -151,7 +162,9 @@ export function SaveStatusButton({
           aria-label={versionsLabel}
           className="w-64 p-2 text-xs"
         >
-          <p className="px-2 py-1 text-muted-foreground">{tooltipText}</p>
+          <p className="min-h-10 px-2 py-1 text-muted-foreground">
+            {tooltipText}
+          </p>
           <div className="mt-1 border-t border-border/70 pt-1">
             <p className="px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
               {versionsLabel}
@@ -160,6 +173,7 @@ export function SaveStatusButton({
               <div className="max-h-56 overflow-y-auto overscroll-contain">
                 {versions.map((version) => {
                   const isActive = version.versionId === activeVersionId;
+                  const isViewed = version.versionId === history?.versionId;
                   const savedTime = formatSavedTime(locale, version.savedAt);
 
                   return (
@@ -167,13 +181,21 @@ export function SaveStatusButton({
                       key={version.versionId}
                       type="button"
                       variant="ghost"
+                      disabled={disabled || isSaving}
                       className="h-auto w-full justify-between gap-3 px-2 py-2 text-left font-normal"
                       onClick={() => onSelectVersion(version.versionId)}
                     >
                       <span className="min-w-0 truncate">
                         {savedTime ?? version.versionId}
                       </span>
-                      {isActive ? (
+                      {isViewed ? (
+                        <Badge
+                          variant="outline"
+                          className="shrink-0 text-[10px]"
+                        >
+                          {historyMessages[locale].viewedVersion}
+                        </Badge>
+                      ) : isActive ? (
                         <Badge className="shrink-0 text-[10px]">
                           {currentVersionLabel}
                         </Badge>

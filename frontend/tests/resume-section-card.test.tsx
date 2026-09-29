@@ -12,10 +12,26 @@ import { afterEach, expect, it, vi } from "vitest";
 import en from "@/i18n/locales/en.json";
 import { applySectionMutation } from "@/lib/resume-section-mutations";
 import { createResumeSection } from "@/lib/resume-sections";
+import type { EditorSectionNavigation } from "@/components/editor/use-editor-section-navigation";
 
 vi.mock("@/components/workspace/workspace-preferences-context", () => ({
   useWorkspacePreferences: () => ({ locale: "en" }),
 }));
+
+vi.mock(
+  "@/components/editor/resume-edit-history-context",
+  async (importOriginal) => ({
+    ...(await importOriginal<
+      typeof import("@/components/editor/resume-edit-history-context")
+    >()),
+    useResumeEditHistory: () => ({
+      canUndo: false,
+      canRedo: false,
+      undo: vi.fn(),
+      redo: vi.fn(),
+    }),
+  }),
+);
 
 afterEach(() => {
   vi.doUnmock("@/components/editor/resume-section-content");
@@ -41,7 +57,7 @@ async function loadDelayedSectionCard() {
   return { ResumeSectionCard, loading, ready, loaded: loaded.promise };
 }
 
-it("loads only on expansion, keeps the card visible while loading and opens a new item only once", async () => {
+it("loads only on expansion and restores expanded items without stealing focus", async () => {
   const { ResumeSectionCard, loading, ready, loaded } =
     await loadDelayedSectionCard();
   const initialSection = createResumeSection("education");
@@ -117,11 +133,97 @@ it("loads only on expansion, keeps the card visible while loading and opens a ne
   const reopenedItem = await screen.findByRole("button", {
     name: `${en.toggleItem} 1`,
   });
-  expect(reopenedItem.getAttribute("aria-expanded")).toBe("false");
+  expect(reopenedItem.getAttribute("aria-expanded")).toBe("true");
   expect(
-    screen.queryByRole("textbox", { name: en.fieldLabels.school }),
-  ).toBeNull();
+    await screen.findByRole("textbox", { name: en.fieldLabels.school }),
+  ).not.toBe(document.activeElement);
+  fireEvent.click(reopenedItem);
+  fireEvent.click(toggle);
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("button", { name: en.addItem.education }),
+    ).toBeNull(),
+  );
+  fireEvent.click(toggle);
+  expect(
+    (
+      await screen.findByRole("button", { name: `${en.toggleItem} 1` })
+    ).getAttribute("aria-expanded"),
+  ).toBe("false");
   expect(loading).toHaveBeenCalledOnce();
+});
+
+it("opens the requested item after lazy loading and preserves independent item expansion", async () => {
+  const { ResumeSectionCard, ready, loaded } = await loadDelayedSectionCard();
+  const section = createResumeSection("education");
+  if (section.kind !== "education")
+    throw new Error("Expected education section");
+  section.title = "Education";
+  section.items = [
+    { ...section.items[0], id: "first" },
+    { ...section.items[0], id: "second" },
+  ];
+  const navigation: EditorSectionNavigation = {
+    sectionId: section.id,
+    itemId: "second",
+    requestId: 1,
+  };
+  const card = (request?: EditorSectionNavigation, collapsed = false) => (
+    <ResumeSectionCard
+      t={en}
+      documentT={en}
+      section={section}
+      navigation={request}
+      collapsed={collapsed}
+      onToggle={vi.fn()}
+      onMutation={vi.fn()}
+      canMoveUp={false}
+      canMoveDown={false}
+      onMoveSectionUp={vi.fn()}
+      onMoveSectionDown={vi.fn()}
+      onRemoveSection={vi.fn()}
+    />
+  );
+  const view = render(card(navigation));
+  await act(async () => {
+    ready.resolve();
+    await loaded;
+  });
+  const first = await screen.findByRole("button", {
+    name: `${en.toggleItem} 1`,
+  });
+  const second = await screen.findByRole("button", {
+    name: `${en.toggleItem} 2`,
+  });
+  expect(first.getAttribute("aria-expanded")).toBe("false");
+  expect(second.getAttribute("aria-expanded")).toBe("true");
+  fireEvent.click(first);
+  fireEvent.click(second);
+  view.rerender(card(navigation));
+  expect(first.getAttribute("aria-expanded")).toBe("true");
+  expect(second.getAttribute("aria-expanded")).toBe("false");
+  view.rerender(card({ ...navigation, requestId: 2 }));
+  expect(first.getAttribute("aria-expanded")).toBe("true");
+  expect(second.getAttribute("aria-expanded")).toBe("true");
+  view.rerender(card({ ...navigation, requestId: 3 }));
+  expect(second.getAttribute("aria-expanded")).toBe("true");
+  view.rerender(card(undefined, true));
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("button", { name: `${en.toggleItem} 1` }),
+    ).toBeNull(),
+  );
+  view.rerender(card());
+  expect(
+    (
+      await screen.findByRole("button", { name: `${en.toggleItem} 1` })
+    ).getAttribute("aria-expanded"),
+  ).toBe("true");
+  expect(
+    (
+      await screen.findByRole("button", { name: `${en.toggleItem} 2` })
+    ).getAttribute("aria-expanded"),
+  ).toBe("true");
 });
 
 it("preserves an open delete confirmation when the section content finishes loading", async () => {

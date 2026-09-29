@@ -1,5 +1,5 @@
 import { ArrowDown, ArrowUp, Trash2 } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 
 import { useEditorSortable } from "@/components/editor/use-editor-sortable";
 import { EditorCollapseButton } from "@/components/editor/editor-collapse-button";
@@ -20,7 +20,8 @@ export function ResumeItemEditorShell({
   title,
   titleEditor,
   summary,
-  initiallyOpen = false,
+  open,
+  onOpenChange,
   canMoveUp,
   canMoveDown,
   removeLabel,
@@ -38,7 +39,8 @@ export function ResumeItemEditorShell({
   title: string;
   titleEditor: ReactNode;
   summary?: string;
-  initiallyOpen?: boolean;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
   canMoveUp: boolean;
   canMoveDown: boolean;
   removeLabel: string;
@@ -50,7 +52,6 @@ export function ResumeItemEditorShell({
   onMoveDown: () => void;
   children: ReactNode;
 }) {
-  const [open, setOpen] = useState(initiallyOpen);
   const itemTitle =
     getRichTextPlainText(title).trim() || `${itemLabel} ${index + 1}`;
   const {
@@ -70,7 +71,7 @@ export function ResumeItemEditorShell({
       data-dragging={isDragging || undefined}
       data-open={open}
     >
-      <Collapsible open={open} onOpenChange={setOpen}>
+      <Collapsible open={open} onOpenChange={onOpenChange}>
         <div data-slot="editor-item-header">
           <TooltipProvider delayDuration={180}>
             <Tooltip>

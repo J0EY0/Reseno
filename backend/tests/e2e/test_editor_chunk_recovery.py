@@ -18,6 +18,17 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def _static_dependencies(manifest: dict, *roots: str) -> set[str]:
+    dependencies: set[str] = set()
+    pending = list(roots)
+    while pending:
+        key = pending.pop()
+        if key not in dependencies:
+            dependencies.add(key)
+            pending.extend(manifest[key].get("imports", []))
+    return dependencies
+
+
 @pytest.mark.parametrize("failed_chunk", ["section-entry", "shared-dependency"])
 def test_editor_chunk_recovery_saves_latest_content_before_reloading(
     browser: Browser, workspace_servers: tuple[str, str], failed_chunk: str
@@ -28,13 +39,25 @@ def test_editor_chunk_recovery_saves_latest_content_before_reloading(
     if failed_chunk == "section-entry":
         asset = manifest["src/components/editor/resume-section-content.tsx"]["file"]
     else:
-        matches = [
-            entry
-            for entry in manifest.values()
-            if entry.get("name") == "resume-text-marks"
+        shared_dependencies = _static_dependencies(
+            manifest, "src/components/editor/inline-text-editor.tsx"
+        ) & _static_dependencies(
+            manifest, "src/components/editor/rich-highlights-editor.tsx"
+        )
+        loaded_dependencies = _static_dependencies(
+            manifest,
+            "index.html",
+            "src/components/workspace/resume-detail-workspace-page.tsx",
+            "src/components/editor/basic-info-fields.tsx",
+            "src/components/editor/resume-section-content.tsx",
+        )
+        candidates = [
+            manifest[key]["file"]
+            for key in shared_dependencies - loaded_dependencies
+            if manifest[key]["file"].endswith(".js")
         ]
-        assert len(matches) == 1
-        asset = matches[0]["file"]
+        assert candidates, "Expected a deferred dependency shared by both text editors"
+        asset = max(candidates, key=lambda file: (dist / file).stat().st_size)
     messages = json.loads(
         (FRONTEND_ROOT / "src/i18n/locales/en.json").read_text(encoding="utf-8")
     )

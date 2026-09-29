@@ -222,8 +222,167 @@ it.each(["applied", "discarded"] as const)(
   },
 );
 
+it("blocks saving and history changes until the committed Agent decision finishes its exit", async () => {
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn(() => ({
+      matches: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    })),
+  );
+  const f = fixture();
+  act(() => f.result.current.model.commands.agent.reconcileDraft(f.snapshot));
+  const authoritative = {
+    ...f.initial,
+    resume: {
+      ...f.initial.resume,
+      basic: {
+        ...f.initial.resume.basic,
+        headline: "Committed Agent headline",
+      },
+    },
+  };
+  vi.mocked(resolveAgentDraftDecision).mockResolvedValue({
+    committed: true,
+    resolvedAsRequested: true,
+    resume: { resume: authoritative, savedAt: "server", versionId: "v2" },
+    draft: {
+      baseResume: f.initial.resume,
+      reviewItems: [{ ...f.snapshot.reviewItems[0], status: "applied" }],
+    },
+    session: {
+      resumeId: f.initial.id,
+      revision: "r2",
+      messages: [],
+      executions: [],
+    },
+  });
+  let applying!: Promise<unknown>;
+  await act(async () => {
+    applying = f.result.current.model.commands.agent.applyDraft();
+    await Promise.resolve();
+  });
+  expect(f.result.current.model.state.save.state).toBe("saved");
+  expect(f.result.current.model.state.agent.review!.resolvingStatus).toBe(
+    "applied",
+  );
+  expect(f.result.current.model.state.resume.basic.headline).toBe("Engineer");
+  act(() => {
+    f.result.current.model.commands.save();
+    f.result.current.model.commands.selectVersion("v1");
+  });
+  expect(saveResumeApi).not.toHaveBeenCalled();
+  expect(fetchResumeVersionApi).not.toHaveBeenCalled();
+  expect(f.result.current.model.state.leave.isOpen).toBe(false);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(180);
+    await applying;
+  });
+  expect(f.result.current.model.state.resume.basic.headline).toBe(
+    "Committed Agent headline",
+  );
+});
+
+it.each(["applied", "failed"] as const)(
+  "pauses autosave throughout an Agent decision and resumes after it is %s",
+  async (outcome) => {
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => ({
+        matches: false,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      })),
+    );
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const f = fixture();
+    act(() => f.result.current.model.commands.agent.reconcileDraft(f.snapshot));
+    act(() =>
+      f.result.current.model.commands.updateContent((current) => ({
+        ...current,
+        basic: { ...current.basic, name: "Manual name" },
+      })),
+    );
+    const decision =
+      Promise.withResolvers<
+        Awaited<ReturnType<typeof resolveAgentDraftDecision>>
+      >();
+    vi.mocked(resolveAgentDraftDecision).mockReturnValue(decision.promise);
+    vi.mocked(saveResumeApi).mockImplementation(async (_id, payload) => ({
+      resume: { ...f.initial, ...payload },
+      savedAt: "autosaved",
+      versionId: "v3",
+    }));
+    await act(() => vi.advanceTimersByTimeAsync(4_950));
+    let applying!: Promise<unknown>;
+    await act(async () => {
+      applying = f.result.current.model.commands.agent.applyDraft();
+      await Promise.resolve();
+    });
+    await act(() => vi.advanceTimersByTimeAsync(50));
+    const current = f.result.current.model.state.resume;
+    await act(async () => {
+      if (outcome === "failed") {
+        decision.reject(new Error("Agent decision unavailable"));
+      } else {
+        decision.resolve({
+          committed: true,
+          resolvedAsRequested: true,
+          resume: {
+            resume: {
+              ...f.initial,
+              resume: {
+                ...current,
+                basic: { ...current.basic, headline: "Agent headline" },
+              },
+            },
+            savedAt: "agent-saved",
+            versionId: "v2",
+          },
+          draft: {
+            baseResume: f.initial.resume,
+            reviewItems: [{ ...f.snapshot.reviewItems[0], status: "applied" }],
+          },
+          session: {
+            resumeId: f.initial.id,
+            revision: "r2",
+            messages: [],
+            executions: [],
+          },
+        });
+      }
+      await Promise.resolve();
+    });
+    expect(saveResumeApi).not.toHaveBeenCalled();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(180);
+      await applying;
+    });
+    if (outcome === "applied") {
+      await act(() => vi.advanceTimersByTimeAsync(5_000));
+      expect(saveResumeApi).not.toHaveBeenCalled();
+      act(() =>
+        f.result.current.model.commands.updateContent((resume) => ({
+          ...resume,
+          basic: { ...resume.basic, name: "Next manual name" },
+        })),
+      );
+    }
+    await act(() => vi.advanceTimersByTimeAsync(5_000));
+    expect(saveResumeApi).toHaveBeenCalledTimes(1);
+    const saved = vi.mocked(saveResumeApi).mock.calls[0][1].resume;
+    expect(saved.basic.headline).toBe(
+      outcome === "applied" ? "Agent headline" : "Engineer",
+    );
+    expect(saved.basic.name).toBe(
+      outcome === "applied" ? "Next manual name" : "Manual name",
+    );
+  },
+);
+
 it.each(["route refresh", "history selection"] as const)(
-  "clears the Agent transaction and selection when %s hydrates a formal document",
+  "preserves the formal document and Agent review boundaries for %s",
   async (source) => {
     const f = fixture();
     act(() => f.result.current.model.commands.agent.reconcileDraft(f.snapshot));
@@ -256,6 +415,25 @@ it.each(["route refresh", "history selection"] as const)(
       await act(async () =>
         f.result.current.model.commands.selectVersion("v3"),
       );
+      expect(f.result.current.model.state.resume).toEqual(f.initial.resume);
+      expect(f.result.current.model.state.history.version).toEqual(fresh);
+      expect(f.result.current.model.state.previewResume).toEqual(
+        fresh.resume.resume,
+      );
+      expect(f.result.current.model.state.previewReview).toBeNull();
+      expect(f.result.current.model.state.editing.disabled).toBe(true);
+      expect(f.result.current.model.state.agent.review!.mode).toBe("single");
+      expect(f.result.current.model.state.agent.draftState).not.toBeNull();
+      expect(saveResumeApi).not.toHaveBeenCalled();
+      expect(resolveAgentDraftDecision).not.toHaveBeenCalled();
+      act(() => f.result.current.model.commands.returnToLatest());
+      expect(f.result.current.model.state.history.version).toBeNull();
+      expect(f.result.current.model.state.editing.disabled).toBe(false);
+      expect(f.result.current.model.state.agent.review!.mode).toBe("single");
+      expect(f.result.current.model.state.previewResume.basic.headline).toBe(
+        "Agent headline",
+      );
+      return;
     }
     expect(f.result.current.model.state.resume.basic.headline).toBe(
       "Hydrated formal headline",

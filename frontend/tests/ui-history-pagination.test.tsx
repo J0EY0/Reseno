@@ -77,6 +77,12 @@ it("keeps save direct and version history open through selection and status anno
   );
   expect(announcement.textContent).toMatch(/^Saved · Last saved: /);
   expect(screen.getByRole("dialog", { name: "Versions" })).toBe(history);
+  rerender(<SaveStatusButton {...props} disabled />);
+  expect((save as HTMLButtonElement).disabled).toBe(true);
+  expect((trigger as HTMLButtonElement).disabled).toBe(true);
+  expect((entries[1] as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(entries[1]);
+  expect(props.onSelectVersion).toHaveBeenCalledTimes(1);
 });
 it.each(["metaKey", "ctrlKey", "shiftKey", "altKey", "middle"] as const)(
   "preserves native pagination link behavior for %s",

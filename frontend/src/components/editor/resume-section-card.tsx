@@ -28,6 +28,7 @@ import type { ResumeSection, SectionKind } from "@/types/resume";
 import { EditorCardShell } from "./editor-card-shell";
 import type { ResumeSectionAction } from "./resume-section-actions";
 import { useEditorSortable } from "./use-editor-sortable";
+import type { EditorSectionNavigation } from "./use-editor-section-navigation";
 
 const sectionIcons: Record<SectionKind, LucideIcon> = {
   education: GraduationCap,
@@ -58,6 +59,7 @@ type ResumeSectionCardProps = {
   t: AppMessages;
   documentT: AppMessages | null;
   section: ResumeSection;
+  navigation?: EditorSectionNavigation;
   collapsed: boolean;
   onToggle: () => void;
   onMutation: (mutation: ResumeSectionMutation) => void;
@@ -72,6 +74,7 @@ export function ResumeSectionCard({
   t,
   documentT,
   section,
+  navigation,
   collapsed,
   onToggle,
   onMutation,
@@ -81,6 +84,21 @@ export function ResumeSectionCard({
   canMoveUp,
   canMoveDown,
 }: ResumeSectionCardProps) {
+  const [expandedItemIds, setExpandedItemIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const [lastNavigation, setLastNavigation] =
+    useState<EditorSectionNavigation>();
+  if (navigation !== lastNavigation) {
+    setLastNavigation(navigation);
+    if (
+      navigation?.itemId &&
+      section.items.some((item) => item.id === navigation.itemId) &&
+      !expandedItemIds.has(navigation.itemId)
+    ) {
+      setExpandedItemIds(new Set([...expandedItemIds, navigation.itemId]));
+    }
+  }
   const [actionsRequested, setActionsRequested] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [action, setAction] = useState<ResumeSectionAction>(null);
@@ -205,6 +223,7 @@ export function ResumeSectionCard({
       style={style}
       className="editor-sortable"
       data-resume-section-id={section.id}
+      data-editor-section-id={section.id}
       data-dragging={isDragging || undefined}
     >
       <Suspense
@@ -219,6 +238,15 @@ export function ResumeSectionCard({
             t={t}
             section={section}
             onMutation={onMutation}
+            expandedItemIds={expandedItemIds}
+            onItemOpenChange={(itemId, open) => {
+              setExpandedItemIds((current) => {
+                const next = new Set(current);
+                if (open) next.add(itemId);
+                else next.delete(itemId);
+                return next;
+              });
+            }}
           />,
         )}
       </Suspense>

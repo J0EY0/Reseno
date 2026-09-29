@@ -12,6 +12,15 @@ import type { BasicInfoFieldsProps } from "@/components/editor/basic-info-fields
 import en from "@/i18n/locales/en.json";
 import { createEmptyResume } from "@/lib/resume";
 
+vi.mock("@/components/editor/resume-edit-history-context", () => ({
+  useResumeEditHistory: () => ({
+    canUndo: false,
+    canRedo: false,
+    undo: vi.fn(),
+    redo: vi.fn(),
+  }),
+}));
+
 afterEach(() => {
   vi.doUnmock("@/components/editor/basic-info-fields");
 });

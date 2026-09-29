@@ -11,14 +11,17 @@ import {
 import { AppToaster } from "@/components/app-toaster";
 import { ResourceErrorBoundary } from "@/components/resource-error-boundary";
 import { ResumeEditorPane } from "@/components/editor/resume-editor-pane";
+import { ResumeEditHistoryProvider } from "@/components/editor/resume-edit-history-provider";
 import type { DocumentCanvasHandle } from "@/components/preview/document-canvas";
 import { loadDocumentCanvas } from "@/components/preview/document-canvas-loader";
+import { DocumentCanvasStatusBar } from "@/components/preview/document-canvas-status-bar";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import {
   ResumeDetailAgentHost,
   ResumeDetailAgentToggle,
 } from "@/components/workspace/resume-detail-agent-host";
 import { ResumeDetailWorkspaceHeader } from "@/components/workspace/resume-detail-workspace-header";
+import { ResumeHistoryToolbar } from "@/components/workspace/resume-history-toolbar";
 import type { ResumeDetailWorkspaceModel } from "@/components/workspace/resume-detail-workspace-types";
 import { WorkspaceRouteError } from "@/components/workspace/workspace-route-error";
 import { WorkspacePreviewSkeleton } from "@/components/workspace-skeletons";
@@ -57,7 +60,9 @@ function ResumeDetailContent({
 }) {
   const { commands, state } = model;
   const documentMessages = useLocalizedMessages(
-    state.resumeItem?.documentLocale ?? null,
+    state.history.version?.resume.documentLocale ??
+      state.resumeItem?.documentLocale ??
+      null,
   );
   const showDocumentSkeleton = state.showSkeleton || !documentMessages;
   return (
@@ -66,19 +71,30 @@ function ResumeDetailContent({
       agentExpanded={!state.agent.isPanelCollapsed}
       editor={
         <ResourceErrorBoundary>
-          <ResumeEditorPane
-            t={messages}
-            documentT={documentMessages}
-            disabled={Boolean(state.agent.review?.resolvingStatus)}
-            resume={state.resume}
-            updateContent={commands.updateContent}
-            openSectionId={state.openSectionId}
-            toggleSection={commands.toggleSection}
-            addSection={commands.addSection}
-            removeSection={commands.removeSection}
-            hasLoadError={state.hasVersionLoadError}
-            showSkeleton={showDocumentSkeleton}
-          />
+          <ResumeEditHistoryProvider
+            value={{
+              canUndo: state.editing.canUndo,
+              canRedo: state.editing.canRedo,
+              undo: commands.undo,
+              redo: commands.redo,
+            }}
+            onBreakHistoryGroup={commands.finishHistoryGroup}
+          >
+            <ResumeEditorPane
+              t={messages}
+              documentT={documentMessages}
+              disabled={state.editing.disabled}
+              resume={state.history.version?.resume.resume ?? state.resume}
+              updateContent={commands.updateContent}
+              openSectionId={state.openSectionId}
+              toggleSection={commands.toggleSection}
+              sectionNavigation={state.sectionNavigation ?? undefined}
+              addSection={commands.addSection}
+              removeSection={commands.removeSection}
+              hasLoadError={state.hasVersionLoadError}
+              showSkeleton={showDocumentSkeleton}
+            />
+          </ResumeEditHistoryProvider>
         </ResourceErrorBoundary>
       }
       preview={
@@ -91,6 +107,9 @@ function ResumeDetailContent({
                 ref={previewRef}
                 measurementKey={state.document.measurementKey}
                 variant="resume"
+                onActivateSection={
+                  state.editing.disabled ? undefined : commands.activateSection
+                }
                 t={messages}
                 documentT={documentMessages}
                 resume={state.previewResume}
@@ -111,6 +130,20 @@ function ResumeDetailContent({
                     : undefined
                 }
                 onPaginationReadyChange={commands.onPreviewReadyChange}
+                statusBar={
+                  <DocumentCanvasStatusBar>
+                    {state.history.version ? (
+                      <ResumeHistoryToolbar
+                        locale={locale}
+                        historyVersion={state.history.version}
+                        isRestoring={state.history.isRestoring}
+                        hasRestoreError={state.history.hasRestoreError}
+                        onRestore={() => void commands.restoreVersion()}
+                        onReturn={commands.returnToLatest}
+                      />
+                    ) : null}
+                  </DocumentCanvasStatusBar>
+                }
                 toolbarTrailing={
                   <ResumeDetailAgentToggle messages={messages} model={model} />
                 }

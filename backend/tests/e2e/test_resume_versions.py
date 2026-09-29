@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import json
 import os
-import time
+from pathlib import Path
 from urllib.parse import urlparse
 
 import pytest
-from playwright.sync_api import Browser, Request, Route, expect
-from playwright.sync_api import Error as PlaywrightError
+from playwright.sync_api import Browser, Locator, Request, expect
 
+from tests.e2e.browser_support import DeferredRoute
 from tests.e2e.browser_support import authenticated_context as _authenticated_context
 
 pytestmark = pytest.mark.skipif(
@@ -18,9 +18,10 @@ pytestmark = pytest.mark.skipif(
 
 
 @pytest.mark.browser_smoke
-def test_resume_version_switch_keeps_workspace_and_history_popover_stable(
+def test_resume_history_preview_and_explicit_restore_preserve_formal_document(
     browser: Browser,
     workspace_servers: tuple[str, str],
+    tmp_path: Path,
 ) -> None:
     frontend_url, _ = workspace_servers
     context = _authenticated_context(
@@ -30,7 +31,8 @@ def test_resume_version_switch_keeps_workspace_and_history_popover_stable(
     )
     page = context.new_page()
     resume_id: str | None = None
-    held_version_routes: list[Route] = []
+    version_gate: DeferredRoute | None = None
+    restore_gate: DeferredRoute | None = None
     resume_save_requests: list[Request] = []
 
     def record_resume_save(request: Request) -> None:
@@ -74,12 +76,13 @@ def test_resume_version_switch_keeps_workspace_and_history_popover_stable(
 
         page.goto(
             f"{frontend_url}/resume/{resume_id}",
-            wait_until="networkidle",
+            wait_until="domcontentloaded",
         )
         preview = page.locator(
             ".resume-preview-card article.resume-page",
         )
         expect(preview).to_contain_text(second_name)
+        page.clock.install()
 
         history_trigger = page.locator(
             '[data-slot="save-status-group"] [data-slot="popover-trigger"]'
@@ -93,6 +96,8 @@ def test_resume_version_switch_keeps_workspace_and_history_popover_stable(
         expect(version_buttons).to_have_count(2)
         historical_version = version_buttons.last
         historical_version.hover()
+        version_button_bounds = historical_version.bounding_box()
+        assert version_button_bounds is not None
 
         before = page.evaluate(
             """
@@ -132,20 +137,16 @@ def test_resume_version_switch_keeps_workspace_and_history_popover_stable(
 
         version_pattern = f"**/api/resumes/{resume_id}/versions/1"
 
-        def hold_version(route: Route) -> None:
-            held_version_routes.append(route)
-
-        page.route(version_pattern, hold_version)
+        version_gate = DeferredRoute(page, version_pattern)
         historical_version.click()
-        deadline = time.monotonic() + 3
-        while not held_version_routes and time.monotonic() < deadline:
-            page.wait_for_timeout(20)
-        assert held_version_routes
-        page.wait_for_timeout(250)
+        version_gate.wait()
 
         expect(version_popover).to_be_visible()
         expect(historical_version).to_be_visible()
-        assert historical_version.evaluate("element => element.matches(':hover')")
+        expect(historical_version).to_be_disabled()
+        assert historical_version.bounding_box() == pytest.approx(
+            version_button_bounds, abs=1
+        )
         during = page.evaluate(
             """
             () => {
@@ -185,19 +186,20 @@ def test_resume_version_switch_keeps_workspace_and_history_popover_stable(
         assert during["editor"] == pytest.approx(before["editor"], abs=1), during
         assert during["preview"] == pytest.approx(before["preview"], abs=1), during
 
-        for route in held_version_routes:
-            route.continue_()
-        held_version_routes.clear()
-        page.unroute(version_pattern, hold_version)
+        version_gate.release()
 
         expect(preview).to_contain_text(initial_name)
         expect(version_popover).to_be_visible()
         expect(historical_version).to_be_visible()
-        assert historical_version.evaluate("element => element.matches(':hover')")
+        expect(historical_version).to_contain_text("查看中")
         expect(page.locator('[data-slot="save-status-announcement"]')).to_contain_text(
-            "已保存"
+            "正在查看历史版本"
         )
-        page.wait_for_timeout(5_500)
+        banner = page.get_by_role("region", name="正在查看历史版本", exact=True)
+        expect(banner).to_be_visible()
+        expect(page.get_by_role("button", name="保存状态", exact=True)).to_be_disabled()
+        expect(page.locator(".resume-editor-panel")).to_have_attribute("inert", "")
+        page.clock.fast_forward(30_000)
         assert resume_save_requests == []
         current_detail = page.request.get(
             f"{frontend_url}/api/resumes/{resume_id}"
@@ -207,18 +209,234 @@ def test_resume_version_switch_keeps_workspace_and_history_popover_stable(
             == checkpoint_response.json()["data"]["versionId"]
         )
         assert current_detail["resume"]["resume"]["basic"]["name"] == second_name
+        page.keyboard.press("Escape")
+        expect(version_popover).not_to_be_visible()
+        theme_toggle = page.get_by_role(
+            "button", name="切换日间 / 夜间模式", exact=True
+        )
+        theme_toggle.click()
+        page.wait_for_function("document.documentElement.classList.contains('dark')")
+        page.screenshot(path=str(tmp_path / "history-dark-desktop.png"))
+        theme_toggle.click()
+        page.get_by_role("button", name="回到最新版", exact=True).click()
+        expect(preview).to_contain_text(second_name)
+        expect(banner).not_to_be_visible()
+        assert resume_save_requests == []
+
+        history_trigger.click()
+        version_popover.get_by_role("button").last.click()
+        expect(preview).to_contain_text(initial_name)
+        expect(banner).to_be_visible()
+        page.keyboard.press("Escape")
+
+        restore_gate = DeferredRoute(
+            page, f"**/api/resumes/{resume_id}?saveMode=checkpoint"
+        )
+        page.get_by_role("button", name="恢复此版本", exact=True).click()
+        restore_gate.wait()
+        expect(
+            page.get_by_role("button", name="正在恢复版本…", exact=True)
+        ).to_be_disabled()
+        expect(
+            page.get_by_role("button", name="回到最新版", exact=True)
+        ).to_be_disabled()
+        restore_gate.release(
+            lambda route: route.fulfill(
+                status=503,
+                json={"code": 50000, "message": "REQUEST_FAILED", "data": None},
+            )
+        )
+        expect(banner.get_by_role("alert")).to_have_text("恢复此版本失败，请重试。")
+        expect(
+            page.get_by_role("button", name="恢复此版本", exact=True)
+        ).to_be_enabled()
+        unchanged = page.request.get(f"{frontend_url}/api/resumes/{resume_id}").json()[
+            "data"
+        ]
+        assert unchanged["resume"]["resume"]["basic"]["name"] == second_name
+
+        with page.expect_response(
+            lambda response: (
+                response.request.method == "PUT"
+                and urlparse(response.url).path == f"/api/resumes/{resume_id}"
+            )
+        ) as restored_response:
+            page.get_by_role("button", name="恢复此版本", exact=True).click()
+        assert restored_response.value.ok
+        expect(banner).not_to_be_visible()
+        expect(preview).to_contain_text(initial_name)
+        expect(page.get_by_role("button", name="保存状态", exact=True)).to_be_enabled()
+        restored_detail = page.request.get(
+            f"{frontend_url}/api/resumes/{resume_id}"
+        ).json()["data"]
+        assert restored_detail["resume"]["resume"]["basic"]["name"] == initial_name
+        assert restored_detail["versionId"] != "1"
+        assert restored_detail["versionId"] != current_detail["versionId"]
+        assert len(resume_save_requests) == 2
+        page.reload(wait_until="domcontentloaded")
+        expect(preview).to_contain_text(initial_name)
+        expect(banner).not_to_be_visible()
     finally:
-        for route in held_version_routes:
-            try:
-                route.continue_()
-            except PlaywrightError:
-                pass
+        if version_gate:
+            version_gate.release()
+        if restore_gate:
+            restore_gate.release()
         if resume_id:
             trash_response = context.request.post(
                 f"{frontend_url}/api/resumes/{resume_id}/trash"
             )
             if trash_response.ok:
                 context.request.delete(f"{frontend_url}/api/resumes/{resume_id}")
+        context.close()
+
+
+def _assert_history_toolbar_bounds(toolbar: Locator) -> dict[str, float]:
+    geometry = toolbar.evaluate(
+        """element => {
+          const card = element.closest('.resume-preview-card');
+          const controls = card?.querySelector(
+            '[data-slot="document-canvas-controls"]');
+          const rect = node => {
+            const {x, y, width, height} = node.getBoundingClientRect();
+            return {x, y, width, height};
+          };
+          return {
+            toolbar: rect(element),
+            card: card ? rect(card) : null,
+            controls: controls ? rect(controls) : null,
+            viewport: {width: innerWidth, height: innerHeight},
+          };
+        }"""
+    )
+    bar, card, controls = (
+        geometry["toolbar"],
+        geometry["card"],
+        geometry["controls"],
+    )
+    assert card is not None and controls is not None, geometry
+    assert (
+        card["x"] <= bar["x"] < bar["x"] + bar["width"] <= (card["x"] + card["width"])
+    ), geometry
+    assert (
+        card["y"] <= bar["y"] < bar["y"] + bar["height"] <= (card["y"] + card["height"])
+    ), geometry
+    assert 0 <= bar["x"] and bar["x"] + bar["width"] <= geometry["viewport"]["width"]
+    assert 0 <= bar["y"] and bar["y"] + bar["height"] <= geometry["viewport"]["height"]
+    assert (
+        bar["y"] + bar["height"] <= controls["y"]
+        or controls["y"] + controls["height"] <= bar["y"]
+        or bar["x"] + bar["width"] <= controls["x"]
+        or controls["x"] + controls["width"] <= bar["x"]
+    ), geometry
+    return bar
+
+
+@pytest.mark.browser_smoke
+@pytest.mark.parametrize("width", [1440, 375], ids=["desktop", "phone"])
+@pytest.mark.parametrize("locale", ["zh", "en"])
+def test_history_actions_float_inside_preview_and_remain_available_after_scrolling(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+    width: int,
+    locale: str,
+    tmp_path: Path,
+) -> None:
+    base, _ = workspace_servers
+    frontend = Path(__file__).resolve().parents[3] / "frontend"
+    messages = json.loads(
+        (frontend / f"src/i18n/locales/{locale}.json").read_text(encoding="utf-8")
+    )
+    history_messages = json.loads(
+        (frontend / "src/i18n/resume-history.json").read_text(encoding="utf-8")
+    )[locale]
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN" if locale == "zh" else "en-US",
+        viewport={"width": width, "height": 870},
+        reduced_motion="reduce",
+    )
+    context.add_init_script(f"localStorage.setItem('reseno-locale', '{locale}')")
+    page = context.new_page()
+    try:
+        response = page.request.post(
+            f"{base}/api/resumes",
+            data={"documentLocale": locale, "template": "minimal", "title": "History"},
+        )
+        assert response.ok, response.text()
+        created = response.json()["data"]["resume"]
+        resume_id = created["id"]
+        initial_name = created["resume"]["basic"]["name"]
+        payload = {
+            key: created[key]
+            for key in (
+                "title",
+                "documentLocale",
+                "resume",
+                "jobBrief",
+                "typography",
+                "template",
+                "templateSettings",
+            )
+        }
+        payload["resume"]["basic"]["name"] = "Current resume"
+        response = page.request.put(f"{base}/api/resumes/{resume_id}", data=payload)
+        assert response.ok, response.text()
+        saves: list[Request] = []
+        page.on(
+            "request",
+            lambda request: (
+                saves.append(request)
+                if request.method == "PUT"
+                and urlparse(request.url).path == f"/api/resumes/{resume_id}"
+                else None
+            ),
+        )
+        page.goto(f"{base}/resume/{resume_id}", wait_until="networkidle")
+        page.locator(
+            '[data-slot="save-status-group"] [data-slot="popover-trigger"]'
+        ).click()
+        popover = page.get_by_role("dialog", name=messages["saveVersions"], exact=True)
+        popover.get_by_role("button").last.click()
+        toolbar = page.get_by_role(
+            "region", name=history_messages["viewing"], exact=True
+        )
+        expect(toolbar).to_be_visible()
+        page.keyboard.press("Escape")
+        card = page.locator(".resume-preview-card")
+        card.scroll_into_view_if_needed()
+        expect(toolbar.get_by_role("status")).to_contain_text(
+            history_messages["viewing"]
+        )
+        restore = toolbar.get_by_role(
+            "button", name=history_messages["restore"], exact=True
+        )
+        latest = toolbar.get_by_role(
+            "button", name=history_messages["returnToLatest"], exact=True
+        )
+        expect(restore).to_be_enabled()
+        expect(latest).to_be_enabled()
+        expect(card.locator("article.resume-page").first).to_contain_text(initial_name)
+        before = _assert_history_toolbar_bounds(toolbar)
+        page.screenshot(path=str(tmp_path / f"history-{locale}-{width}.png"))
+
+        card.get_by_role("button", name=messages["actualSize"], exact=True).click()
+        viewport = card.locator('[data-slot="document-canvas-viewport"]')
+        viewport.evaluate(
+            "element => { element.scrollTop = 240; element.scrollLeft = 120; }"
+        )
+        expect(viewport).to_have_js_property("scrollTop", 240)
+        after = _assert_history_toolbar_bounds(toolbar)
+        assert after == pytest.approx(before, abs=1)
+        restore.click(trial=True)
+        page.screenshot(path=str(tmp_path / f"history-{locale}-{width}-scrolled.png"))
+        latest.click()
+        expect(toolbar).not_to_be_visible()
+        expect(card.locator("article.resume-page").first).to_contain_text(
+            "Current resume"
+        )
+        expect(page.locator(".resume-editor-panel")).not_to_have_attribute("inert", "")
+        assert saves == []
+    finally:
         context.close()
 
 

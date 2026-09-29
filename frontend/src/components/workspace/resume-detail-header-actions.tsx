@@ -37,6 +37,7 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import type { ResumeDetailWorkspaceModel } from "@/components/workspace/resume-detail-workspace-types";
 import { WorkspaceMobileActionsMenu } from "@/components/workspace/workspace-mobile-actions-menu";
+import { ResumeEditHistoryActions } from "./resume-edit-history-actions";
 import type { AppMessages, Locale } from "@/i18n";
 
 interface ResumeDetailHeaderActionsProps {
@@ -70,8 +71,10 @@ function ResumeDetailCompactActions({
 
   return (
     <div className="flex items-center gap-2">
+      <ResumeEditHistoryActions messages={messages} model={model} />
       <ResumeFormatPopover
         compact
+        disabled={state.editing.disabled}
         t={messages}
         template={state.template}
         templates={state.templates}
@@ -85,6 +88,9 @@ function ResumeDetailCompactActions({
       />
 
       <SaveStatusButton
+        disabled={
+          state.isLoading || Boolean(state.agent.review?.resolvingStatus)
+        }
         locale={locale}
         label={messages.saveStatus}
         savingText={messages.saving}
@@ -102,6 +108,7 @@ function ResumeDetailCompactActions({
         onSave={() => void commands.save()}
         onSelectVersion={commands.selectVersion}
         showVersions
+        history={state.history.version ?? undefined}
       />
 
       <div
@@ -118,6 +125,7 @@ function ResumeDetailCompactActions({
           resolvedTheme={state.resolvedTheme}
         >
           <DropdownMenuItem
+            disabled={Boolean(state.history.version)}
             onSelect={() =>
               commands.agent.setPanelCollapsed(!state.agent.isPanelCollapsed)
             }
@@ -129,6 +137,7 @@ function ResumeDetailCompactActions({
           </DropdownMenuItem>
           <DropdownMenuItem
             disabled={
+              state.editing.disabled ||
               state.document.isSmartFittingOnePage ||
               !state.document.isPreviewReady
             }
@@ -143,6 +152,7 @@ function ResumeDetailCompactActions({
           </DropdownMenuItem>
           <DropdownMenuItem
             disabled={
+              state.editing.disabled ||
               state.isDuplicatingResume ||
               state.isLoading ||
               state.save.state === "saving"
@@ -154,7 +164,11 @@ function ResumeDetailCompactActions({
           </DropdownMenuItem>
           <DropdownMenuSub>
             <DropdownMenuSubTrigger
-              disabled={state.isExporting || state.isLoading}
+              disabled={
+                state.isExporting ||
+                state.isLoading ||
+                Boolean(state.history.version)
+              }
             >
               {state.isExporting ? (
                 <Spinner aria-label={messages.exporting} />
@@ -200,12 +214,15 @@ function ResumeDetailEditorActions({
 
   return (
     <div className="flex flex-wrap items-center justify-end gap-2">
+      <ResumeEditHistoryActions messages={messages} model={model} />
       <Button
         type="button"
         variant="outline"
         onClick={() => void commands.fitOnePage()}
         disabled={
-          state.document.isSmartFittingOnePage || !state.document.isPreviewReady
+          state.editing.disabled ||
+          state.document.isSmartFittingOnePage ||
+          !state.document.isPreviewReady
         }
         title={messages.smartOnePage}
         aria-label={messages.smartOnePage}
@@ -222,6 +239,7 @@ function ResumeDetailEditorActions({
       </Button>
 
       <ResumeFormatPopover
+        disabled={state.editing.disabled}
         t={messages}
         template={state.template}
         templates={state.templates}
@@ -239,6 +257,7 @@ function ResumeDetailEditorActions({
         variant="outline"
         onClick={() => void commands.duplicateResume()}
         disabled={
+          state.editing.disabled ||
           state.isDuplicatingResume ||
           state.isLoading ||
           state.save.state === "saving"
@@ -253,6 +272,9 @@ function ResumeDetailEditorActions({
       </Button>
 
       <SaveStatusButton
+        disabled={
+          state.isLoading || Boolean(state.agent.review?.resolvingStatus)
+        }
         locale={locale}
         label={messages.saveStatus}
         savingText={messages.saving}
@@ -270,6 +292,7 @@ function ResumeDetailEditorActions({
         onSave={() => void commands.save()}
         onSelectVersion={commands.selectVersion}
         showVersions
+        history={state.history.version ?? undefined}
       />
 
       <DropdownMenu>
@@ -278,7 +301,11 @@ function ResumeDetailEditorActions({
             type="button"
             variant="outline"
             className="min-w-32"
-            disabled={state.isExporting || state.isLoading}
+            disabled={
+              state.isExporting ||
+              state.isLoading ||
+              Boolean(state.history.version)
+            }
           >
             {state.isExporting ? (
               <Spinner

@@ -10,6 +10,10 @@ import {
 import { AddSectionPopover } from "@/components/editor/add-section-popover";
 import { BasicInfoCard } from "@/components/editor/basic-info-card";
 import { ResumeSectionCard } from "@/components/editor/resume-section-card";
+import {
+  useEditorSectionNavigation,
+  type EditorSectionNavigation,
+} from "@/components/editor/use-editor-section-navigation";
 import { SortableEditorList } from "@/components/editor/sortable-editor-list";
 import { Card, CardContent } from "@/components/ui/card";
 import { WorkspacePanelSkeleton } from "@/components/workspace-skeletons";
@@ -34,14 +38,16 @@ const AvatarCropDialog = lazy(() =>
   })),
 );
 
-// The route controller owns persisted resume and navigation state. This pane
-// owns only transient avatar UI and translates editor actions into state updates.
 type ResumeEditorPaneProps = {
   t: AppMessages;
   documentT: AppMessages | null;
   disabled: boolean;
   resume: ResumeData;
-  updateContent: (update: (current: ResumeData) => ResumeData) => void;
+  updateContent: (
+    update: (current: ResumeData) => ResumeData,
+    historyGroup?: string,
+  ) => void;
+  sectionNavigation?: EditorSectionNavigation;
   openSectionId: string | null;
   toggleSection: (id: string) => void;
   addSection: (section: ResumeSection) => void;
@@ -57,22 +63,30 @@ export const ResumeEditorPane = memo(function ResumeEditorPane({
   resume,
   updateContent,
   openSectionId,
+  sectionNavigation,
   toggleSection,
   addSection,
   removeSection,
   hasLoadError,
   showSkeleton,
 }: ResumeEditorPaneProps) {
+  const { panelRef, onScroll, onInteraction } = useEditorSectionNavigation(
+    openSectionId,
+    sectionNavigation,
+  );
   const [avatarCropSource, setAvatarCropSource] = useState<string | null>(null);
 
   function updateBasic<K extends keyof ResumeBasicInfo>(
     field: K,
     value: ResumeBasicInfo[K],
   ) {
-    updateContent((current) => ({
-      ...current,
-      basic: { ...current.basic, [field]: value },
-    }));
+    updateContent(
+      (current) => ({
+        ...current,
+        basic: { ...current.basic, [field]: value },
+      }),
+      field === "avatar" ? undefined : `basic.${field}`,
+    );
   }
 
   function updateCustomField<K extends keyof Omit<CustomField, "id">>(
@@ -80,15 +94,18 @@ export const ResumeEditorPane = memo(function ResumeEditorPane({
     field: K,
     value: CustomField[K],
   ) {
-    updateContent((current) => ({
-      ...current,
-      basic: {
-        ...current.basic,
-        customFields: current.basic.customFields.map((item) =>
-          item.id === id ? { ...item, [field]: value } : item,
-        ),
-      },
-    }));
+    updateContent(
+      (current) => ({
+        ...current,
+        basic: {
+          ...current.basic,
+          customFields: current.basic.customFields.map((item) =>
+            item.id === id ? { ...item, [field]: value } : item,
+          ),
+        },
+      }),
+      `basic.customFields.${id}.${field}`,
+    );
   }
 
   function addCustomField() {
@@ -136,17 +153,24 @@ export const ResumeEditorPane = memo(function ResumeEditorPane({
   }
 
   function mutateResumeSection(mutation: ResumeSectionMutation) {
-    updateContent((current) => {
-      const result = applySectionMutation(current.sections, mutation);
+    updateContent(
+      (current) => {
+        const result = applySectionMutation(current.sections, mutation);
 
-      // A rejected mutation is atomic: stale UI state must never partially
-      // modify the resume that the persistence layer will later snapshot.
-      if (result.status !== "applied") {
-        return current;
-      }
+        // A rejected mutation is atomic: stale UI state must never partially
+        // modify the resume that the persistence layer will later snapshot.
+        if (result.status !== "applied") {
+          return current;
+        }
 
-      return { ...current, sections: result.sections };
-    });
+        return { ...current, sections: result.sections };
+      },
+      mutation.type === "item.update"
+        ? `section.${mutation.sectionId}.item.${mutation.itemId}.${Object.keys(mutation.patch).sort().join(".")}`
+        : mutation.type === "section.rename"
+          ? `section.${mutation.sectionId}.title`
+          : undefined,
+    );
   }
 
   function moveSection(sectionId: string, direction: "up" | "down") {
@@ -207,6 +231,11 @@ export const ResumeEditorPane = memo(function ResumeEditorPane({
       </Suspense>
 
       <section
+        ref={panelRef}
+        onScroll={onScroll}
+        onPointerDownCapture={onInteraction}
+        onKeyDownCapture={onInteraction}
+        onWheelCapture={onInteraction}
         aria-busy={disabled || undefined}
         className="resume-editor-panel flex flex-col print:hidden"
         inert={disabled || undefined}
@@ -255,6 +284,11 @@ export const ResumeEditorPane = memo(function ResumeEditorPane({
                   t={t}
                   documentT={documentT}
                   section={section}
+                  navigation={
+                    sectionNavigation?.sectionId === section.id
+                      ? sectionNavigation
+                      : undefined
+                  }
                   canMoveUp={resume.sections[0]?.id !== section.id}
                   canMoveDown={
                     resume.sections[resume.sections.length - 1]?.id !==

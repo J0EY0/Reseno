@@ -21,6 +21,7 @@ export function BasicInfoCard({
   return (
     <Suspense fallback={null}>
       <EditorCardShell
+        sectionId="basic"
         icon={UserRound}
         title={props.t.basicInfo}
         toggleLabel={`${props.t.basicInfo}: ${props.t.toggleSection}`}

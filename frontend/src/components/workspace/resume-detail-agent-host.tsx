@@ -155,6 +155,7 @@ export function ResumeDetailAgentToggle({
             aria-controls={RESUME_DETAIL_AGENT_PANEL_ID}
             aria-label={tooltip}
             aria-expanded={!isCollapsed}
+            disabled={Boolean(state.history.version)}
             className={cn(
               "hidden w-10 rounded-md bg-background/95 shadow-lg dark:bg-background/95 dark:hover:bg-accent xl:inline-flex",
               !isCollapsed && "bg-accent text-accent-foreground dark:bg-accent",

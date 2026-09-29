@@ -9,7 +9,7 @@ export function SimpleListSectionEditor({
   onUpdateItem,
 }: Omit<
   TypedSectionEditorProps<"simple_list">,
-  "onRemoveItem" | "onMoveItem"
+  "onRemoveItem" | "onMoveItem" | "expandedItemIds" | "onItemOpenChange"
 >) {
   const item = section.items[0];
 
@@ -27,10 +27,12 @@ export function SimpleListSectionEditor({
   }
 
   return (
-    <SimpleContentField
-      t={t}
-      value={item.content}
-      onChange={(content) => updateItem(item, { content })}
-    />
+    <div className="min-w-0" data-resume-item-id={item.id}>
+      <SimpleContentField
+        t={t}
+        value={item.content}
+        onChange={(content) => updateItem(item, { content })}
+      />
+    </div>
   );
 }

@@ -11,6 +11,8 @@ export type TypedSectionEditorProps<K extends ResumeSection["kind"]> = {
   t: AppMessages;
   section: ResumeSectionOf<K>;
   initiallyOpenItemId?: string | null;
+  expandedItemIds: ReadonlySet<string>;
+  onItemOpenChange: (itemId: string, open: boolean) => void;
   onUpdateItem: (mutation: ItemUpdateMutation) => void;
   onRemoveItem: (itemId: string) => void;
   onMoveItem: (itemId: string, direction: "up" | "down") => void;

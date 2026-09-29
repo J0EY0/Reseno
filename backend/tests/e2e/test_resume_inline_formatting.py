@@ -255,9 +255,6 @@ def test_inline_marks_preserve_input_geometry_and_saved_content(
         expect(
             page.get_by_role("button", name="保存状态", exact=True)
         ).to_have_attribute("title", re.compile("^已保存"))
-        latest_version = page.request.get(f"{base}/api/resumes/{resume_id}").json()[
-            "data"
-        ]["versionId"]
         versions = page.request.get(f"{base}/api/resumes/{resume_id}/versions").json()[
             "data"
         ]["versions"]
@@ -268,29 +265,38 @@ def test_inline_marks_preserve_input_geometry_and_saved_content(
                 save_requests.append(request.url) if request.method == "PUT" else None
             ),
         )
-        for version_id, marked in ((initial_version, False), (latest_version, True)):
-            index = next(
-                index
-                for index, version in enumerate(versions)
-                if version["versionId"] == version_id
-            )
-            page.get_by_role("button", name="历史版本", exact=True).click()
-            with page.expect_response(
-                lambda response, selected=version_id: (
-                    f"/versions/{selected}" in response.url
-                )
-            ):
-                page.locator(
-                    '[data-slot="popover-content"][aria-label="历史版本"]'
-                ).get_by_role("button").nth(index).click()
-            page.keyboard.press("Escape")
-            _open_section(page, "Publications")
-            authors = page.get_by_role("textbox", name="作者", exact=True)
-            expect(authors).to_have_text("Jane Doe1")
-            expect(authors.locator("sup")).to_have_count(1 if marked else 0)
-            expect(
-                page.get_by_role("button", name="保存状态", exact=True)
-            ).to_have_attribute("title", re.compile("^已保存"))
+        index = next(
+            index
+            for index, version in enumerate(versions)
+            if version["versionId"] == initial_version
+        )
+        page.get_by_role("button", name="历史版本", exact=True).click()
+        with page.expect_response(
+            lambda response: f"/versions/{initial_version}" in response.url
+        ):
+            page.locator(
+                '[data-slot="popover-content"][aria-label="历史版本"]'
+            ).get_by_role("button").nth(index).click()
+        page.keyboard.press("Escape")
+        banner = page.get_by_role("region", name="正在查看历史版本", exact=True)
+        expect(banner).to_be_visible()
+        expect(_preview_item(page, "publication-1").locator("sup")).to_have_count(0)
+        expect(_preview_item(page, "publication-1").locator("sub")).to_have_count(0)
+        expect(page.locator(".resume-editor-panel")).to_have_attribute("inert", "")
+        expect(
+            page.get_by_role("button", name="保存状态", exact=True)
+        ).to_have_attribute("title", re.compile("^正在查看历史版本"))
+        banner.get_by_role("button", name="回到最新版", exact=True).click()
+        expect(banner).not_to_be_visible()
+        _open_section(page, "Publications")
+        authors = page.get_by_role("textbox", name="作者", exact=True)
+        expect(authors).to_have_text("Jane Doe1")
+        expect(authors.locator("sup")).to_have_text("1")
+        expect(_preview_item(page, "publication-1").locator("sup")).to_have_text("1")
+        expect(_preview_item(page, "publication-1").locator("sub")).to_have_text("2")
+        expect(
+            page.get_by_role("button", name="保存状态", exact=True)
+        ).to_have_attribute("title", re.compile("^已保存"))
         assert not save_requests, save_requests
         assert not errors, errors
     finally:

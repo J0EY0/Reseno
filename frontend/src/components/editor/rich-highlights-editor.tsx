@@ -12,6 +12,8 @@ import { useEffect, useId, useState, type MouseEvent } from "react";
 
 import { InlineFormatControls } from "./inline-format-controls";
 import { resumeTextMarks } from "./resume-text-marks";
+import { useResumeEditHistory } from "./resume-edit-history-context";
+import { syncEditorContent } from "./sync-editor-content";
 import {
   getRichHighlightsEditorContent,
   richHighlightsEditorContainerClassName,
@@ -39,12 +41,11 @@ function RichHighlightsToolbar({
   t: AppMessages;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const history = useResumeEditHistory();
   const extraControlsId = useId();
   const state = useEditorState({
     editor,
     selector: ({ editor: current }) => ({
-      canUndo: current?.can().undo() ?? false,
-      canRedo: current?.can().redo() ?? false,
       bulletList: current?.isActive("bulletList") ?? false,
       orderedList: current?.isActive("orderedList") ?? false,
     }),
@@ -115,11 +116,11 @@ function RichHighlightsToolbar({
             type="button"
             size="icon-sm"
             variant="ghost"
-            disabled={!state?.canUndo}
+            disabled={!history.canUndo}
             title={t.richTextUndo}
             aria-label={t.richTextUndo}
             onMouseDown={preventToolbarBlur}
-            onClick={() => editor?.chain().focus().undo().run()}
+            onClick={history.undo}
           >
             <Undo2 />
           </Button>
@@ -127,11 +128,11 @@ function RichHighlightsToolbar({
             type="button"
             size="icon-sm"
             variant="ghost"
-            disabled={!state?.canRedo}
+            disabled={!history.canRedo}
             title={t.richTextRedo}
             aria-label={t.richTextRedo}
             onMouseDown={preventToolbarBlur}
-            onClick={() => editor?.chain().focus().redo().run()}
+            onClick={history.redo}
           >
             <Redo2 />
           </Button>
@@ -162,6 +163,7 @@ export function RichHighlightsEditor({
       immediatelyRender: false,
       extensions: [
         StarterKit.configure({
+          undoRedo: false,
           heading: false,
           blockquote: false,
           code: false,
@@ -212,9 +214,7 @@ export function RichHighlightsEditor({
       return;
     }
 
-    editor.commands.setContent(getRichHighlightsEditorContent(editorValue), {
-      emitUpdate: false,
-    });
+    syncEditorContent(editor, getRichHighlightsEditorContent(editorValue));
   }, [editor, editorValue]);
 
   if (!editor) {

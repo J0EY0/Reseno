@@ -64,6 +64,10 @@ vi.mock("@/components/workspace-skeletons", () => ({
 it("preserves loading states, passes document operations and separates version errors from route errors", async () => {
   const resumeItem = createResumeDetailItem();
   const commands = {
+    undo: vi.fn(),
+    redo: vi.fn(),
+    finishHistoryGroup: vi.fn(),
+    activateSection: vi.fn(),
     updateContent: vi.fn(),
     toggleSection: vi.fn(),
     addSection: vi.fn(),
@@ -72,6 +76,9 @@ it("preserves loading states, passes document operations and separates version e
     retryLoad: vi.fn(),
   };
   const state = {
+    history: { version: null, isRestoring: false, hasRestoreError: false },
+    editing: { canUndo: false, canRedo: false, disabled: false },
+    sectionNavigation: null,
     agent: { isPanelCollapsed: true },
     document: { measurementKey: {} },
     openSectionId: "skills",

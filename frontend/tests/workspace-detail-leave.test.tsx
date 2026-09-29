@@ -27,6 +27,7 @@ function setup(useLeave: (typeof leaveHooks)[number]["useLeave"]) {
       state.dirty = false;
     }),
     hasUnsavedChanges: () => state.dirty,
+    isCommitting: false,
     requiresCheckpointPromotion: () => state.promote,
     promoteCheckpoint: vi.fn(async () => {
       state.promote = false;
@@ -204,6 +205,64 @@ describe.each(leaveHooks)("$kind detail leave protection", ({ useLeave }) => {
       expect(f.result.current.isOpen).toBe(false);
     },
   );
+});
+
+describe("resume commit leave protection", () => {
+  it("cancels leave requests and protects unload while a document commit finishes", () => {
+    const f = setup(useResumeDetailLeave);
+    f.options.isCommitting = true;
+    f.rerender();
+    const run = vi.fn();
+    const cancel = vi.fn();
+    act(() => f.result.current.requestLeave(run, cancel));
+    expect(run).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(f.result.current.isOpen).toBe(false);
+    expect(f.options.promoteCheckpoint).not.toHaveBeenCalled();
+    const event = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+    f.options.isCommitting = false;
+    f.rerender();
+    act(() => f.result.current.requestLeave(run));
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it("resets blocked browser navigation during a commit and permits a later attempt", async () => {
+    const f = setup(useResumeDetailLeave);
+    await act(() => f.router.navigate("/resume/detail?section=2"));
+    f.options.isCommitting = true;
+    f.rerender();
+    await act(() => f.router.navigate(-1));
+    expect(f.router.state.location.search).toBe("?section=2");
+    expect(f.result.current.isOpen).toBe(false);
+    f.options.isCommitting = false;
+    f.rerender();
+    await act(() => f.router.navigate(-1));
+    expect(f.router.state.location.search).toBe("");
+  });
+
+  it("keeps an existing leave dialog from saving or discarding during a commit", async () => {
+    const f = setup(useResumeDetailLeave);
+    f.state.dirty = true;
+    const run = vi.fn();
+    act(() => f.result.current.requestLeave(run));
+    f.options.isCommitting = true;
+    f.rerender();
+    await act(async () => {
+      await f.result.current.saveAndLeave();
+      await f.result.current.discardAndLeave();
+    });
+    expect(f.options.save).not.toHaveBeenCalled();
+    expect(f.options.discard).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+    expect(f.result.current.isOpen).toBe(true);
+    f.options.isCommitting = false;
+    f.rerender();
+    await act(() => f.result.current.saveAndLeave());
+    expect(f.options.save).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("resume autosave checkpoint promotion", () => {
