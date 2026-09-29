@@ -7,9 +7,9 @@ import os
 from pathlib import Path
 
 import pytest
-from playwright.sync_api import Browser, Page, Route, expect
+from playwright.sync_api import Browser, Page, Request, Route, expect
 
-from tests.e2e.browser_support import RouteReady, authenticated_context
+from tests.e2e.browser_support import DeferredRoute, RouteReady, authenticated_context
 
 pytestmark = [
     pytest.mark.browser_smoke,
@@ -28,7 +28,7 @@ def _open_basic_info(page: Page) -> None:
 @pytest.mark.parametrize(
     ("width", "reduced_motion"), [(1672, "no-preference"), (1100, "reduce")]
 )
-def test_version_response_preserves_new_editor_title_and_format_input(
+def test_history_loading_and_preview_preserve_current_editor_title_and_format(
     browser: Browser,
     workspace_servers: tuple[str, str],
     width: int,
@@ -42,8 +42,8 @@ def test_version_response_preserves_new_editor_title_and_format_input(
         reduced_motion=reduced_motion,
     )
     page = context.new_page()
-    pending: list[Route] = []
-    route_ready = RouteReady()
+    version_gate: DeferredRoute | None = None
+    save_requests: list[Request] = []
     try:
         created_response = page.request.post(
             f"{frontend_url}/api/resumes",
@@ -53,6 +53,7 @@ def test_version_response_preserves_new_editor_title_and_format_input(
         created = created_response.json()["data"]
         resume = created["resume"]
         resume_id = resume["id"]
+        historical_name = resume["resume"]["basic"]["name"]
         payload = {
             key: resume[key]
             for key in (
@@ -73,45 +74,97 @@ def test_version_response_preserves_new_editor_title_and_format_input(
         assert checkpoint.ok
         page.goto(f"{frontend_url}/resume/{resume_id}", wait_until="networkidle")
         _open_basic_info(page)
-        pattern = f"**/api/resumes/{resume_id}/versions/{created['versionId']}"
-
-        def hold_version(route: Route) -> None:
-            pending.append(route)
-            route_ready.set()
-
-        page.route(pattern, hold_version)
-        page.get_by_role("button", name="历史版本", exact=True).click()
-        with page.expect_request(lambda request: "/versions/" in request.url):
-            page.locator(
-                '[data-slot="popover-content"][aria-label="历史版本"]'
-            ).get_by_role("button").last.click()
-        route_ready.wait(page)
-        assert pending
-
         name_input = page.get_by_role("textbox", name="姓名", exact=True)
-        name_input.fill("Name typed during history request")
-        page.get_by_role("button", name="修改简历标题", exact=True).click()
+        title_trigger = page.get_by_role("button", name="修改简历标题", exact=True)
+        format_trigger = page.get_by_role("button", name="格式", exact=True)
+        editor = page.locator(".resume-editor-panel")
+        preview = page.locator(".resume-preview-card article.resume-page").first
+        current_name = "Name saved before history preview"
+        current_title = "Title saved before history preview"
+        name_input.fill(current_name)
+        title_trigger.click()
         dialog = page.get_by_role("dialog", name="修改简历标题", exact=True)
-        dialog.get_by_role("textbox").fill("Title typed during history request")
+        dialog.get_by_role("textbox").fill(current_title)
         dialog.get_by_role("button", name="保存", exact=True).click()
-        page.get_by_role("button", name="格式", exact=True).click()
+        format_trigger.click()
         font_size = page.get_by_role("combobox", name="字号", exact=True)
         font_size.click()
         page.get_by_role("option", name="15 pt", exact=True).click()
         page.keyboard.press("Escape")
-
-        with page.expect_response(lambda response: "/versions/" in response.url):
-            pending.pop().continue_()
-        page.unroute(pattern)
-        expect(name_input).to_have_text("Name typed during history request")
-        expect(page.locator("header h1[title]")).to_have_text(
-            "Title typed during history request"
+        pattern = f"**/api/resumes/{resume_id}/versions/{created['versionId']}"
+        version_gate = DeferredRoute(page, pattern)
+        page.get_by_role("button", name="历史版本", exact=True).click()
+        version_popover = page.locator(
+            '[data-slot="popover-content"][aria-label="历史版本"]'
         )
-        page.get_by_role("button", name="格式", exact=True).click()
+        version_popover.get_by_role("button").last.click()
+        leave_dialog = page.get_by_role("dialog", name="有未保存的更改", exact=True)
+        expect(leave_dialog).to_be_visible()
+        assert version_gate.pending == ()
+        with page.expect_response(
+            lambda response: (
+                response.request.method == "PUT"
+                and f"/api/resumes/{resume_id}?" in response.url
+            )
+        ) as saved_response:
+            leave_dialog.get_by_role("button", name="保存并离开", exact=True).click()
+        assert saved_response.value.ok
+        saved_checkpoint = saved_response.value.json()["data"]
+
+        def record_save(request: Request) -> None:
+            if request.method == "PUT" and f"/api/resumes/{resume_id}?" in request.url:
+                save_requests.append(request)
+
+        page.on("request", record_save)
+        version_gate.wait()
+        expect(leave_dialog).not_to_be_visible()
+
+        expect(editor).to_have_attribute("inert", "")
+        expect(title_trigger).to_be_disabled()
+        expect(format_trigger).to_be_disabled()
+        expect(name_input).to_have_text(current_name)
+        expect(page.locator("header h1[title]")).to_have_text(current_title)
+        expect(preview).to_contain_text(current_name)
+        page.keyboard.press("ControlOrMeta+z")
+        page.keyboard.press("ControlOrMeta+s")
+        expect(name_input).to_have_text(current_name)
+        assert save_requests == []
+
+        version_gate.release()
+        toolbar = page.get_by_role("region", name="正在查看历史版本", exact=True)
+        expect(toolbar).to_be_visible()
+        expect(toolbar).to_contain_text("只读")
+        expect(editor).to_have_attribute("inert", "")
+        expect(title_trigger).to_be_disabled()
+        expect(format_trigger).to_be_disabled()
+        expect(name_input).to_have_text(historical_name)
+        expect(preview).not_to_contain_text(current_name)
+        expect(page.locator("header h1[title]")).to_have_text("History request")
+        page.keyboard.press("Escape")
+        expect(version_popover).not_to_be_visible()
+        page.keyboard.press("ControlOrMeta+s")
+        current_detail = page.request.get(
+            f"{frontend_url}/api/resumes/{resume_id}"
+        ).json()["data"]
+        assert current_detail == saved_checkpoint
+        assert save_requests == []
+
+        toolbar.get_by_role("button", name="回到最新版", exact=True).click()
+        expect(toolbar).not_to_be_visible()
+        expect(editor).not_to_have_attribute("inert", "")
+        expect(title_trigger).to_be_enabled()
+        expect(format_trigger).to_be_enabled()
+        expect(name_input).to_have_text(current_name)
+        expect(preview).to_contain_text(current_name)
+        expect(page.locator("header h1[title]")).to_have_text(current_title)
+        format_trigger.click()
         expect(page.get_by_role("combobox", name="字号", exact=True)).to_have_text(
             "15 pt"
         )
         page.keyboard.press("Escape")
+        assert save_requests == []
+
+        name_input.fill("Name edited after returning to latest")
         with page.expect_response(
             lambda response: (
                 response.request.method == "PUT"
@@ -122,12 +175,14 @@ def test_version_response_preserves_new_editor_title_and_format_input(
         saved = page.request.get(f"{frontend_url}/api/resumes/{resume_id}").json()[
             "data"
         ]["resume"]
-        assert saved["resume"]["basic"]["name"] == name_input.inner_text()
-        assert saved["title"] == "Title typed during history request"
+        assert saved["resume"]["basic"]["name"] == (
+            "Name edited after returning to latest"
+        )
+        assert saved["title"] == current_title
         assert saved["typography"]["fontSize"] == 20
     finally:
-        for route in pending:
-            route.abort()
+        if version_gate:
+            version_gate.release(Route.abort)
         context.close()
 
 
