@@ -263,16 +263,19 @@ export function useResumeDetailWorkspace({
   const historyTemplate = save.historyVersion
     ? getTemplateById(templateCatalog, save.historyVersion.resume.template)
     : null;
-  const historyPreviewTemplate =
-    historyTemplate && save.historyVersion
-      ? {
-          ...historyTemplate,
-          settings: createTemplateSettings(historyTemplate.preset, {
-            ...historyTemplate.settings,
-            ...(save.historyVersion.resume.templateSettings ?? {}),
-          }),
-        }
-      : null;
+  const historyPreviewTemplate = useMemo(
+    () =>
+      historyTemplate && save.historyVersion
+        ? {
+            ...historyTemplate,
+            settings: createTemplateSettings(historyTemplate.preset, {
+              ...historyTemplate.settings,
+              ...(save.historyVersion.resume.templateSettings ?? {}),
+            }),
+          }
+        : null,
+    [historyTemplate, save.historyVersion],
+  );
 
   const leave = useResumeDetailLeave({
     discard: save.discard,

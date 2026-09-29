@@ -69,6 +69,22 @@ def _preview_heading(page: Page, item_id: str) -> Locator:
     ).first
 
 
+def _open_continuation_item(page: Page, heading: Locator, target: Locator) -> None:
+    page.locator(PANE).evaluate(
+        """element => {
+          window.initialNavigationComplete = false;
+          element.addEventListener('scrollend', () => {
+            window.initialNavigationComplete = true;
+          }, {once: true});
+        }"""
+    )
+    heading.dblclick()
+    expect(_item_toggle(target)).to_have_attribute("aria-expanded", "true")
+    _settle(page)
+    _expect_at_panel_top(target)
+    page.wait_for_function("window.initialNavigationComplete === true")
+
+
 def _add_projects(page: Page, base: str, resume_id: str) -> None:
     response = page.request.get(f"{base}/api/resumes/{resume_id}")
     assert response.ok, response.text()
@@ -124,12 +140,10 @@ def test_preview_navigation_scrolls_continuously_and_arrives_at_target(
     heading, item_id = _continuation_item(page)
     target = _item(page, item_id)
     if scenario != "cold":
-        heading.dblclick()
-        expect(_item_toggle(target)).to_have_attribute("aria-expanded", "true")
-        _settle(page)
-        _expect_at_panel_top(target)
+        _open_continuation_item(page, heading, target)
     if scenario == "warm":
         page.locator(PANE).evaluate("element => { element.scrollTop = 0; }")
+        expect(page.locator(PANE)).to_have_js_property("scrollTop", 0)
     elif scenario == "different":
         item_id = "experience-1"
         heading = _preview_heading(page, item_id)
@@ -175,14 +189,12 @@ def test_wheel_input_stops_preview_navigation_before_the_target(
     page, _, _, _ = sorting_workspace
     pane = page.locator(PANE)
     heading, item_id = _continuation_item(page)
-    heading.dblclick()
     target = _item(page, item_id)
-    expect(_item_toggle(target)).to_have_attribute("aria-expanded", "true")
-    _settle(page)
-    _expect_at_panel_top(target)
+    _open_continuation_item(page, heading, target)
     destination = pane.evaluate("element => element.scrollTop")
     assert destination > 400
     pane.evaluate("element => { element.scrollTop = 0; }")
+    expect(pane).to_have_js_property("scrollTop", 0)
     pane.evaluate(
         """element => {
           window.navigationInterruption = {wheelAt: null, stopped: false};
@@ -194,7 +206,10 @@ def test_wheel_input_stops_preview_navigation_before_the_target(
           }, {capture: true, once: true});
         }"""
     )
+    box = pane.bounding_box()
+    assert box is not None
     heading.dblclick()
+    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
     page.wait_for_function(
         """destination => {
           const top = document.querySelector('.resume-editor-panel').scrollTop;
@@ -203,9 +218,6 @@ def test_wheel_input_stops_preview_navigation_before_the_target(
         arg=destination,
         timeout=5_000,
     )
-    box = pane.bounding_box()
-    assert box is not None
-    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
     page.mouse.wheel(0, -400)
     page.wait_for_function("window.navigationInterruption.stopped")
     _settle(page)

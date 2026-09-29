@@ -1103,6 +1103,12 @@ html:has(.app-shell--document)::-webkit-scrollbar {
   animation: collapsible-inner-out 170ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
+.resume-preview-card:has([data-resume-pagination-ready="false"])
+  .document-canvas-status-bar
+  :is(.collapsible-content, .collapsible-content-inner) {
+  animation-play-state: paused;
+}
+
 @keyframes collapsible-down {
   from {
     height: 0;
