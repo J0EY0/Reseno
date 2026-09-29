@@ -8,7 +8,10 @@ export function DocumentCanvasStatusBar({ children }: { children: ReactNode }) {
   if (children && children !== content) setContent(children);
 
   return (
-    <Collapsible open={open} className="relative z-20 shrink-0 print:hidden">
+    <Collapsible
+      open={open}
+      className="document-canvas-status-bar relative z-20 shrink-0 print:hidden"
+    >
       <CollapsibleContent className="collapsible-content">
         <div
           inert={!open}
