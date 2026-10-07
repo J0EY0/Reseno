@@ -1,4 +1,5 @@
 import json
+from datetime import date
 from types import SimpleNamespace
 
 import pytest
@@ -138,10 +139,54 @@ def test_runtime_prompt_uses_frozen_preferences_without_settings_payload() -> No
     system_prompt = messages[0]["content"]
 
     assert payload["responseLanguage"] == "English"
+    assert payload["behaviorMode"] == "aggressive"
     assert "agentSettings" not in payload
-    assert "`responseLanguage`: Use English" in system_prompt
-    assert "`behaviorMode`: Use an assertive editing posture" in system_prompt
+    assert "confirmationMode" not in payload
+    assert "`responseLanguage`" in system_prompt
+    assert "`behaviorMode`" in system_prompt
     assert "confirmationMode" not in system_prompt
+
+
+@pytest.mark.parametrize(
+    ("identity_field", "identity"),
+    [("name", "English"), ("location", "strict"), ("location", "2026-10-07")],
+)
+def test_runtime_configuration_survives_identity_redaction(
+    monkeypatch: pytest.MonkeyPatch,
+    identity_field: str,
+    identity: str,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.agent.runtime.messages.date",
+        SimpleNamespace(today=lambda: date(2026, 10, 7)),
+    )
+    request = prepare_agent_request(
+        _request().model_copy(
+            update={
+                "resume": {
+                    "basic": {
+                        identity_field: identity,
+                        "summary": f"Experience for {identity}.",
+                    },
+                    "sections": [],
+                },
+            },
+        ),
+        normalize_agent_settings(
+            {"responseLanguage": "en", "behaviorMode": "strict"},
+        ),
+    )
+
+    messages = AgentPromptCompiler(request, _config()).build().messages
+    workspace = json.loads(messages[-2]["content"])["workspaceContext"]
+
+    assert workspace["currentDate"] == "2026-10-07"
+    assert workspace["responseLanguage"] == "English"
+    assert workspace["behaviorMode"] == "strict"
+    assert workspace["resume"]["basic"][identity_field] == "[hidden]"
+    summary = workspace["resume"]["basic"]["summary"]
+    assert identity not in summary
+    assert "[redacted_identity_0]" in summary
 
 
 def test_suggest_only_profile_removes_write_tools() -> None:

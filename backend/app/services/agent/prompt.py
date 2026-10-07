@@ -8,8 +8,10 @@ def _read_prompt(filename: str) -> str:
 
 
 AGENT_PROMPT = _read_prompt("agent.md")
+RUNTIME_CONTEXT_PROMPT = _read_prompt("runtime_context.md")
 
 
 __all__ = [
     "AGENT_PROMPT",
+    "RUNTIME_CONTEXT_PROMPT",
 ]
