@@ -90,7 +90,7 @@ def _checkpoint_context(events: list[dict[str, object]]) -> dict[str, object]:
     return {"trust": "untrusted_history_data", "events": events}
 
 
-def test_agent_system_prompt_includes_current_date_for_time_sensitive_search() -> None:
+def test_agent_workspace_includes_current_date_for_time_sensitive_search() -> None:
     messages = (
         AgentPromptCompiler(
             _request(prompt="查找当前岗位。"),
@@ -101,7 +101,9 @@ def test_agent_system_prompt_includes_current_date_for_time_sensitive_search() -
     )
 
     assert messages[0]["role"] == "system"
-    assert f"Current date: {date.today().isoformat()}." in messages[0]["content"]
+    assert date.today().isoformat() not in messages[0]["content"]
+    workspace = json.loads(messages[-2]["content"])["workspaceContext"]
+    assert workspace["currentDate"] == date.today().isoformat()
 
 
 def test_agent_context_projects_exact_history_and_current_prompt_once() -> None:

@@ -5567,6 +5567,7 @@ def test_agent_supported_locales_cover_resources() -> None:
     prompt_dir = Path(__file__).parents[1] / "app/services/agent/prompts"
     expected_prompt_files = {
         "agent.md",
+        "runtime_context.md",
     }
 
     assert DEFAULT_AGENT_LOCALE in supported

@@ -36,17 +36,14 @@ from ..contracts import agent_tool_specs_for_request
 from ..draft import DraftTransaction
 from ..evidence import historical_prompt_evidence_ref
 from ..localization import agent_text
-from ..preferences import (
-    execution_profile_for_request,
-    execution_profile_prompt,
-)
+from ..preferences import execution_profile_for_request
 from ..privacy import (
     resume_hidden_terms,
     sanitize_agent_resume,
     sanitize_agent_text,
     sanitize_agent_value,
 )
-from ..prompt import AGENT_PROMPT
+from ..prompt import AGENT_PROMPT, RUNTIME_CONTEXT_PROMPT
 from .context import AgentContextWindowError
 
 CONTEXT_COMPRESSION_RATIO = 0.85
@@ -163,8 +160,7 @@ class AgentPromptCompiler:
         self._system_content = "\n\n".join(
             [
                 AGENT_PROMPT,
-                f"Current date: {date.today().isoformat()}.",
-                execution_profile_prompt(execution_profile_for_request(request)),
+                RUNTIME_CONTEXT_PROMPT,
             ]
         )
         self._entries = _conversation_entries(
@@ -358,13 +354,12 @@ def _workspace_context(
     *,
     hidden_terms: tuple[str, ...],
 ) -> dict[str, Any]:
-    workspace: dict[str, Any] = {
+    return {
+        "currentDate": date.today().isoformat(),
         "responseLanguage": _locale_name(request),
+        "behaviorMode": execution_profile_for_request(request).behavior_mode.value,
         "resume": sanitize_agent_resume(resume, hidden_terms=hidden_terms),
     }
-
-    sanitized_workspace = sanitize_agent_value(workspace, hidden_terms=hidden_terms)
-    return sanitized_workspace if isinstance(sanitized_workspace, dict) else {}
 
 
 def _request_hidden_terms(
