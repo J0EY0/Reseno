@@ -226,9 +226,9 @@ def test_wheel_input_stops_preview_navigation_before_the_target(
     assert 0 < interruption["wheelAt"] < destination
     assert final_scroll <= interruption["wheelAt"] + 2, interruption
     assert destination - final_scroll > 100
-    page.mouse.wheel(0, -120)
+    page.mouse.wheel(0, 120)
     page.wait_for_function(
         """previous => document.querySelector('.resume-editor-panel').scrollTop
-          < previous - 40""",
+          > previous + 40""",
         arg=final_scroll,
     )
