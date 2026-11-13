@@ -56,7 +56,6 @@ function createModel(): ResumeDetailWorkspaceModel {
       showSkeleton: false,
       template: "minimal",
       templates: [template],
-      theme: "light",
       title: { draft: item.title, isOpen: false },
       typography: item.typography,
     },

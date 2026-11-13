@@ -7,7 +7,6 @@ import {
   type CSSProperties,
 } from "react";
 
-import { AppToaster } from "@/components/app-toaster";
 import { ResourceErrorBoundary } from "@/components/resource-error-boundary";
 import { loadDocumentCanvas } from "@/components/preview/document-canvas-loader";
 import { TemplateEditor } from "@/components/templates/template-editor";
@@ -159,7 +158,6 @@ export function TemplateDetailWorkspaceView({
       >
         {messages.skipToContent}
       </a>
-      <AppToaster theme={controller.theme} position="bottom-right" />
       <Suspense fallback={null}>
         <TemplateDetailLeaveDialog
           changeCount={controller.saveChangeCount}

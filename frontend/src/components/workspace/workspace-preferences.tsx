@@ -8,6 +8,7 @@ import {
 } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 
+import { AppToaster } from "@/components/app-toaster";
 import { WorkspacePreferencesContext } from "@/components/workspace/workspace-preferences-context";
 import { getMessagesSync, type AppMessages, type Locale } from "@/i18n";
 import { normalizeAgentSettings } from "@/lib/agent-settings";
@@ -171,6 +172,7 @@ export function WorkspacePreferencesProvider({
   return (
     <WorkspacePreferencesContext.Provider value={value}>
       <Outlet />
+      <AppToaster theme={snapshot.theme} position="bottom-right" />
     </WorkspacePreferencesContext.Provider>
   );
 }

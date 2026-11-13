@@ -8,7 +8,6 @@ import {
   type RefObject,
 } from "react";
 
-import { AppToaster } from "@/components/app-toaster";
 import { ResourceErrorBoundary } from "@/components/resource-error-boundary";
 import { ResumeEditorPane } from "@/components/editor/resume-editor-pane";
 import { ResumeEditHistoryProvider } from "@/components/editor/resume-edit-history-provider";
@@ -211,7 +210,6 @@ export function ResumeDetailWorkspaceView({
       >
         {messages.skipToContent}
       </a>
-      <AppToaster theme={model.state.theme} position="bottom-right" />
       <ResourceErrorBoundary className="fixed bottom-4 right-4 z-50 max-w-sm bg-background shadow-lg">
         <Suspense fallback={null}>
           <ResumeDetailTitleDialog messages={messages} model={model} />
