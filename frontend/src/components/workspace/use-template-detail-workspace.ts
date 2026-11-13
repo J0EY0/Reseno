@@ -460,7 +460,6 @@ export function useTemplateDetailWorkspace({
     templateLocale,
     templatePreviewMessages,
     templatePreviewResume,
-    theme,
     updateTemplate,
   };
 }

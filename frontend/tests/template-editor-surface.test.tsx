@@ -439,7 +439,6 @@ function workspaceController(
     templateLocale: "en",
     templatePreviewMessages: null,
     templatePreviewResume: null,
-    theme: "light",
     updateTemplate: vi.fn(),
     ...overrides,
   };

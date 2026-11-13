@@ -136,7 +136,8 @@ assert.match(
 );
 assert.doesNotMatch(handoff, /prepared\?|prepared\s*=\s*false/);
 assert.match(shell, /<AppSidebar[\s\S]*<SidebarInset/);
-assert.match(shell, /<AppToaster theme=\{theme\}/);
+assert.match(preferences, /<AppToaster theme=\{snapshot.theme\}/);
+assert.doesNotMatch(shell, /AppToaster/);
 assert.match(lateral, /<WorkspaceShell[\s\S]*?<Outlet \/>/);
 assert.doesNotMatch(
   pages.filter((_, i) => ![1, 5].includes(i)).join("\n"),

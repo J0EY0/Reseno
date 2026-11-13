@@ -22,6 +22,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+@pytest.mark.browser_smoke
 def test_duplicate_saved_resume_opens_only_from_toast_action(
     browser: Browser,
     workspace_servers: tuple[str, str],
@@ -115,7 +116,9 @@ def test_duplicate_saved_resume_opens_only_from_toast_action(
             name=re.compile(r"^(View copy|查看副本)$"),
         )
         open_copy_action.wait_for(state="visible")
-        success_toast = page.locator('[data-sonner-toast][data-type="success"]').filter(
+        success_toast = page.locator(
+            '[data-sonner-toast][data-type="success"]:not([data-removed="true"])'
+        ).filter(
             has_text=copy_created_label
         )
         toast_description = success_toast.locator("[data-description]")
@@ -189,6 +192,7 @@ def test_duplicate_saved_resume_opens_only_from_toast_action(
         page.wait_for_load_state("networkidle")
         page.wait_for_timeout(600)
         frames = stop_workspace_frame_recording(page)
+        assert success_toast.count() == 0
 
         final_preview_page = page.locator(
             ".resume-preview-card article.resume-page",

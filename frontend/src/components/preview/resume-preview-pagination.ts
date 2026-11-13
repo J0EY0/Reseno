@@ -64,12 +64,16 @@ function collectBlockIntervals(element: HTMLElement, rootRect: DOMRect) {
     return [];
   }
 
+  const avatarBottom =
+    contentElement
+      .querySelector("header [data-avatar-frame]")
+      ?.getBoundingClientRect().bottom ?? rootRect.top;
   const intervals: VerticalInterval[] = [];
   contentElement
     .querySelectorAll<HTMLElement>('p, li, [data-resume-page-block="true"]')
     .forEach((block) => {
       const interval = getInterval(block, rootRect);
-      if (interval) {
+      if (interval && interval.top >= avatarBottom - rootRect.top) {
         intervals.push(interval);
       }
     });

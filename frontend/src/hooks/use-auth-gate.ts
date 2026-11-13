@@ -6,6 +6,7 @@ import {
   useState,
 } from "react";
 import { useNavigate } from "react-router-dom";
+import { toast } from "sonner";
 
 import {
   clearAuthSession,
@@ -82,6 +83,7 @@ export function useAuthGate({
   const synchronizeAuthSession = useEffectEvent(() => {
     const hasSession = loadAuthSession();
     if (hasSession && authGate.phase === "login") {
+      toast.dismiss();
       onAuthenticated();
       setAuthGate({ phase: "app" });
     } else if (authGate.phase === "app") {
@@ -231,6 +233,7 @@ export function useAuthGate({
   }
 
   function logout() {
+    toast.dismiss();
     clearAuthSession();
     startTransition(() => {
       onLoggedOut();
@@ -244,6 +247,7 @@ export function useAuthGate({
   }
 
   function restoreWorkspaceSession() {
+    toast.dismiss();
     setAuthGate({ phase: "app" });
     window.dispatchEvent(new Event(AUTH_SESSION_RESTORED_EVENT));
   }
@@ -305,6 +309,7 @@ export function useAuthGate({
       signal.addEventListener("abort", abort, { once: true });
       startTransition(() => {
         if (signal.aborted) return;
+        toast.dismiss();
         setDestinationCommit(request);
         setAuthGate({ phase: "app" });
         navigate(`/${destination}`, {

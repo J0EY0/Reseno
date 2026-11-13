@@ -90,7 +90,6 @@ it("preserves loading states, passes document operations and separates version e
     showSkeleton: true,
     hasLoadError: false,
     hasVersionLoadError: false,
-    theme: "light",
   };
   const model = { commands, state } as unknown as ResumeDetailWorkspaceModel;
   const messages = getMessagesSync("en");

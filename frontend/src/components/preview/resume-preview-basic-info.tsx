@@ -134,6 +134,13 @@ export function StandardBasicInfo({
   const isLeftAligned = layout.basicInfo === "left";
   const isSplit = layout.basicInfo === "split";
   const avatarPosition = layout.avatarPosition;
+  const isAvatarLeft = avatarPosition === "left";
+  const avatarInwardOffset = Math.max(
+    0,
+    isAvatarLeft ? layout.avatarOffsetX : -layout.avatarOffsetX,
+  );
+  const avatarGap = `calc(${avatarInwardOffset}mm + 20px)`;
+  const avatarTextInset = `calc(${layout.avatarWidth + avatarInwardOffset}mm + 20px)`;
   const hasAvatar = avatarPosition !== "none" && Boolean(basic.avatar.trim());
   const shouldFloatSideAvatar =
     hasAvatar && layout.basicInfo === "centered" && avatarPosition !== "center";
@@ -141,17 +148,7 @@ export function StandardBasicInfo({
   const headlineDiff = basicDiffByField?.get("headline");
   const summaryDiff = basicDiffByField?.get("summary");
   const avatar = hasAvatar ? (
-    <AvatarPreview
-      basic={basic}
-      layout={layout}
-      t={t}
-      className={cn(
-        shouldFloatSideAvatar &&
-          (avatarPosition === "left"
-            ? "absolute left-0 top-0 z-10"
-            : "absolute right-0 top-0 z-10"),
-      )}
-    />
+    <AvatarPreview basic={basic} layout={layout} t={t} className="" />
   ) : null;
   const identityContent = (
     <>
@@ -190,19 +187,6 @@ export function StandardBasicInfo({
       ) : null}
     </>
   );
-  const contactContent = (
-    <ContactLine
-      items={contactItems}
-      enableLinks={enableContactLinks}
-      className={cn("resume-tone-body mt-3", isLeftAligned && "justify-start")}
-    />
-  );
-  const infoContent = (
-    <>
-      {identityContent}
-      {contactContent}
-    </>
-  );
   const basicInfoContent = isSplit ? (
     <div className="grid min-w-0 grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)] items-end gap-5">
       <div className="text-left">{identityContent}</div>
@@ -218,13 +202,27 @@ export function StandardBasicInfo({
     <div
       className={cn(
         "min-w-0",
-        shouldFloatSideAvatar && "px-[124px]",
-        isLeftAligned || (isProfile && hasAvatar && avatarPosition === "left")
+        isLeftAligned || (isProfile && hasAvatar && isAvatarLeft)
           ? "text-left"
           : "mx-auto text-center",
       )}
+      style={
+        shouldFloatSideAvatar
+          ? {
+              paddingInline: avatarTextInset,
+            }
+          : undefined
+      }
     >
-      {infoContent}
+      {identityContent}
+      <ContactLine
+        items={contactItems}
+        enableLinks={enableContactLinks}
+        className={cn(
+          "resume-tone-body mt-3",
+          isLeftAligned && "justify-start",
+        )}
+      />
     </div>
   );
 
@@ -232,7 +230,7 @@ export function StandardBasicInfo({
     <header
       data-resume-section-id="basic"
       className={cn(
-        "relative grid gap-4",
+        shouldFloatSideAvatar ? "flow-root" : "grid gap-4",
         isProfile && "overflow-hidden rounded-2xl px-5 py-5",
       )}
       style={
@@ -250,21 +248,29 @@ export function StandardBasicInfo({
         </div>
       ) : shouldFloatSideAvatar ? (
         <>
-          {avatar}
+          <div
+            style={{
+              float: avatarPosition,
+              [isAvatarLeft ? "paddingRight" : "paddingLeft"]: avatarGap,
+            }}
+          >
+            {avatar}
+          </div>
           {basicInfoContent}
         </>
       ) : avatar ? (
         <div
           className={cn(
             "grid items-start gap-5",
-            avatarPosition === "left"
+            isAvatarLeft
               ? "grid-cols-[auto_minmax(0,1fr)]"
               : "grid-cols-[minmax(0,1fr)_auto]",
           )}
+          style={{ columnGap: avatarGap }}
         >
-          {avatarPosition === "left" ? avatar : null}
+          {isAvatarLeft ? avatar : null}
           <div className="min-w-0">{basicInfoContent}</div>
-          {avatarPosition !== "left" ? avatar : null}
+          {!isAvatarLeft ? avatar : null}
         </div>
       ) : (
         basicInfoContent
@@ -274,6 +280,7 @@ export function StandardBasicInfo({
         <p
           className={cn(
             "resume-tone-body text-left",
+            shouldFloatSideAvatar && "mt-4",
             !basic.summary && "resume-diff-empty-slot",
             summaryDiff && "resume-diff-label-host",
           )}
@@ -284,7 +291,16 @@ export function StandardBasicInfo({
             lineHeight: settings.bodyLineHeight,
           }}
         >
-          <ResumeDiffBadge diff={summaryDiff} t={t} />
+          <ResumeDiffBadge
+            diff={summaryDiff}
+            t={t}
+            style={{
+              right:
+                shouldFloatSideAvatar && !isAvatarLeft
+                  ? avatarTextInset
+                  : undefined,
+            }}
+          />
           <ResumeDiffText
             richText
             value={basic.summary}

@@ -13,7 +13,6 @@ import {
 } from "@/components/workspace/workspace-navigation-notifications";
 
 import { AppSidebar } from "@/components/app-sidebar";
-import { AppToaster } from "@/components/app-toaster";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -82,7 +81,6 @@ export function WorkspaceShell({
     messages,
     persistence,
     resolvedTheme,
-    theme,
   } = useWorkspacePreferences();
   const isMobile = useMediaQuery(MOBILE_HEADER_MEDIA_QUERY);
   const [pendingView, setPendingView] = useState<WorkspaceView | null>(null);
@@ -161,7 +159,6 @@ export function WorkspaceShell({
       >
         {messages.skipToContent}
       </a>
-      <AppToaster theme={theme} position="bottom-right" />
       <AppSidebar
         t={messages}
         activeView={activeView}

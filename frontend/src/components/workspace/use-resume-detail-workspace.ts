@@ -564,7 +564,6 @@ export function useResumeDetailWorkspace({
       showSkeleton: !loader.hasLoaded,
       template: session.template,
       templates: templateCatalog,
-      theme: preferences.theme,
       title: {
         draft: documentCommands.titleDraft,
         isOpen: documentCommands.isTitleDialogOpen,

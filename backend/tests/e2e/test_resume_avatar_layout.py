@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from urllib.parse import urlparse
 
 import pytest
 from playwright.sync_api import Browser, expect
 
+from tests.e2e.agent_session_support import seed_pending_agent_draft
 from tests.e2e.browser_support import authenticated_context as _authenticated_context
+from tests.template_fixtures import portable_template
 
 pytestmark = [
     pytest.mark.browser_smoke,
@@ -15,6 +18,459 @@ pytestmark = [
         reason="set RUN_BROWSER_E2E=1 to run browser integration tests",
     ),
 ]
+
+
+@pytest.mark.parametrize(
+    (
+        "basic_info",
+        "avatar_position",
+        "avatar_width",
+        "avatar_height",
+        "offset_x",
+        "offset_y",
+        "summary",
+    ),
+    [
+        ("centered", "right", 25, 32, 0, 0, ""),
+        ("centered", "left", 25, 32, 0, 0, ""),
+        (
+            "centered",
+            "right",
+            25,
+            32,
+            0,
+            0,
+            "具备软件开发经验，关注工程质量和产品体验。" * 4,
+        ),
+        (
+            "centered",
+            "left",
+            25,
+            32,
+            0,
+            0,
+            "具备软件开发经验，关注工程质量和产品体验。" * 4,
+        ),
+        (
+            "centered",
+            "right",
+            25,
+            32,
+            0,
+            0,
+            "具备软件开发经验，关注工程质量和产品体验。" * 12,
+        ),
+        (
+            "centered",
+            "left",
+            25,
+            32,
+            0,
+            0,
+            "具备软件开发经验，关注工程质量和产品体验。" * 12,
+        ),
+        (
+            "centered",
+            "right",
+            48,
+            56,
+            -4,
+            6,
+            "具备软件开发经验，关注工程质量和产品体验。" * 4,
+        ),
+        (
+            "centered",
+            "left",
+            48,
+            56,
+            4,
+            6,
+            "具备软件开发经验，关注工程质量和产品体验。" * 4,
+        ),
+        (
+            "left",
+            "right",
+            25,
+            32,
+            -12,
+            10,
+            "具备软件开发经验，关注工程质量和产品体验。" * 4,
+        ),
+        (
+            "left",
+            "left",
+            25,
+            32,
+            12,
+            10,
+            "具备软件开发经验，关注工程质量和产品体验。" * 4,
+        ),
+        (
+            "profile",
+            "center",
+            25,
+            32,
+            0,
+            12,
+            "具备软件开发经验，关注工程质量和产品体验。" * 4,
+        ),
+        (
+            "split",
+            "right",
+            25,
+            32,
+            -12,
+            10,
+            "具备软件开发经验，关注工程质量和产品体验。" * 4,
+        ),
+        (
+            "sidebar",
+            "center",
+            25,
+            32,
+            0,
+            12,
+            "具备软件开发经验，关注工程质量和产品体验。" * 4,
+        ),
+        ("left", "left", 25, 32, 12, 0, ""),
+        ("split", "right", 25, 32, -12, 0, ""),
+    ],
+    ids=[
+        "right",
+        "left",
+        "right-summary",
+        "left-summary",
+        "right-long-summary",
+        "left-long-summary",
+        "right-large-offset-summary",
+        "left-large-offset-summary",
+        "aligned-right-offset-summary",
+        "aligned-left-offset-summary",
+        "profile-center-offset",
+        "split-right-offset-summary",
+        "sidebar-offset",
+        "aligned-left-horizontal-offset",
+        "split-right-horizontal-offset",
+    ],
+)
+def test_short_header_keeps_avatar_above_resume_sections(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+    tmp_path: Path,
+    basic_info: str,
+    avatar_position: str,
+    avatar_width: int,
+    avatar_height: int,
+    offset_x: int,
+    offset_y: int,
+    summary: str,
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser, locale="zh-CN", viewport={"width": 1672, "height": 960}
+    )
+    page = context.new_page()
+    template_id: str | None = None
+    resume_id: str | None = None
+    try:
+        template = portable_template("Short header avatar")
+        template["typography"]["fontSize"] = 12
+        template["layout"].update(
+            basicInfo=basic_info,
+            avatarPosition=avatar_position,
+            avatarWidth=avatar_width,
+            avatarHeight=avatar_height,
+            avatarOffsetX=offset_x,
+            avatarOffsetY=offset_y,
+        )
+        response = context.request.post(
+            f"{frontend_url}/api/templates", data={"template": template}
+        )
+        assert response.ok
+        template_id = response.json()["data"]["template"]["id"]
+        response = context.request.post(
+            f"{frontend_url}/api/resumes",
+            data={
+                "documentLocale": "zh",
+                "title": "Avatar layout",
+                "template": template_id,
+            },
+        )
+        assert response.ok
+        created = response.json()["data"]["resume"]
+        resume_id = created["id"]
+        created["resume"]["basic"].update(
+            name="测试姓名",
+            phone="+86 13800000000",
+            email="name@example.com",
+            summary=summary,
+            avatar="data:image/gif;base64,R0lGODlhAQABAIAAAJSjuJSjuCwAAAAAAQABAAACAUwAOw==",
+        )
+        education = created["resume"]["sections"][0]
+        education["items"][0].update(
+            school="示例大学",
+            major="计算机技术",
+            degree="硕士",
+            period="2024.09 - 至今",
+        )
+        response = context.request.put(
+            f"{frontend_url}/api/resumes/{resume_id}",
+            data={
+                key: created[key]
+                for key in (
+                    "title",
+                    "documentLocale",
+                    "resume",
+                    "jobBrief",
+                    "typography",
+                    "template",
+                    "templateSettings",
+                )
+            },
+        )
+        assert response.ok
+        for route in (
+            f"/resume/{resume_id}",
+            f"/pdf-export?resumeId={resume_id}&documentLocale=zh",
+        ):
+            page.goto(f"{frontend_url}{route}", wait_until="networkidle")
+            if route.startswith("/pdf-export"):
+                page.locator('main[data-pdf-ready="true"]').wait_for(state="visible")
+            preview = page.locator('[data-export-root="resume-page"]:visible').first
+            avatar = preview.locator('[data-avatar-frame="true"]')
+            expect(avatar).to_be_visible()
+            geometry = preview.evaluate(
+                """resumePage => {
+                  const avatar = resumePage.querySelector('[data-avatar-frame="true"]');
+                  const header = resumePage.querySelector(
+                    '[data-resume-section-id="basic"]'
+                  );
+                  const section = resumePage.querySelector('section');
+                  const avatarRect = avatar.getBoundingClientRect();
+                  const identity = header.querySelector('h1').parentElement;
+                  const nameRange = document.createRange();
+                  nameRange.selectNodeContents(header.querySelector('h1'));
+                  const nameRect = nameRange.getBoundingClientRect();
+                  const headerRect = header.getBoundingClientRect();
+                  const summary = header.querySelector('p');
+                  const summaryRange = document.createRange();
+                  if (summary) summaryRange.selectNodeContents(summary);
+                  const summaryRects = Array.from(summaryRange.getClientRects());
+                  const walker = document.createTreeWalker(
+                    resumePage, NodeFilter.SHOW_TEXT
+                  );
+                  const overlaps = [];
+                  let node;
+                  while ((node = walker.nextNode())) {
+                    if (!node.textContent.trim()) continue;
+                    const range = document.createRange();
+                    range.selectNodeContents(node);
+                    for (const rect of range.getClientRects()) {
+                      if (rect.right > avatarRect.left + 1 &&
+                          rect.left < avatarRect.right - 1 &&
+                          rect.bottom > avatarRect.top + 1 &&
+                          rect.top < avatarRect.bottom - 1) {
+                        overlaps.push(node.textContent);
+                      }
+                    }
+                  }
+                  return {
+                    avatarBottom: avatarRect.bottom,
+                    headerBottom: header.getBoundingClientRect().bottom,
+                    sectionTop: section.getBoundingClientRect().top,
+                    identityBottom: identity.getBoundingClientRect().bottom,
+                    nameCenter: (nameRect.left + nameRect.right) / 2,
+                    headerCenter: (headerRect.left + headerRect.right) / 2,
+                    summaryTop: summaryRects[0]?.top,
+                    summaryBelowAvatar: summaryRects.some(rect =>
+                      rect.top >= avatarRect.bottom &&
+                      (rect.left < avatarRect.right && rect.right > avatarRect.left)
+                    ),
+                    overlaps,
+                  };
+                }"""
+            )
+            surface = "export" if route.startswith("/pdf-export") else "preview"
+            preview.screenshot(path=str(tmp_path / f"avatar-{surface}.png"))
+            assert geometry["avatarBottom"] <= geometry["headerBottom"] + 1, geometry
+            if basic_info != "sidebar":
+                assert geometry["avatarBottom"] <= geometry["sectionTop"] + 1, geometry
+            assert geometry["overlaps"] == [], geometry
+            if basic_info == "centered":
+                assert abs(geometry["nameCenter"] - geometry["headerCenter"]) <= 1, (
+                    geometry
+                )
+            if basic_info == "centered" and summary:
+                assert geometry["summaryTop"] < geometry["avatarBottom"], geometry
+                assert geometry["summaryTop"] <= geometry["identityBottom"] + 20, (
+                    geometry
+                )
+                if len(summary) > 200:
+                    assert geometry["summaryBelowAvatar"], geometry
+    finally:
+        if resume_id:
+            context.request.post(f"{frontend_url}/api/resumes/{resume_id}/trash")
+            context.request.delete(f"{frontend_url}/api/resumes/{resume_id}")
+        if template_id:
+            context.request.post(f"{frontend_url}/api/templates/{template_id}/trash")
+            context.request.delete(f"{frontend_url}/api/templates/{template_id}")
+        context.close()
+
+
+def test_summary_wrapping_avatar_paginates_without_splitting_photo(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser, locale="zh-CN", viewport={"width": 1672, "height": 960}
+    )
+    page = context.new_page()
+    resume_id: str | None = None
+    try:
+        response = page.request.post(
+            f"{frontend_url}/api/resumes",
+            data={"documentLocale": "zh", "template": "minimal"},
+        )
+        assert response.ok
+        saved = response.json()["data"]["resume"]
+        resume_id = saved["id"]
+        saved["typography"]["fontSize"] = 16
+        saved["resume"]["basic"].update(
+            name="测试姓名",
+            phone="+86 13800000000",
+            email="name@example.com",
+            summary="具备软件开发经验，关注工程质量和产品体验。" * 80,
+            avatar="data:image/gif;base64,R0lGODlhAQABAIAAAJSjuJSjuCwAAAAAAQABAAACAUwAOw==",
+        )
+        response = page.request.put(
+            f"{frontend_url}/api/resumes/{resume_id}",
+            data={
+                key: saved[key]
+                for key in (
+                    "title",
+                    "documentLocale",
+                    "resume",
+                    "jobBrief",
+                    "typography",
+                    "template",
+                    "templateSettings",
+                )
+            },
+        )
+        assert response.ok
+        for route in (
+            f"/resume/{resume_id}",
+            f"/pdf-export?resumeId={resume_id}&documentLocale=zh",
+        ):
+            page.goto(f"{frontend_url}{route}", wait_until="networkidle")
+            page.locator('[data-resume-pagination-ready="true"]:visible').wait_for()
+            if route.startswith("/pdf-export"):
+                page.locator('main[data-pdf-ready="true"]').wait_for(state="visible")
+            pages = page.locator('[data-export-root="resume-page"]:visible')
+            expect(pages).to_have_count(2)
+            geometry = pages.evaluate_all(
+                """pages => {
+                  const firstViewport = pages[0].querySelector(
+                    '.resume-page-content-viewport'
+                  ).getBoundingClientRect();
+                  const lastViewport = pages.at(-1).querySelector(
+                    '.resume-page-content-viewport'
+                  ).getBoundingClientRect();
+                  const avatar = pages[0].querySelector(
+                    '[data-avatar-frame="true"]'
+                  ).getBoundingClientRect();
+                  return {
+                    avatarBottom: avatar.bottom,
+                    firstPageBottom: firstViewport.bottom,
+                    firstPageHeight: firstViewport.height,
+                    nominalPageHeight: lastViewport.height,
+                  };
+                }"""
+            )
+            assert geometry["avatarBottom"] <= geometry["firstPageBottom"] + 1, geometry
+            assert geometry["firstPageHeight"] >= geometry["nominalPageHeight"] * 0.9, (
+                geometry
+            )
+    finally:
+        if resume_id:
+            context.request.post(f"{frontend_url}/api/resumes/{resume_id}/trash")
+            context.request.delete(f"{frontend_url}/api/resumes/{resume_id}")
+        context.close()
+
+
+def test_summary_review_badge_does_not_overlap_avatar(
+    browser: Browser,
+    workspace_servers: tuple[str, str],
+) -> None:
+    frontend_url, _ = workspace_servers
+    context = _authenticated_context(
+        browser,
+        locale="zh-CN",
+        viewport={"width": 1672, "height": 960},
+        reduced_motion="reduce",
+    )
+    page = context.new_page()
+    resume_id: str | None = None
+    try:
+        resume_id, detail, _ = seed_pending_agent_draft(
+            page,
+            frontend_url,
+            message_id="avatar-summary-review",
+            summary="具备软件开发经验，关注工程质量和产品体验。",
+        )
+        saved = detail["resume"]
+        saved["resume"]["basic"].update(
+            name="测试姓名",
+            phone="+86 13800000000",
+            email="name@example.com",
+            avatar="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==",
+        )
+        saved["typography"]["fontSize"] = 12
+        response = page.request.put(
+            f"{frontend_url}/api/resumes/{resume_id}",
+            data={
+                key: saved[key]
+                for key in (
+                    "title",
+                    "documentLocale",
+                    "resume",
+                    "jobBrief",
+                    "typography",
+                    "template",
+                    "templateSettings",
+                )
+            },
+        )
+        assert response.ok
+        page.goto(f"{frontend_url}/resume/{resume_id}", wait_until="networkidle")
+        preview = page.locator('[data-export-root="resume-page"]:visible').first
+        expect(preview.locator('[data-avatar-frame="true"]')).to_be_visible()
+        expect(
+            preview.locator('header > p [data-resume-diff-badge="true"]')
+        ).to_be_visible()
+        geometry = preview.evaluate(
+            """resumePage => {
+              const avatar = resumePage.querySelector(
+                '[data-avatar-frame="true"]'
+              ).getBoundingClientRect();
+              const badge = resumePage.querySelector(
+                'header > p [data-resume-diff-badge="true"]'
+              ).getBoundingClientRect();
+              return {
+                avatar: avatar.toJSON(),
+                badge: badge.toJSON(),
+                overlaps: avatar.left < badge.right && avatar.right > badge.left &&
+                  avatar.top < badge.bottom && avatar.bottom > badge.top,
+              };
+            }"""
+        )
+        assert not geometry["overlaps"], geometry
+    finally:
+        if resume_id:
+            context.request.post(f"{frontend_url}/api/resumes/{resume_id}/trash")
+            context.request.delete(f"{frontend_url}/api/resumes/{resume_id}")
+        context.close()
 
 
 def test_builtin_templates_render_optional_avatars_without_layout_regressions(

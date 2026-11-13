@@ -79,6 +79,8 @@ export function AvatarPreview({
       style={{
         width: `${layout.avatarWidth}mm`,
         height: `${layout.avatarHeight}mm`,
+        marginBottom:
+          layout.avatarOffsetY > 0 ? `${layout.avatarOffsetY}mm` : undefined,
         transform:
           layout.avatarOffsetX || layout.avatarOffsetY
             ? `translate(${layout.avatarOffsetX}mm, ${layout.avatarOffsetY}mm)`

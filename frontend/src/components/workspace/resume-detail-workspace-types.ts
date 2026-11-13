@@ -94,7 +94,6 @@ interface ResumeDetailWorkspaceState {
   showSkeleton: boolean;
   template: ResumeTemplateId;
   templates: ResumeTemplateDefinition[];
-  theme: ThemeMode;
   title: ResumeDetailTitleViewState;
   typography: ResumeTypographySettings;
 }
