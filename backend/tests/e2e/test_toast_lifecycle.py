@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime
 
 import pytest
 from playwright.sync_api import Browser, Page, expect
@@ -16,10 +17,14 @@ pytestmark = [
 ]
 
 
-def _export_json(page: Page) -> None:
+def _export_json(page: Page, *, paused_clock: bool = False) -> None:
     page.get_by_role("button", name="Export", exact=True).click()
+    if paused_clock:
+        page.clock.run_for(32)
     with page.expect_download():
         page.get_by_role("menuitem", name="JSON", exact=True).click()
+    if paused_clock:
+        page.clock.run_for(32)
     expect(page.get_by_text("JSON exported", exact=True)).to_be_visible()
     page.mouse.move(0, 0)
 
@@ -37,9 +42,10 @@ def test_notification_keeps_its_identity_and_lifetime_across_workspace_routes(
     )
     page = context.new_page()
     try:
+        page.clock.install(time=datetime(2024, 12, 10, 8, tzinfo=UTC))
         page.goto(f"{frontend_url}/resume/{resume_id}", wait_until="networkidle")
-        page.clock.install()
-        _export_json(page)
+        page.clock.pause_at(datetime(2024, 12, 10, 10, tzinfo=UTC))
+        _export_json(page, paused_clock=True)
         toast = page.locator('[data-sonner-toast][data-type="success"]')
         original = toast.element_handle()
         assert original is not None
@@ -56,7 +62,6 @@ def test_notification_keeps_its_identity_and_lifetime_across_workspace_routes(
         assert original.evaluate("element => element.isConnected")
         theme_toggle.click()
         expect(toaster).to_have_attribute("data-sonner-theme", initial_theme)
-        page.clock.pause_at(page.evaluate("Date.now()") / 1_000)
         page.clock.run_for(1_500)
 
         page.get_by_role("button", name="Back to Resumes", exact=True).click()
@@ -95,10 +100,10 @@ def test_closing_notification_before_navigation_does_not_replay_it(
     )
     page = context.new_page()
     try:
+        page.clock.install(time=datetime(2024, 12, 10, 8, tzinfo=UTC))
         page.goto(f"{frontend_url}/resume/{resume_id}", wait_until="networkidle")
-        page.clock.install()
-        _export_json(page)
-        page.clock.pause_at(page.evaluate("Date.now()") / 1_000)
+        page.clock.pause_at(datetime(2024, 12, 10, 10, tzinfo=UTC))
+        _export_json(page, paused_clock=True)
         toast = page.locator('[data-sonner-toast][data-type="success"]')
         toast.locator("[data-close-button]").click()
         expect(toast).to_have_attribute("data-removed", "true")
